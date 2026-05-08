@@ -1,4 +1,4 @@
-# rocm-tests: Framework Capabilities & Architecture
+# Framework Architecture
 
 This document is a deep-dive companion to the root README. It covers every framework capability in detail with annotated code examples, explains the internal execution pipeline, and provides role-specific workflows for each persona who contributes to or operates this framework.
 
@@ -68,88 +68,6 @@ Every plugin is listed in `conftest.py → pytest_plugins`. Pytest loads them le
 
 The framework abstracts the execution environment through a family of interchangeable executors. Test code calls `executor.run(command)` and receives an `ExecutionResult`; it never knows whether the command ran locally, over SSH, or in DryRun mode.
 
-| Executor | Use Case | Key Behaviour |
-|---|---|---|
-| `LocalExecutor` | Real GPU on the same machine | Subprocess with `HIP_VISIBLE_DEVICES` set per the allocated GPU |
-| `SSHExecutor` | Remote lab nodes | Connects via paramiko; streams stdout/stderr live |
-| `ContainerExecutor` | Docker / Podman with device passthrough | Passes `--device /dev/kfd --device /dev/dri/renderD*` |
-| `PrivilegedExecutor` | Kernel module ops | Runs under `capsh`/`sudo` against an allowlisted command set |
-| `InteractiveExecutor` | `rocgdb` debug sessions | pexpect-driven; supports `send` / `expect` sequences |
-| `DryRunExecutor` | PR validation, no GPU needed | Always returns `exit_code=0` and `stdout="DRY_RUN_OK"` |
-
-**Example — DryRun test (no GPU required):**
-
-```python
-# tests/dry_run/test_config_loader.py
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.hw.cpu_only
-@pytest.mark.runtime.fast
-def test_framework_dryrun(dry_run_executor, allure_reporter):
-    """Validate framework wiring in DryRun mode — runs on any laptop."""
-    with allure_reporter.step("Execute simulated workload"):
-        result = dry_run_executor.run("echo RESULT_OK")
-
-    assert result.ok                          # DryRunExecutor always succeeds
-    assert result.exit_code == 0
-```
-
-**Example — Real GPU test using `local_executor`:**
-
-```python
-# tests/e2e/stack_validation/test_hip_runtime.py
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.hw.gpu
-@pytest.mark.runtime.fast
-@pytest.mark.os.linux
-def test_hip_runtime_available(local_executor, allure_reporter):
-    """Verify HIP runtime is present and enumerates at least one AMD GPU device."""
-    with allure_reporter.step("Execute HIP runtime detection script"):
-        result = local_executor.run(f"python3 -c {_SCRIPT_HIP_RUNTIME!r}")
-
-    assert result.exit_code == 0, (
-        f"HIP runtime script failed (exit {result.exit_code}):\n"
-        f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
-    )
-    assert "RESULT_OK" in result.stdout
-    assert "HIP_NOT_FOUND" not in result.stdout
-```
-
-Swapping the executor (e.g., replacing `local_executor` with `ssh_executor`) requires no changes to the test body — only the fixture name changes.
-
----
-
-### GPU Device Management
-
-`GpuDetector` discovers AMD GPUs at session start using a two-step probe:
-
-1. **KFD sysfs** (`/sys/class/kfd/kfd/topology/nodes/*/gpu_id`) — fast, no external binary needed
-2. **`amd-smi static --json`** fallback — used when KFD sysfs is unavailable (containers, some WSL configs)
-
-`GpuAllocator` assigns one GPU per test using a semaphore pool. When `gpu_fixture` is requested, the framework:
-
-1. Acquires a GPU from the pool (blocks if all are in use)
-2. Runs a pre-execution health check (temperature, ECC errors, VRAM free space, clock state)
-3. Injects `HIP_VISIBLE_DEVICES=<device_id>` into the executor environment
-4. Runs the test
-5. Runs a post-execution health check
-6. Returns the GPU to the pool
-
-If either health check fails, the outcome is classified as `HEALTH_FAIL` — distinct from `FAIL` — signalling a hardware-side issue rather than a test logic failure. Recovery escalates: device reset → driver reload → node reboot (remote nodes only).
-
-**`--mock-gpu` mode** substitutes `MockGpuDetector`, which returns synthetic `gfx942` GPU objects. No real hardware is allocated; all health checks are skipped. Use this for testing framework logic without GPU hardware.
-
-```bash
-# Real GPU run — allocates from actual /dev/kfd devices
-pytest tests/e2e/ -m "hw.gpu and ci.pr" -v
-
-# Mock GPU — synthetic gfx942, no /dev/kfd access needed
-pytest tests/e2e/ --mock-gpu -v
-
-# No GPU at all — DryRunExecutor, no allocation attempted
-pytest tests/e2e/ --no-gpu -v
-```
 
 ---
 
@@ -166,9 +84,6 @@ Every test function must carry markers from three required dimensions and may ca
 | `os.*` | optional | `linux`, `windows`, `wsl`, `both` | Platform gate — auto-skips on incompatible OS |
 | `e2e.*` | optional | `stack`, `multinode`, `app`, `upgrade` | Scenario type — drives dashboard categorisation |
 
-**Why dotted syntax works:**
-
-`@pytest.mark.ci.pr` is syntactic sugar. A `MarkDecorator.__getattr__` patch in `conftest.py` resolves the dotted chain into the underlying pytest mark `"ci.pr"`. The string `"ci.pr"` is the actual marker name stored in pytest's node item.
 
 **Selecting tests by marker expression:**
 
@@ -197,7 +112,7 @@ pytest tests/ -m "hw.gpu and ci.pr" --collect-only -q
 
 When multiple GPU devices are available, `SmartShardManager` distributes tests automatically using a **Longest Processing Time (LPT)** algorithm:
 
-1. Collects all test items and their `runtime.*` weight (fast=1, medium=6, longevity=24, soak=48 — arbitrary units)
+1. Collects all test items and their `runtime.*` weight (Example: fast=1, medium=6, longevity=24, soak=48 — arbitrary units)
 2. Sorts tests descending by weight
 3. Assigns each test to the GPU with the lowest current load, accounting for the GPU's available VRAM
 
@@ -215,7 +130,6 @@ Smart Sharding is **mutually exclusive** with pytest-xdist GPU sharding. Use Sma
 |---|---|---|
 | Linux | `LinuxAdapter` | `/dev/kfd`, `/dev/dri/renderD*` enumeration via sysfs |
 | Windows | `WindowsAdapter` | `amd-smi static --json` output parsing |
-| WSL | `WindowsAdapter` (auto-detected) | WSL environment variable detection → Windows path |
 
 Test files carry an `os.*` marker. The framework reads this marker during collection and automatically skips tests on incompatible platforms — no `if sys.platform` guards in test code.
 
@@ -256,6 +170,7 @@ pytest tests/e2e/ -m "hw.gpu and ci.pr" --retry-count 3 -v
 ### Agentic AI Test Authoring
 
 The framework ships a built-in agentic AI layer accessible from Claude Code. Three skills are available:
+> Agents skill set requires enhancements, WIP
 
 | Skill | What It Does |
 |---|---|
@@ -273,22 +188,11 @@ claude
 /new-test
 > Validate that hipGetDeviceCount returns at least 1 on a gfx942 node
 ```
-
-The agent reads `framework/markers/taxonomy.py`, existing test patterns, and the framework fixtures before generating output. It never invents marker values or fixture names. The generated file is immediately linted by `MarkerLinter`.
-
-```bash
-# Validate the generated file collects cleanly (no GPU needed)
-pytest tests/e2e/stack_validation/test_my_feature.py --collect-only -q --no-gpu
-
-# Four-persona review before opening a PR
-/check-test tests/e2e/stack_validation/test_my_feature.py
-```
-
 ---
 
 ### Prerequisite Contract
 
-`prereqs_plugin.py` gates session start with typed prerequisite checks:
+`prereqs_plugin.py` gates session start with typed prerequisite checks, examples shown below:
 
 | Check | Required | Failure Behaviour |
 |---|---|---|
@@ -298,16 +202,6 @@ pytest tests/e2e/stack_validation/test_my_feature.py --collect-only -q --no-gpu
 | Disk space ≥ threshold | Required | Session abort |
 | PyTorch importable + ROCm backend | Optional | Tests with `layer.ml_framework` skipped |
 | Network reachable (for remote executors) | Optional | SSH tests skipped |
-
-Required failures emit a structured message listing every failed check and the expected vs. actual value, then abort the session immediately. Optional failures skip dependent tests without aborting.
-
-```bash
-# Audit prerequisites without running tests
-rocm-test prereqs check
-
-# Attempt auto-remediation (installs missing packages, reloads modules)
-rocm-test prereqs install
-```
 
 ---
 
@@ -327,24 +221,7 @@ rocm-test prereqs install
 | `KILLED` | Framework terminated the process (VRAM exhaustion or OOM) |
 | `ERROR` | Unexpected exception in test or fixture setup/teardown |
 | `HEALTH_FAIL` | Pre- or post-execution GPU health check failed |
-| `PERF_DROP` | Measured value dropped below baseline threshold |
 | `REGRESSION` | Broader regression marker (encompasses `PERF_DROP` and error patterns) |
-
-**Allure integration:**
-
-```python
-def test_pytorch_rocm_smoke(gpu_fixture, allure_reporter):
-    with allure_reporter.step("Import PyTorch and verify ROCm backend"):
-        result = gpu_fixture.run(f"python3 -c {repr(_SCRIPT_PYTORCH_SMOKE)}")
-
-    assert "RESULT_OK" in result.stdout
-
-    # Attach raw output to the Allure step — visible in the dashboard
-    allure_reporter.attach(result.stdout, name="pytorch_smoke_output")
-
-    # Report a numeric metric — plotted in Allure trend charts
-    allure_reporter.metric("THROUGHPUT_STEPS_SEC", 142.7, unit="steps/s")
-```
 
 ---
 
@@ -396,193 +273,19 @@ flowchart TD
 
 ### Security & Compliance
 
-| Control | Tool | Trigger |
-|---|---|---|
-| Static analysis | Bandit | Every pull request (`security-scan.yml`) |
-| Dependency CVE scan | pip-audit | Every pull request |
-| Secret detection | Gitleaks | Every pull request |
-| Privileged op allowlist | `PrivilegedExecutor` | Runtime — blocks unlisted `sudo` commands |
-| Zero credentials in code | Config cascade + GHA secrets | Enforced by convention; Gitleaks catches violations |
+WIZ and other tools are considered
 
 ---
-
-### Performance Baselines & Regression Detection
-
-Benchmark expectations are stored as YAML files under `tests/e2e/performance/baselines/<arch>/`.
-
-```yaml
-# tests/e2e/performance/baselines/gfx942/rocblas.yaml
-DGEMM_TFLOPS:
-  expected: 24.5
-  tolerance_pct: 5.0       # PERF_DROP if measured < 23.275 TFLOPS
-  unit: TFLOPS
-
-RCCL_BW_GBPS:
-  expected: 180.0
-  tolerance_pct: 8.0
-  unit: GB/s
-```
-
-`baseline_fixture` reads the YAML for the current `--gpu-arch` and exposes `baseline_fixture.compare(key, measured_value)`. If the measured value falls outside the tolerance band, the outcome is classified as `PERF_DROP` rather than `FAIL` — so performance regressions are never buried in generic test failures.
-
-```python
-@pytest.mark.ci.nightly
-@pytest.mark.layer.math_lib
-@pytest.mark.hw.gpu
-@pytest.mark.runtime.medium
-def test_rocblas_dgemm_throughput(local_executor, allure_reporter, baseline_fixture):
-    result = local_executor.run("rocblas-bench -f gemm --transpA N --transpB N ...")
-    tflops = parse_metric(result.stdout, "TFLOPS")
-
-    allure_reporter.metric("DGEMM_TFLOPS", tflops, unit="TFLOPS")
-    baseline_fixture.compare("DGEMM_TFLOPS", tflops)   # raises PERF_DROP if out of band
-```
-
----
-
-## User Persona Workflows
-
-### QA Engineer: Writing a New Test
-
-**Goal:** Add a new functional E2E test for a ROCm stack feature.
-
-**Workflow:**
-
-```
-1. Identify the target layer and CI tier
-       │
-       ▼
-2. Clone the repo and set up the dev environment
-   git clone https://github.com/ROCm/rocm-tests.git
-   cd rocm-tests
-   python3 -m venv .venv && source .venv/bin/activate
-   pip install -r requirements-dev.txt
-       │
-       ▼
-3. (Optional) Use AI authoring to scaffold the test
-   claude
-   /new-test
-   > Validate that hipMemcpy completes within 50 ms for a 1 GB transfer on gfx942
-       │
-       ▼
-4. Place the file in the correct layer directory
-   tests/e2e/<layer>/test_<feature>.py
-   (match directory to the layer.* marker you intend to use)
-       │
-       ▼
-5. Write/edit the test — minimum three required markers
-       │
-       ▼
-6. Validate locally without GPU hardware
-   pytest tests/e2e/stack_validation/test_my_feature.py --collect-only -q --no-gpu
-       │
-       ▼
-7. Run lint and DryRun suite
-   ruff check framework tests
-   black --check framework tests
-   pytest tests/ -m "not hw.gpu" --no-gpu -v
-       │
-       ▼
-8. (Optional) Four-persona AI review
-   /check-test tests/e2e/stack_validation/test_my_feature.py
-       │
-       ▼
-9. Open pull request — CI runs automatically
-```
-
-**Minimum valid test template:**
-
-```python
-# tests/e2e/stack_validation/test_my_feature.py
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: MIT
-
-import pytest
-
-
-@pytest.mark.ci.pr            # required: CI gate dimension
-@pytest.mark.layer.runtime    # required: ROCm stack layer dimension
-@pytest.mark.hw.cpu_only      # required: hardware requirement dimension
-@pytest.mark.runtime.fast     # recommended: wall-time estimate for sharding
-def test_my_feature_dryrun(dry_run_executor, allure_reporter):
-    """Verify feature X is reachable in DryRun mode (no GPU required)."""
-    with allure_reporter.step("Run feature check"):
-        result = dry_run_executor.run("echo RESULT_OK")
-
-    assert result.ok
-    assert "RESULT_OK" in result.stdout
-
-
-@pytest.mark.ci.nightly
-@pytest.mark.layer.runtime
-@pytest.mark.hw.gpu
-@pytest.mark.runtime.fast
-@pytest.mark.os.linux
-def test_my_feature_gpu(local_executor, allure_reporter):
-    """Verify feature X on real AMD GPU hardware."""
-    with allure_reporter.step("Execute GPU check"):
-        result = local_executor.run("python3 -c 'print(\"RESULT_OK\")'")
-
-    assert result.exit_code == 0
-    assert "RESULT_OK" in result.stdout
-```
-
-**Layer → directory mapping:**
-
-| `layer.*` marker | Directory |
-|---|---|
-| `layer.runtime` | `tests/e2e/stack_validation/`, `tests/e2e/compiler/` |
-| `layer.math_lib` | `tests/e2e/multi_gpu/` |
-| `layer.ml_framework` | `tests/e2e/ml_frameworks/` |
-| `layer.driver` | `tests/e2e/recovery/`, `tests/e2e/upgrade/` |
-| `layer.debug_stack` | `tests/e2e/debug_stack/` |
-
----
-
-### Automation Engineer: Extending the Framework
-
-**Goal:** Add a new executor, plugin, or extend the marker taxonomy.
-
-**Adding a new executor:**
-
-1. Create `framework/executors/my_executor.py` implementing the `AbstractExecutor` interface
-2. Expose a pytest fixture in `framework/plugins/gpu_plugin.py` (or a new plugin file)
-3. Register the plugin in `conftest.py → pytest_plugins`
-4. Write a DryRun-compatible test under `tests/dry_run/` to validate the new executor in CI
-
-```python
-# framework/executors/my_executor.py
-from framework.executors.abstract_executor import AbstractExecutor
-from framework.common.helpers import ExecutionResult
-
-
-class MyExecutor(AbstractExecutor):
-    def run(self, command: str, timeout: int = 300) -> ExecutionResult:
-        # ... implementation
-        return ExecutionResult(exit_code=0, stdout="", stderr="")
-```
-
-**Adding a new marker value:**
-
-All valid marker values live in `framework/markers/taxonomy.py → MARKER_SCHEMA`. Adding a value anywhere else will cause `MarkerLinter` to reject it.
-
-```python
-# framework/markers/taxonomy.py
-MARKER_SCHEMA = {
-    "hw": ["gpu", "multi_gpu", "cpu_only"],
-    "ci": ["pr", "nightly", "weekly", "smoke_e2e"],
-    "layer": ["driver", "runtime", "math_lib", "ml_framework", "debug_stack", "my_new_layer"],  # ← add here
-    ...
-}
-```
 
 **Extending the AI agent (skills):**
+
+> Agent skill sets are being defined and will be available after base framework is established 
 
 Agent definitions live in `.claude/agents/`. Each `.md` file defines a skill's prompt, tools, and output format. Add a new `.md` file to expose a new slash command; the agent auto-loads on next `claude` session start.
 
 ---
 
-### DevOps Engineer: Managing CI and Reporting
+###  Managing CI and Reporting
 
 **Goal:** Operate and tune the CI pipeline, Allure dashboards, and runner provisioning.
 
@@ -634,60 +337,7 @@ allure open build/allure-report
 
 ---
 
-### New Contributor: First Test in 15 Minutes
-
-**Goal:** Understand the framework and get a test running in the shortest possible path.
-
-```bash
-# Step 1: Set up the environment (2 min)
-git clone https://github.com/ROCm/rocm-tests.git
-cd rocm-tests
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
-
-# Step 2: Verify the framework runs without GPU (1 min)
-pytest tests/ -m "not hw.gpu" --no-gpu -v --tb=short
-# All tests should pass — this is your baseline.
-
-# Step 3: Preview the existing test catalogue (1 min)
-pytest tests/ --collect-only -q --no-gpu
-# Browse the test IDs and marker expressions.
-
-# Step 4: Copy an existing test as your starting point (2 min)
-cp tests/e2e/stack_validation/test_hip_runtime.py \
-   tests/e2e/stack_validation/test_my_first_test.py
-
-# Step 5: Edit — change the function name, docstring, and command (5 min)
-# At minimum, update:
-#   - def test_<your_name>(...)
-#   - the command passed to executor.run(...)
-#   - the assertion on result.stdout
-
-# Step 6: Verify collection (30 sec)
-pytest tests/e2e/stack_validation/test_my_first_test.py --collect-only -q --no-gpu
-
-# Step 7: Run in DryRun mode (30 sec)
-pytest tests/e2e/stack_validation/test_my_first_test.py --no-gpu -v
-
-# Step 8: Lint (1 min)
-ruff check tests/e2e/stack_validation/test_my_first_test.py
-black --check tests/e2e/stack_validation/test_my_first_test.py
-
-# Step 9: Open a PR — CI handles the rest
-```
-
-If anything is unclear, open Claude Code in the repo root and ask:
-
-```bash
-claude
-/check-test tests/e2e/stack_validation/test_my_first_test.py
-```
-
-The agent reviews the file from four perspectives and lists the top three actionable improvements.
-
----
-
-## Per-Test Execution Pipeline
+## Test Execution Flow
 
 Every test, regardless of executor or CI tier, passes through the same pipeline:
 
@@ -720,11 +370,3 @@ flowchart TD
     R -- NO --> T[Log error: max retries exceeded]
     T --> FAIL([FAIL])
 ```
-
-**Key pipeline invariants:**
-
-- Config and prereq checks run **once per session**, not per test
-- GPU allocation and health checks run **per test** via `gpu_fixture`
-- Artifact collection runs **on every failed attempt** (not just the final one)
-- Baseline comparison runs **only for tests that pass** (no point comparing a failing workload)
-- Allure JSON is written **regardless of outcome** — `HEALTH_FAIL` and `REGRESSION` both appear in the dashboard
