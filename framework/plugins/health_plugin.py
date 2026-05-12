@@ -222,7 +222,11 @@ class GpuHealthChecker:
     def _check_via_amd_smi(self, gpu_index: int) -> HealthResult:  # pylint: disable=too-many-locals
         """Run health checks via ``amd-smi metric --gpu N --json``."""
         from framework.executors.cpu_executor import CpuExecutor  # pylint: disable=import-outside-toplevel
-        from framework.rocm.libs.amd_smi import query_ecc_errors, query_gpu_temp, query_vram_usage  # pylint: disable=import-outside-toplevel
+        from framework.rocm.libs.amd_smi import (  # pylint: disable=import-outside-toplevel
+            query_ecc_errors,
+            query_gpu_temp,
+            query_vram_usage,
+        )
 
         # Prepend rock_dir/bin to PATH so the bundled amd-smi is preferred when set.
         env_overrides: dict = {}
