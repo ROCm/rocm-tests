@@ -1,0 +1,41 @@
+cmake_minimum_required(VERSION 3.16)
+
+if(NOT ROCM_PATH)
+  if(DEFINED ENV{ROCM_PATH})
+    set(ROCM_PATH "$ENV{ROCM_PATH}")
+  else()
+    set(ROCM_PATH "/opt/rocm")
+  endif()
+endif()
+set(ENV{ROCM_PATH} "${ROCM_PATH}")
+
+if(NOT GPU_ARCH)
+  set(GPU_ARCH "gfx950" CACHE STRING "HIP offload arch, e.g. gfx950 gfx942")
+endif()
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_CXX_COMPILER MATCHES "hipcc")
+  set(_HIPCC "${ROCM_PATH}/bin/hipcc")
+  if(EXISTS "${_HIPCC}")
+    set(CMAKE_CXX_COMPILER "${_HIPCC}" CACHE FILEPATH "HIP compiler" FORCE)
+  endif()
+endif()
+
+project(hwq_heuristic_test LANGUAGES CXX)
+
+list(APPEND CMAKE_PREFIX_PATH "${ROCM_PATH}")
+find_package(hip CONFIG QUIET)
+if(hip_FOUND)
+  set(HIP_LIBS hip::host)
+else()
+  set(HIP_LIBS amdhip64)
+  include_directories("${ROCM_PATH}/include")
+  link_directories("${ROCM_PATH}/lib")
+endif()
+
+add_executable(hwq_heuristic_test hwq_heuristic_test.cpp)
+target_compile_options(hwq_heuristic_test PRIVATE -O3 "--offload-arch=${GPU_ARCH}")
+target_link_libraries(hwq_heuristic_test PRIVATE ${HIP_LIBS})

@@ -1,0 +1,119 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
+name: E2E Nightly Tests
+
+on:
+  schedule:
+    - cron: "0 2 * * *"  # 02:00 UTC daily
+  workflow_call:
+    inputs:
+      artifact_run_id:
+        type: string
+      amdgpu_family:
+        type: string
+      test_runs_on:
+        type: string
+      pytest_k_expr:
+        type: string
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        type: string
+        description: "Pull Linux artifacts using this artifact_run_id"
+        default: ""
+      amdgpu_family:
+        type: string
+        description: "AMD GPU family to test (e.g. gfx90a, gfx94X-dcgpu, gfx120X)"
+      test_runs_on:
+        type: string
+        description: "Runner label for the test job"
+      pytest_k_expr:
+        type: string
+        description: "pytest -k expression to narrow test selection"
+
+permissions:
+  contents: read
+
+jobs:
+  e2e_nightly:
+    name: "E2E Nightly"
+    runs-on: ${{ inputs.test_runs_on || 'sc-hw-rocmci-31' }}
+    timeout-minutes: 210
+    container:
+      image: ${{ 'ghcr.io/rocm/no_rocm_image_ubuntu24_04@sha256:4150afe4759d14822f0e3f8930e1124f26e11f68b5c7b91ec9a02b20b1ebbb98' || null }}
+      options: >-
+        --ipc host
+        --device /dev/kfd
+        --device /dev/dri
+        --volume /sys/class/kfd:/sys/class/kfd:ro
+        --group-add video
+        --group-add render
+        --user 1001:1001
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Checkout rocm-tests
+        uses: actions/checkout@v4
+
+      - name: Checkout TheRock
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: "ROCm/TheRock"
+          ref: b68757b3461145b85eabec29cea1223027a56da0 # 2026-04-01
+          path: TheRock
+
+      - name: Install TheRock artifacts
+        run: |
+          cd TheRock
+          pip install -r requirements-test.txt
+          python3 build_tools/install_rocm_from_artifacts.py \
+            --output-dir ../therock_build \
+            --tests \
+            --amdgpu-family ${{ inputs.amdgpu_family || 'gfx90a' }} \
+            --latest-release
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
+        with:
+          version: "0.7.x"
+          enable-cache: true
+
+      - name: Install test dependencies
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          uv pip install -r requirements.txt
+
+      - name: Run nightly tests
+        env:
+          COMMIT_ID: ${{ github.sha }}
+          CURRENT_BRANCH: ${{ github.ref_name }}
+          PYTEST_K_EXPR: ${{ inputs.pytest_k_expr }}
+        run: |
+          source .venv/bin/activate
+          pytest tests/e2e/compiler/test_llvm.py tests/e2e/hwq_heuristic/ \
+            -m "ci.nightly and hw.gpu" \
+            --rock-dir=therock_build \
+            --html=nightly_report.html --self-contained-html \
+            --tb=short \
+            -v \
+            ${PYTEST_K_EXPR:+-k "$PYTEST_K_EXPR"}
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-artifacts-${{ github.run_id }}
+          path: |
+            nightly_report.html
+            output/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore

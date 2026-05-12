@@ -1,0 +1,218 @@
+# pyproject.toml — rocm-test-v2 tool configuration.
+#
+# PURPOSE: This file contains ONLY tool configuration (ruff, black, mypy, pylint,
+#          pytest markers). It does NOT list package dependencies.
+#
+# DEPENDENCIES: See requirements.txt (runtime) and requirements-dev.txt (dev).
+#               Install with: pip install -r requirements-dev.txt
+#
+# The minimal [project] section below is included so tools that probe project
+# metadata (e.g. mypy, bandit) can identify the package. It intentionally omits
+# [project.dependencies] — all deps live in requirements.txt.
+
+[project]
+name = "rocm-tests"
+version = "0.1.0"
+description = "ROCm System E2E Test Framework — minimal base"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+# NOTE: No 'dependencies' key here. See requirements.txt.
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+# Add repo root to sys.path so `from framework.xxx import yyy` works without
+# `pip install -e .`. Tests and framework code are importable directly.
+pythonpath = ["."]
+testpaths  = ["tests"]
+log_cli        = true
+log_level      = "INFO"
+log_cli_format = "%(asctime)s %(levelname)-8s %(name)s:%(filename)s:%(lineno)d %(message)s"
+log_date_format = "%H:%M:%S"
+
+# Directories that are NOT test files — pytest must never descend into them.
+# tests/common/   : Shared test data factories (factories.py) — not test files
+# tests/e2e/performance/baselines/ : YAML data files, no Python test code
+# framework/      : framework library — imported by tests but not a test root
+norecursedirs  = [
+    "tests/common",
+    "tests/e2e/performance/baselines",
+    "framework",
+    "build",
+    "output",
+    "docs",
+    ".venv",
+    "*.egg-info",
+]
+
+markers = [
+    # Dimension namespaces — registered so @pytest.mark.dim.val doesn't warn
+    # on the intermediate 'dim' mark created by Python attribute lookup.
+    "hw: hardware requirement dimension (use hw.gpu / hw.multi_gpu / hw.cpu_only)",
+    "ci: CI gate dimension (use ci.pr / ci.nightly / ci.weekly / ci.smoke_e2e)",
+    "layer: ROCm stack layer dimension (use layer.driver / layer.runtime / …)",
+    "runtime: expected duration dimension (use runtime.fast / runtime.medium / …)",
+    "os: target platform dimension (use os.linux / os.windows / os.wsl / os.both)",
+    "e2e: scenario type dimension (use e2e.stack / e2e.multinode / e2e.app / e2e.upgrade)",
+    # Hardware
+    "hw.gpu: requires AMD GPU hardware",
+    "hw.multi_gpu: requires two or more AMD GPUs",
+    "hw.cpu_only: no GPU hardware required",
+    # CI gate
+    "ci.pr: run on every pull request (DryRun-safe, < 5 min)",
+    "ci.nightly: run in nightly CI (GPU required, < 30 min/test)",
+    "ci.weekly: run in weekly CI (GPU required, hours)",
+    "ci.smoke_e2e: smoke E2E test",
+    # ROCm stack layer (Examples)
+    "layer.driver: tests the amdgpu kernel driver layer",
+    "layer.runtime: tests the HIP runtime layer",
+    "layer.math_lib: tests compute libraries (rocBLAS, RCCL, ...)",
+    "layer.ml_framework: tests third-party ML frameworks on ROCm",
+    "layer.debug_stack: tests the ROCm debug/profiling stack",
+    # Expected duration
+    "runtime.fast: < 5 minutes",
+    "runtime.medium: < 30 minutes",
+    "runtime.longevity: < 2 hours",
+    "runtime.soak: hours (extended stability)",
+    # Platform
+    "os.linux: Linux-only test",
+    "os.windows: Windows-only test",
+    "os.both: runs on both Linux and Windows",
+    # Scenario type
+    "e2e.stack: full-stack scenario test",
+    "e2e.multinode: multi-node test",
+    "e2e.app: third-party application integration test",
+    "e2e.upgrade: ROCm upgrade path test",
+    # Resource requirements (optional)
+    "gpu_vram(n): minimum VRAM required in GB (e.g. @pytest.mark.gpu_vram(16))",
+    "gpu_count(n): minimum GPU count per node (e.g. @pytest.mark.gpu_count(2))",
+    # Container routing
+    "container_image(image): Docker/Podman image for container_executor fixture",
+]
+
+# ---------------------------------------------------------------------------
+# Black (formatter)
+# ---------------------------------------------------------------------------
+[tool.black]
+line-length    = 120
+target-version = ["py310", "py311", "py312"]
+exclude = '''
+/(
+    \.eggs | \.git | \.venv | venv | build | output | dist | \.mypy_cache
+)/
+'''
+
+# ---------------------------------------------------------------------------
+# Ruff (fast linter + isort)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length    = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "PT",   # flake8-pytest-style
+    "C90",  # McCabe complexity
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "UP007",  # X | Y union — keep Optional[X] for 3.10 clarity
+    "B008",   # function call in default arg — dataclass field() is intentional
+    "RUF012", # mutable class-var — dataclass fields handled by stdlib
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "PT004",  # fixture yields nothing — autouse fixtures
+    "PT019",  # fixture param without value — test helper parameters
+    "B011",   # assert False — test sentinels
+    "N803",   # argument lowercase — pytest injection dictates names
+]
+"conftest.py" = ["PT004"]
+"framework/executors/background_process.py" = [
+    "SIM115", # open-without-context-manager — log file append pattern intentional
+]
+"framework/nodes/pending_tracker.py" = [
+    "SIM105", # suppress-exception — try/except/pass is clearer for optional cleanup
+]
+"framework/gpu/monitor.py" = [
+    "C901",   # complex-structure — _run polling loop is inherently complex
+]
+
+[tool.ruff.lint.isort]
+known-first-party         = ["framework"]
+force-sort-within-sections = true
+combine-as-imports         = true
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+# ---------------------------------------------------------------------------
+# Mypy (type checker)
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version      = "3.10"
+warn_return_any     = true
+warn_unused_configs = true
+warn_unused_ignores = true
+no_implicit_optional = true
+show_error_codes    = true
+
+[[tool.mypy.overrides]]
+module = ["allure", "allure.*", "paramiko", "paramiko.*",
+          "pexpect", "pexpect.*", "yaml", "tomli", "tomllib", "xdist", "xdist.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# Pylint (deep static analysis)
+# ---------------------------------------------------------------------------
+[tool.pylint.main]
+jobs       = 4
+recursive  = true
+ignore-paths = ["^\\.venv/.*$", "^build/.*$", "^output/.*$"]
+
+[tool.pylint."messages control"]
+disable = [
+    "C0114",  # missing-module-docstring — all modules carry docstrings
+    "C0115",  # missing-class-docstring
+    "C0116",  # missing-function-docstring
+    "R0903",  # too-few-public-methods — ABCs / dataclasses minimal by design
+    "R0913",  # too-many-arguments — framework constructors need params
+    "R0801",  # duplicate-code — Linux/Windows adapter symmetry
+    "W0212",  # protected-access — tests validly inspect private state
+    "W0511",  # fixme/todo — tracked in issues
+    "E1101",  # generated-members — allure, paramiko lack stubs
+]
+
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.pylint.design]
+max-args        = 10
+max-attributes  = 15
+min-public-methods = 1
+
+[tool.pylint.similarities]
+ignore-imports     = true
+ignore-docstrings  = true
+min-similarity-lines = 8
+
+# ---------------------------------------------------------------------------
+# Bandit (SAST)
+# ---------------------------------------------------------------------------
+[tool.bandit]
+targets = ["framework"]
+skips   = [
+    "B404",  # import subprocess — required for GPU command execution
+    "B603",  # subprocess_without_shell_equals_true — list-form Popen calls are safe
+    "B101",  # assert — acceptable in internal framework helpers
+]
