@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 """
-detector.py -- AMD GPU detection via lspci (primary) with amd-smi diagnostics.
+detector.py -- AMD GPU detection via lspci (primary) + KFD sysfs (fallback) with amd-smi diagnostics.
 
 Provides:
     GpuInfo         -- Immutable descriptor for a single detected AMD GPU.
@@ -12,13 +12,15 @@ Provides:
 Detection strategy:
     Primary: ``lspci -d 1002: -nn`` — kernel PCI bus enumeration; requires no AMD
     driver and no ROCm installation; works locally and over SSH.  Returns
-    GpuInfo with ``arch="unknown"`` and ``vram_mb=0`` (amd-smi/KFD re-enablement
-    will fill these fields in a future phase).
+    GpuInfo with ``arch="unknown"`` and ``vram_mb=0``.
 
-    KFD sysfs and amd-smi detection are currently disabled (commented out in
-    ``detect()``).  They can be re-enabled when driver reliability improves.
+    Fallback: KFD sysfs (``/sys/class/kfd/kfd/topology/nodes``) — used when
+    ``lspci`` is absent (e.g. inside containers without pciutils).  Requires
+    no binary and no elevated permissions; also populates ``arch`` and ``vram_mb``.
 
-    Diagnostics: when lspci detects N > 0 GPUs, ``amd-smi list`` is executed once
+    amd-smi detection is currently disabled (commented out in ``detect()``).
+
+    Diagnostics: when GPUs are detected, ``amd-smi list`` is executed once
     on the same node for human inspection.  Its output is written to the console
     and to ``output/artifacts/gpu-info-<node>.log``.  The result is NEVER used
     for scheduling or allocation decisions.
@@ -102,15 +104,18 @@ def _kfd_gfx_version(raw: str) -> str:
 class GpuDetector(AbstractGpuDetector):
     """Detect AMD GPUs from the host system (local) or a remote node (SSH).
 
-    Detection strategy (current phase):
+    Detection strategy:
         Primary: ``lspci -d 1002: -nn`` — kernel PCI bus enumeration; requires no
-        AMD driver; works locally and over SSH.  Returns GpuInfo with
-        ``arch="unknown"`` and ``vram_mb=0`` until KFD/amd-smi is re-enabled.
+        AMD driver; works locally and over SSH.
 
-        KFD sysfs and amd-smi detection are disabled (commented out in
-        ``detect()``) and can be re-enabled in a future phase.
+        Fallback: KFD sysfs (``/sys/class/kfd/kfd/topology/nodes``) — activated
+        when ``lspci`` is absent (e.g. containers without pciutils installed).
+        Requires no binary and no elevated permissions; also returns ``arch``
+        and ``vram_mb``.
 
-        Diagnostics: ``amd-smi list`` runs once when lspci count > 0 and its
+        amd-smi detection is disabled (commented out in ``detect()``).
+
+        Diagnostics: ``amd-smi list`` runs once when GPUs are detected and its
         output is captured to ``output/artifacts/gpu-info-<node>.log`` for
         human inspection only.
 
@@ -143,11 +148,10 @@ class GpuDetector(AbstractGpuDetector):
         without repeating detection commands.
 
         Primary: ``lspci -d 1002: -nn`` (works locally and over SSH; requires no
-        AMD driver).  When lspci detects GPUs, ``amd-smi list`` runs once for
-        diagnostic output only (never used for scheduling/allocation).
-
-        KFD sysfs and amd-smi detection are disabled below and can be
-        re-enabled in a future phase when driver reliability improves.
+        AMD driver).  Fallback: KFD sysfs when ``lspci`` is absent (e.g. inside
+        containers without pciutils).  When GPUs are detected by either method,
+        ``amd-smi list`` runs once for diagnostic output only (never used for
+        scheduling/allocation).  amd-smi detection is disabled below.
 
         Returns:
             List of ``GpuInfo``.  Empty list if no AMD GPUs are found.
@@ -170,15 +174,18 @@ class GpuDetector(AbstractGpuDetector):
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("GPU detection [%s]: lspci failed: %s", target, exc)
 
-        # --- KFD and amd-smi detection deferred; commented for future re-enablement ---
-        # try:
-        #     gpus = self._detect_via_kfd()
-        #     if gpus:
-        #         self._cached = gpus
-        #         return list(gpus)
-        # except Exception as exc:
-        #     logger.info("GPU detection [%s]: KFD sysfs failed (%s)", target, exc)
-        #
+        # FALLBACK: KFD sysfs — no binary required, works when lspci is absent
+        try:
+            gpus = self._detect_via_kfd()
+            if gpus:
+                self._cached = gpus
+                self._run_amd_smi_diagnostic(node_label=node_label)
+                return list(gpus)
+            logger.warning("GPU detection [%s]: KFD sysfs returned 0 GPUs", target)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.info("GPU detection [%s]: KFD sysfs failed (%s)", target, exc)
+
+        # --- amd-smi detection deferred; commented for future re-enablement ---
         # try:
         #     gpus = self._detect_via_amd_smi()
         #     if gpus:

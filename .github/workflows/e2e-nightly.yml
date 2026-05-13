@@ -5,7 +5,7 @@ name: E2E Nightly Tests
 
 on:
   schedule:
-    - cron: "0 2 * * *"  # 02:00 UTC daily
+    - cron: "0 3 * * *"  # 03:00 UTC daily
   workflow_call:
     inputs:
       artifact_run_id:
@@ -40,26 +40,11 @@ jobs:
     name: "E2E Nightly"
     runs-on: ${{ inputs.test_runs_on || 'sc-hw-rocmci-31' }}
     timeout-minutes: 210
-    container:
-      image: ${{ 'ghcr.io/rocm/no_rocm_image_ubuntu24_04@sha256:4150afe4759d14822f0e3f8930e1124f26e11f68b5c7b91ec9a02b20b1ebbb98' || null }}
-      options: >-
-        --ipc host
-        --device /dev/kfd
-        --device /dev/dri
-        --volume /sys/class/kfd:/sys/class/kfd:ro
-        --group-add video
-        --group-add render
-        --user 1001:1001
     defaults:
       run:
         shell: bash
 
     steps:
-      - name: Setup Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.12"
-
       - name: Checkout rocm-tests
         uses: actions/checkout@v4
 
@@ -73,12 +58,26 @@ jobs:
       - name: Install TheRock artifacts
         run: |
           cd TheRock
-          pip install -r requirements-test.txt
+          python3 -m pip install -r requirements-test.txt
           python3 build_tools/install_rocm_from_artifacts.py \
             --output-dir ../therock_build \
             --tests \
             --amdgpu-family ${{ inputs.amdgpu_family || 'gfx90a' }} \
             --latest-release
+
+      - name: Install ROCm system packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            pciutils \
+            kmod \
+            libdrm-amdgpu1
+
+      - name: Load amdgpu kernel module
+        run: |
+          if ! lsmod | grep -q amdgpu; then
+            sudo modprobe amdgpu
+          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
@@ -97,6 +96,7 @@ jobs:
           COMMIT_ID: ${{ github.sha }}
           CURRENT_BRANCH: ${{ github.ref_name }}
           PYTEST_K_EXPR: ${{ inputs.pytest_k_expr }}
+          LD_LIBRARY_PATH: "${{ github.workspace }}/therock_build/lib:${LD_LIBRARY_PATH}"
         run: |
           source .venv/bin/activate
           pytest tests/e2e/compiler/test_llvm.py tests/e2e/hwq_heuristic/ \
