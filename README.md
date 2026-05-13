@@ -36,6 +36,20 @@ Dynamic Scheduling autodetects available GPU resources at session start, constru
 
 ---
 
+## Future Considerations
+
+> *From deterministic validator to intelligent, adaptive testing ecosystem.*
+
+The framework is designed to evolve. The current architecture — deterministic execution, governed markers, and structured artifact capture — provides the observability foundation that agentic systems require to act reliably. The next phase actively explores integrating Agentic AI across the full test lifecycle:
+
+- **Predictive test selection** — Models trained on historical pass/fail signals, changed-file fingerprints, and GPU health metrics to surface the highest-risk tests first, shrinking feedback loops without sacrificing coverage.
+- **Automated code review** — Agent-driven/Post-Hook commit analysis that enforces marker taxonomy, fixture correctness, assertion strength, and CI-gate placement before a PR is opened.
+- **Flakiness profiling** — Continuous cross-run correlation of intermittent failures against GPU health signals, timing variance, and environmental drift to classify true flakes versus latent hardware degradation.
+- **Automated root cause analysis** — Structured artifact bundles (GPU state dumps, kernel module snapshots, Allure traces) fed to an analysis agent that produces a ranked hypothesis list and links directly to the relevant framework code path.
+- **Self-healing CI workflows** — Detect systematic failure patterns, propose targeted test updates, infrastructure remediations, and open draft PRs for human review — closing the loop from failure detection to corrective action without manual triage.
+
+---
+
 ## Quickstart
 
 ### Step 1 — Clone and install
