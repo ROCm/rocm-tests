@@ -1,0 +1,53 @@
+site_name: rocm-test-v2
+site_description: AMD ROCm System E2E Test Framework Documentation
+repo_url: https://github.com/ROCm/rocm-test
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep orange
+      accent: orange
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - toc.integrate
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]          # Repo root is on PYTHONPATH; import framework.*
+          options:
+            docstring_style: google
+            show_source: true
+            show_signature_annotations: true
+            members_order: source
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Marker Reference: markers.md
+  - API Reference:
+      - framework.config: api/config.md
+      - framework.common: api/common.md
+      - framework.gpu: api/gpu.md
+      - framework.executors: api/execution.md
+      - framework.markers: api/markers.md
+      - framework.reporting: api/reporting.md
+      - framework.rocm.libs: api/rocm.md
+      - framework.os_adapter: api/os_adapter.md
+      - Plugins: api/plugins.md
+  - Design Notes:
+      - Executor Scalability: executor-scalability-plan.md
+      - Framework Architecture: test-framework-architecture.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - tables
+
+# Build: mkdocs build --strict --site-dir build/site
+# Serve: mkdocs serve
