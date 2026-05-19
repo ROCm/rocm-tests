@@ -32,7 +32,14 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -r requirements-dev.txt
 
-      # black
-      # mypy
-      # ruff
-      # pylint, enable in next PR with base-framework
+      - name: black — format check
+        run: black --check --diff framework tests
+
+      - name: ruff — lint check
+        run: ruff check framework tests
+
+      - name: mypy — type check
+        run: mypy framework --show-error-codes
+
+      - name: pylint — quality score
+        run: pylint framework --fail-under=9.5
