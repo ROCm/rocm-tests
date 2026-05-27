@@ -578,10 +578,19 @@ def pytest_configure(config: pytest.Config) -> None:
 
     total = pool.total_gpu_slots()
     if total == 0:
+        topo = pool.topology_summary() if hasattr(pool, "topology_summary") else "unavailable"
         pytest.exit(
-            "[rocm-test] ERROR: GPU detection completed but 0 slots available on all nodes. "
-            "Check ROCm driver (sudo cat /sys/class/kfd/kfd/topology/nodes/*/properties). "
-            "Use --no-gpu to run without hardware.",
+            "\n[rocm-test] ERROR: All GPU detection methods (lspci, KFD sysfs, amd-smi) "
+            f"returned 0 devices on all nodes. 0 slots available. Topology: {topo}\n"
+            "  Common causes in containers:\n"
+            "    1. GPU not passed through — verify container --device /dev/kfd --device /dev/dri flags\n"
+            "    2. ROCm amdgpu driver not loaded on the host — check: lsmod | grep amdgpu\n"
+            "    3. /sys/class/kfd sysfs not exposed inside the container namespace\n"
+            "    4. amd-smi not found at <rock_dir>/bin/amd-smi — verify --rock-dir path\n"
+            "    5. --gpu-arch filter mismatch — lspci reports arch='unknown'; only KFD/amd-smi\n"
+            "       return real arch strings; if --gpu-arch is set, lspci-only detections are excluded\n"
+            "  See diagnostic output above for raw lspci and KFD sysfs details.\n"
+            "  Use --no-gpu to run without hardware.",
             returncode=3,
         )
 
@@ -835,10 +844,11 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
 
     # GPU slot acquisition via NodePool
     if node_pool is None:
-        pytest.skip("target_executor: no NodePool available — use --no-gpu or check GPU detection")
+        pytest.fail(
+            "target_executor: NodePool initialisation failed — GPU detection error or driver fault. Check session logs."
+        )
         return
 
-    gpu_arch = config.getoption("--gpu-arch", default=None)
     acquire_timeout = config.getoption("--gpu-acquire-timeout", default=30.0)
     monitor_gpu = config.getoption("--monitor-gpu", default=False)
     health_metrics = _resolve_health_metrics(config, framework_config)
@@ -870,7 +880,6 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
         try:
             multi_list: list[MultiGpuSlots] = node_pool.acquire_multi_node(
                 gpu_count_per_node=gpu_count_per_node,
-                arch=gpu_arch,
                 vram_required_gb=vram_required_gb,
                 wait_timeout_secs=acquire_timeout,
                 test_id=test_name,
@@ -962,7 +971,6 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
         try:
             multi: MultiGpuSlots = node_pool.acquire_slots(
                 count=count,
-                arch=gpu_arch,
                 vram_required_gb=vram_required_gb,
                 wait_timeout_secs=acquire_timeout,
                 test_id=test_name,
@@ -1032,13 +1040,18 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
     # -------------------------------------------------------------------------
     try:
         slot: NodeSlot = node_pool.acquire_slot(
-            arch=gpu_arch,
             vram_required_gb=vram_required_gb,
             wait_timeout_secs=acquire_timeout,
             test_id=test_name,
         )
     except RuntimeError as exc:
-        pytest.skip(f"TEST PLATFORM missing required GPUs: {exc}")
+        if node_pool.total_gpu_slots() == 0:
+            pytest.fail(
+                f"No GPUs detected on this platform — GPU driver or hardware missing. "
+                f"Topology: {node_pool.topology_summary()}"
+            )
+        else:
+            pytest.skip(f"TEST PLATFORM missing required GPUs (transient): {exc}")
         return
 
     _console_slot_acquired(node_pool, slot, test_name, session_log)
@@ -1144,13 +1157,15 @@ def multi_gpu_fixture(request, framework_config, node_pool):
         return
 
     if node_pool is None:
-        pytest.skip("multi_gpu_fixture: no NodePool available")
+        pytest.fail(
+            "multi_gpu_fixture: NodePool initialisation failed — GPU detection error"
+            " or driver fault. Check session logs."
+        )
         return
 
     gpu_count_marker = request.node.get_closest_marker("gpu_count")
     count = int(gpu_count_marker.args[0]) if gpu_count_marker and gpu_count_marker.args else 2
 
-    gpu_arch = config.getoption("--gpu-arch", default=None)
     acquire_timeout = config.getoption("--gpu-acquire-timeout", default=30.0)
     monitor_gpu = config.getoption("--monitor-gpu", default=False)
     health_metrics = _resolve_health_metrics(config, framework_config)
@@ -1162,7 +1177,6 @@ def multi_gpu_fixture(request, framework_config, node_pool):
     try:
         multi: MultiGpuSlots = node_pool.acquire_slots(
             count=count,
-            arch=gpu_arch,
             wait_timeout_secs=acquire_timeout,
             test_id=test_name,
         )
@@ -1274,7 +1288,10 @@ def multi_node_fixture(request, framework_config, node_pool):  # noqa: C901
         return
 
     if node_pool is None:
-        pytest.skip("multi_node_fixture: no NodePool available")
+        pytest.fail(
+            "multi_node_fixture: NodePool initialisation failed — GPU detection error"
+            " or driver fault. Check session logs."
+        )
         return
 
     if len(node_pool.node_specs) < 2:
@@ -1284,7 +1301,6 @@ def multi_node_fixture(request, framework_config, node_pool):  # noqa: C901
     gpu_count_marker = request.node.get_closest_marker("gpu_count")
     gpu_count_per_node = int(gpu_count_marker.args[0]) if gpu_count_marker and gpu_count_marker.args else 1
 
-    gpu_arch = config.getoption("--gpu-arch", default=None)
     acquire_timeout = config.getoption("--gpu-acquire-timeout", default=30.0)
     monitor_gpu = config.getoption("--monitor-gpu", default=False)
     health_metrics = _resolve_health_metrics(config, framework_config)
@@ -1296,7 +1312,6 @@ def multi_node_fixture(request, framework_config, node_pool):  # noqa: C901
     try:
         multi_list: list[MultiGpuSlots] = node_pool.acquire_multi_node(
             gpu_count_per_node=gpu_count_per_node,
-            arch=gpu_arch,
             wait_timeout_secs=acquire_timeout,
             test_id=test_name,
         )

@@ -337,6 +337,9 @@ def run_cmd_get_stdout_stderr(
             chunk = _read_stream(process.stderr)
             stderr_buf += chunk
 
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
     ret = process.wait()
     status = "success" if ret == 0 else "failed"
     logger.info("[%s] %s (exit=%d)", shlex.join(cmd), status, ret)

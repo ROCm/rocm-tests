@@ -101,9 +101,9 @@ def rock_dir(request: pytest.FixtureRequest, framework_config) -> str:
     Returns:
         Absolute, realpath-resolved path string.
 
-    Skips:
-        The test (or fixture chain) is skipped with a clear message when no
-        path is available from any source.
+    Raises:
+        pytest.fail.Exception: When no path is available from any source — this is
+            a CI environment defect, not a resource shortage.
     """
     path: str | None = (
         request.config.getoption("--rock-dir", default=None)
@@ -113,7 +113,7 @@ def rock_dir(request: pytest.FixtureRequest, framework_config) -> str:
         or None
     )
     if not path:
-        pytest.skip(
+        pytest.fail(
             "rock_dir not configured — pass --rock-dir=<path>, "
             "set ROCK_DIR=<path>, or set [therock] rock_dir in rocm-test.toml"
         )
@@ -167,7 +167,52 @@ def ld_path(rock_dir: str) -> dict:  # pylint: disable=redefined-outer-name
 
 
 @pytest.fixture(scope="session")
-def compile_binary(rock_dir: str, compiler_build_dir: str, framework_config):  # pylint: disable=redefined-outer-name
+def arch_lib_path(gpu_arch: str | None):
+    """Return a callable that resolves an arch-specific library sub-directory path.
+
+    Many ROCm libraries (hipBLASLt/Tensile, etc.) store arch-specific loadable
+    files — ``.dat``, ``.hsaco``, ``.co`` — under a per-arch subdirectory:
+
+    .. code-block:: text
+
+        <base>/<arch>/TensileLibrary_lazy_<arch>.dat
+        <base>/<arch>/Kernels.so-000-<arch>.hsaco
+
+    When ``--gpu-arch`` is supplied the callable appends ``/<arch>`` to *base*
+    so the runtime finds its files without relying on internal auto-detection.
+    When ``--gpu-arch`` is absent the base path is returned unchanged (runtime
+    fallback; may fail if files only exist under an arch subdir).
+
+    Usage in a test::
+
+        def test_foo(target_executor, arch_lib_path, rock_dir):
+            tensile_base = pathlib.Path(rock_dir) / "lib" / "hipblaslt" / "library"
+            tensile_lib = arch_lib_path(tensile_base)
+            result = target_executor.run(
+                f"env HIPBLASLT_TENSILE_LIBPATH={tensile_lib} ./my_binary"
+            )
+
+    Args:
+        gpu_arch: Architecture string from the session-scoped ``gpu_arch`` fixture
+                  (e.g. ``"gfx90a"``), or ``None``.
+
+    Returns:
+        Callable ``(base: str | pathlib.Path) -> str`` that appends ``/<arch>``
+        when *gpu_arch* is set, or returns ``str(base)`` otherwise.
+    """
+    import pathlib as _pathlib
+
+    def _resolve(base) -> str:
+        p = _pathlib.Path(base)
+        return str(p / gpu_arch) if gpu_arch else str(p)
+
+    return _resolve
+
+
+@pytest.fixture(scope="session")
+def compile_binary(
+    rock_dir: str, compiler_build_dir: str, framework_config, gpu_arch: str | None
+):  # pylint: disable=redefined-outer-name
     """Return a compile factory pre-bound to rock_dir and compiler_build_dir.
 
     The returned callable wraps ``BinaryBuilder`` so that any e2e test can
@@ -197,7 +242,8 @@ def compile_binary(rock_dir: str, compiler_build_dir: str, framework_config):  #
         std:          C++ standard (default ``"c++17"``).
         opt:          Optimisation flag (default ``"-O2"``).
         arch:         GPU arch target, e.g. ``"gfx942"`` → ``--offload-arch=gfx942``.
-                      ``None`` means hipcc auto-detects from the ROCm device list.
+                      ``None`` falls back to ``--gpu-arch`` CLI option; if that is
+                      also absent hipcc auto-detects from the ROCm device list.
         subdir:       Sub-directory under ``compiler_build_dir`` for this
                       component's binaries (e.g. ``"compiler"``, ``"multi_gpu"``).
                       Creates ``output/test-binaries/<subdir>/`` on first call.
@@ -228,6 +274,7 @@ def compile_binary(rock_dir: str, compiler_build_dir: str, framework_config):  #
         arch: str | None = None,
         subdir: str | None = None,
     ) -> str:
+        resolved_arch = arch if arch is not None else gpu_arch
         out_dir = os.path.join(compiler_build_dir, subdir) if subdir else compiler_build_dir
         pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
         log_path = os.path.join(out_dir, output_name + ".build.log")
@@ -237,7 +284,7 @@ def compile_binary(rock_dir: str, compiler_build_dir: str, framework_config):  #
             output=os.path.join(out_dir, output_name),
             std=std,
             opt=opt,
-            arch=arch,
+            arch=resolved_arch,
             include_dirs=include_dirs,
             extra_flags=extra_flags,
             timeout=framework_config.therock.build_timeout_secs,

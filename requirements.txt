@@ -13,5 +13,6 @@ paramiko>=3          # SSH executor — remote node execution
 pexpect>=4           # InteractiveExecutor (Phase 2 — debug_stack tests; reserved)
 allure-pytest>=2.13  # Allure report generation
 pytest-html>=2.0,<4.0  # HTML report via --html=report.html --self-contained-html (--self-contained-html removed in v4)
+pytest-md-report>=0.6      # Markdown test-outcome table (--md-report --md-report-verbose=1)
 pyyaml>=6            # YAML parsing for baselines and matrix config
 tomli>=2; python_version < "3.11"  # TOML on Python 3.10 (stdlib tomllib on 3.11+)

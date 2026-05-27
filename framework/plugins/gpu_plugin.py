@@ -15,7 +15,7 @@ Loaded automatically via pytest_plugins in conftest.py.
 
 pytest options added:
     --no-gpu        Force DryRunExecutor for all tests; skip hw.gpu-marked tests.
-    --gpu-arch ARCH Filter GPU allocation to a specific GFX architecture.
+    --gpu-arch ARCH Target GFX architecture for compilation (--offload-arch) and test filtering.
     --mock-gpu      Use MockGpuDetector instead of real hardware detection.
     --rocm-config   Path to an alternate rocm-test.toml config file.
 """
@@ -77,7 +77,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store",
         default=None,
         metavar="ARCH",
-        help="Restrict GPU allocation to a specific architecture (e.g. gfx1100).",
+        help=(
+            "Target GFX architecture (e.g. gfx90a). Used for compilation (--offload-arch),"
+            " CMake -DGPU_ARCH, and arch-specific library path resolution."
+            " Does not filter GPU slot allocation."
+        ),
     )
     group.addoption(
         "--mock-gpu",
@@ -134,6 +138,22 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="session")
+def gpu_arch(request: pytest.FixtureRequest) -> str | None:
+    """Return the target GPU architecture string from ``--gpu-arch``, or ``None``.
+
+    Session-scoped so the option is read once and shared across all tests.
+    Consumers — CMake build fixtures, runtime library path helpers — should
+    depend on this fixture instead of calling ``request.config.getoption``
+    directly.
+
+    Returns:
+        Architecture string (e.g. ``"gfx90a"``) or ``None`` when not supplied.
+    """
+    value = request.config.getoption("--gpu-arch", default=None)
+    return str(value) if value is not None else None
+
+
 @pytest.fixture
 def gpu_fixture(request, health_fixture):
     """Allocate one AMD GPU for this test, yield a GpuFixture, release on teardown.
@@ -168,14 +188,12 @@ def gpu_fixture(request, health_fixture):
     headroom_gb = config.getoption("--vram-headroom-gb", default=2.0)
     detector = getattr(config, "_gpu_detector", None) or GpuDetector()
     allocator = GpuAllocator(detector=detector, headroom_gb=headroom_gb)
-    gpu_arch = config.getoption("--gpu-arch", default=None)
-
     # Read optional VRAM requirement from @pytest.mark.gpu_vram(N)
     vram_marker = request.node.get_closest_marker("gpu_vram")
     vram_required_gb: float = float(vram_marker.args[0]) if vram_marker else 0.0
 
     try:
-        gpu_info = allocator.allocate(arch=gpu_arch, vram_required_gb=vram_required_gb)
+        gpu_info = allocator.allocate(vram_required_gb=vram_required_gb)
     except RuntimeError as exc:
         pytest.skip(f"gpu_fixture: {exc}")
 

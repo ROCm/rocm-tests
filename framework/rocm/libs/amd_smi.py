@@ -194,7 +194,7 @@ def amd_smi_version(executor: AbstractExecutor) -> tuple[int, int, int] | None:
 
 
 def require_amd_smi_version(executor: AbstractExecutor, major: int, minor: int = 0) -> None:
-    """Skip the current test if ``amd-smi`` version is below ``major.minor``.
+    """Fail the current test if ``amd-smi`` version is below ``major.minor``.
 
     Args:
         executor: Any executor with a ``.run()`` method.
@@ -202,15 +202,16 @@ def require_amd_smi_version(executor: AbstractExecutor, major: int, minor: int =
         minor:    Minimum required minor version (default 0).
 
     Raises:
-        pytest.skip.Exception: When the installed version is below the requirement.
+        pytest.fail.Exception: When ``amd-smi`` is absent or below the required version —
+            missing ``amd-smi`` is a prerequisite failure, not a resource shortage.
     """
     import pytest  # pylint: disable=import-outside-toplevel
 
     ver = amd_smi_version(executor)
     if ver is None:
-        pytest.skip(f"amd-smi not detectable — cannot assert >= {major}.{minor}")
+        pytest.fail(f"amd-smi not detectable — cannot assert >= {major}.{minor}")
     if ver[:2] < (major, minor):
-        pytest.skip(f"amd-smi {major}.{minor}+ required; installed {ver[0]}.{ver[1]}.{ver[2]}")
+        pytest.fail(f"amd-smi {major}.{minor}+ required; installed {ver[0]}.{ver[1]}.{ver[2]}")
 
 
 # ---------------------------------------------------------------------------

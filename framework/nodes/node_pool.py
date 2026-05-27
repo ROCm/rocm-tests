@@ -27,7 +27,7 @@ Call ``slot.make_executor()`` to get a ready-to-use ``LabeledExecutor``.
 Usage (via ``target_executor`` fixture — not called directly in tests)::
 
     pool = NodePool(node_specs=[NodeSpec(hostname="localhost", label="localhost")])
-    slot = pool.acquire_slot(arch="gfx942", wait_timeout_secs=30.0)
+    slot = pool.acquire_slot(wait_timeout_secs=30.0)
     try:
         executor = slot.make_executor(test_id="test_hip_runtime", stream_stdout=True)
         result = executor.run("rocm-smi --showid")
@@ -360,10 +360,6 @@ class NodePool:
         detector = GpuDetector(rock_dir=self._rock_dir, ssh_executor=ssh, artifact_dir=self._artifact_dir)
         gpus = detector.detect()
 
-        # Filter by node-level gpu_arch if specified
-        if spec.gpu_arch:
-            gpus = [g for g in gpus if g.arch == spec.gpu_arch]
-
         class _StaticDetector:
             """Wrap a pre-detected list so GpuAllocator can call detect()."""
 
@@ -435,7 +431,6 @@ class NodePool:
 
     def acquire_slot(  # noqa: C901  # pylint: disable=too-many-locals,too-many-branches
         self,
-        arch: str | None = None,
         vram_required_gb: float = 0.0,
         wait_timeout_secs: float = 300.0,
         test_id: str = "",
@@ -449,8 +444,10 @@ class NodePool:
         When all nodes are exhausted without a successful allocation, the
         call polls every 0.5 seconds until *wait_timeout_secs* expires.
 
+        GPU allocation is architecture-agnostic.  ``--gpu-arch`` is passed
+        to compilation (``--offload-arch``) but does not filter slot selection.
+
         Args:
-            arch:              GFX architecture filter (``None`` = any).
             vram_required_gb:  Minimum VRAM needed (GB).
             wait_timeout_secs: Seconds to wait when no slot is immediately
                                available (default 30 s).
@@ -503,7 +500,6 @@ class NodePool:
                         while found_slot is None:
                             try:
                                 gpu_info = alloc.allocate(
-                                    arch=arch or spec.gpu_arch,
                                     vram_required_gb=vram_required_gb,
                                     wait_timeout_secs=0.0,  # non-blocking
                                 )
@@ -545,10 +541,8 @@ class NodePool:
                             return found_slot
 
             if time.monotonic() >= deadline:
-                detail = f"arch={arch}" if arch else "any"
                 raise RuntimeError(
-                    f"NodePool: no GPU slot available ({detail}) after "
-                    f"{wait_timeout_secs}s. "
+                    f"NodePool: no GPU slot available after {wait_timeout_secs}s. "
                     f"Topology: {self.topology_summary()}. "
                     "Consider using --gpu-acquire-timeout to increase the timeout."
                 )
@@ -563,7 +557,6 @@ class NodePool:
         self,
         count: int,
         node_label: str | None = None,
-        arch: str | None = None,
         vram_required_gb: float = 0.0,
         wait_timeout_secs: float = 300.0,
         test_id: str = "",
@@ -577,10 +570,12 @@ class NodePool:
         The acquisition is all-or-nothing: if a node cannot provide all
         *count* GPUs simultaneously, the call waits and retries.
 
+        GPU allocation is architecture-agnostic.  ``--gpu-arch`` is used for
+        compilation (``--offload-arch``) but does not filter slot selection.
+
         Args:
             count:             Number of GPUs to acquire.
             node_label:        Specific node to allocate from (``None`` = any).
-            arch:              GFX architecture filter (``None`` = any).
             vram_required_gb:  Minimum VRAM per GPU (GB).
             wait_timeout_secs: Seconds to wait when not enough slots are
                                immediately available (default 30 s).
@@ -624,7 +619,6 @@ class NodePool:
                         try:
                             for _ in range(count):
                                 gpu = alloc.allocate(
-                                    arch=arch or spec.gpu_arch,
                                     vram_required_gb=vram_required_gb,
                                     wait_timeout_secs=0.0,
                                 )
@@ -668,7 +662,7 @@ class NodePool:
                 if time.monotonic() >= deadline:
                     raise RuntimeError(
                         f"NodePool: cannot acquire {count} GPU slots from one node "
-                        f"(arch={arch or 'any'}) after {wait_timeout_secs}s. "
+                        f"after {wait_timeout_secs}s. "
                         f"Topology: {self.topology_summary()}"
                     )
                 logger.debug(
@@ -687,7 +681,6 @@ class NodePool:
     def acquire_multi_node(  # pylint: disable=too-many-positional-arguments
         self,
         gpu_count_per_node: int = 1,
-        arch: str | None = None,
         vram_required_gb: float = 0.0,
         wait_timeout_secs: float = 30.0,
         test_id: str = "",
@@ -697,9 +690,11 @@ class NodePool:
         Used for multi-node tests (``@pytest.mark.e2e.multinode``) that need
         one or more GPUs from every available node simultaneously.
 
+        GPU allocation is architecture-agnostic.  ``--gpu-arch`` is used for
+        compilation (``--offload-arch``) but does not filter slot selection.
+
         Args:
             gpu_count_per_node: GPUs to acquire from each node (default 1).
-            arch:               GFX architecture filter (``None`` = any).
             vram_required_gb:   Minimum VRAM per GPU (GB).
             wait_timeout_secs:  Total wait timeout for acquiring all nodes (s).
 
@@ -714,7 +709,6 @@ class NodePool:
             slots = self.acquire_slots(
                 count=gpu_count_per_node,
                 node_label=spec.label,
-                arch=arch,
                 vram_required_gb=vram_required_gb,
                 wait_timeout_secs=wait_timeout_secs,
                 test_id=test_id,

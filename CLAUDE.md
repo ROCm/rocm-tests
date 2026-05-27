@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Install dependencies:**
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt   # runtime deps + lint/type/docs tools
+uv pip install -r requirements-dev.txt   # runtime deps + lint/type/docs tools
 ```
 
 > Note: add 'uv' as prefix to expedite installation.
@@ -102,11 +102,12 @@ Marker values are defined in `framework/markers/taxonomy.py` → `MARKER_SCHEMA`
 
 Dotted syntax (`@pytest.mark.ci.pr`) is enabled by a `MarkDecorator.__getattr__` patch in `conftest.py`.
 
-**Parametric markers** (not linted as dimensions):
+**Parametric markers** (not linted as dimensions; defined in `PARAMETRIC_MARKERS` in `taxonomy.py`):
 - `@pytest.mark.gpu_vram(16)` — minimum VRAM in GB for GPU allocation
 - `@pytest.mark.gpu_count(4)` — number of GPUs to acquire
-- `@pytest.mark.retry(count=2)` — per-test retry count (overrides `--retry-count`)
 - `@pytest.mark.container_image("rocm/pytorch:6.3")` — per-test container image override
+
+**Per-test retry** is configured via `retry_fixture` (see Fixtures section) using `@pytest.mark.retry(count=N)` syntax — handled by `retry_plugin`, not registered in `PARAMETRIC_MARKERS`.
 
 **Minimum valid test:**
 ```python
@@ -148,7 +149,8 @@ conftest.py (root)
 
 framework/
     config/       # rocm-test.toml → env vars → code defaults cascade (FrameworkConfig dataclasses)
-    common/       # ExecutionResult, parse_metric(), Outcome, classify(), retry decorator
+    common/       # ExecutionResult, parse_metric(), Outcome, classify(), retry decorator,
+                  #   executor_log_path(), gpu_monitor_log_path() — structured per-test log path helpers
     executors/    # AbstractExecutor + concrete backends (see Executor Hierarchy below)
     nodes/        # NodePool fleet manager: NodeSpec, NodeSlot, MultiGpuSlots, GpuFileLock, PendingTracker
     scheduling/   # DynamicScheduler, SchedulePolicy — resource-aware xdist scheduling
@@ -160,13 +162,18 @@ framework/
     rocm/libs/    # ROCm library helpers: hip.py, rccl.py, amd_smi.py, stack.py
 
 tests/
-    common/       # Test data factories (fake_gpu_info, fake_execution_result) — NOT test files
+    common/       # Test data factories, shared CMake helper — NOT test files
+                  #   factories.py      — fake_gpu_info, fake_execution_result
+                  #   _cmake_build.py   — cmake_build() + find_rocm_clangpp() imported by all CMake-based conftests
     dry_run/      # Config and DryRun tests (no GPU required, ci.pr)
     e2e/
         compiler/               # hipcc compilation tests
         concurrent_collectives/ # RCCL concurrent collective stress tests
-        hwq_heuristic/          # GPU hardware queue heuristic tests
-    e2e/performance/baselines/  # Per-arch YAML baselines (not test files)
+        hwq_heuristic/          # GPU hardware queue heuristic tests (3 test files)
+        hip_runtime/            # HIP driver API and multi-stream kernel tests
+        hipblaslt/              # hipBLASLt GEMM heuristic and shape-boundary tests
+        rocprim/                # rocPRIM primitives + multi-GPU HMM tests
+        rocm_libs/              # rocsolver, montecarlo_weather, rocblas tests
 ```
 
 ### Executor Hierarchy
@@ -205,7 +212,7 @@ with cpu_executor.start_background(
 
 stopped = monitor.stop_result   # ExecutionResult with daemon's captured output
 ```
-`DryRunExecutor.start_background()` returns a `NoOpBackgroundProcess` (same API, never alive).
+`DryRunExecutor.start_background()` returns a `NoOpBackgroundProcess` — implements the same `is_alive`, `stop()`, `stop_result`, and `pid` API but never actually starts a process.
 
 **BinaryBuilder** (`compile_binary` fixture) — compiles HIP/C++ via `hipcc` in a CPU-only subprocess; xdist-safe via file locking:
 ```python
@@ -219,6 +226,34 @@ def my_kernel(compile_binary):
     )
 ```
 
+**CMake build pattern** (for `.hip` sources, multi-target builds, or GTest-managed C++ suites):
+
+When `compile_binary`/hipcc is insufficient — `.hip` file extensions require CMake's `enable_language(HIP)`, or multiple binaries share one `CMakeLists.txt` — use the shared helper from `tests/common/_cmake_build.py`:
+
+```python
+# All CMake-based conftests import from the shared helper — never define inline
+from tests.common._cmake_build import cmake_build, find_rocm_clangpp
+
+@pytest.fixture(scope="session")
+def my_binaries(rock_dir: str, gpu_arch: str | None, compiler_build_dir: str):
+    build_dir = cmake_build(
+        src="tests/e2e/myarea/src",
+        build_dir=os.path.join(compiler_build_dir, "myarea"),
+        rocm_path=rock_dir,
+        gpu_arch=gpu_arch,            # None → hipcc/CMake auto-detects
+        gpu_arch_var="GPU_ARCH",      # or "AMDGPU_TARGETS" for rocprim-style
+        label="myarea",
+    )
+    return os.path.join(build_dir, "my_binary")
+```
+
+Key rules:
+- `find_rocm_clangpp(rocm_path)` probes three paths in order: `<rocm>/lib/llvm/bin/clang++` (TheRock), `<rocm>/llvm/bin/clang++` (standard ROCm), `<rocm>/bin/amdclang++` (packaging variants).
+- `cmake_build()` automatically passes `-DROCM_PATH`, `-DCMAKE_PREFIX_PATH`, and `-DCMAKE_CXX_COMPILER` — no need to repeat them in the fixture.
+- When `clang++` is absent: `pytest.skip()` if optional compile path; `RuntimeError` if a hard requirement.
+- For optional OS packages (e.g. `libfmt-dev`): let the build succeed partially; have the binary fixture return the path unconditionally; guard in the test with `if not os.path.isfile(binary): pytest.skip(...)`.
+- When a binary needs `ROCM_PATH` at runtime (for `.hsaco` lookup), pass as `env ROCM_PATH={rock_dir} ...` in the run command — not via `os.environ`.
+
 ### Category Profiles (Auto-Injected Markers)
 
 `markers_plugin.py` injects markers at collection time for tests under these directories **if no function-level marker exists for that dimension** (function-level always wins):
@@ -228,10 +263,14 @@ def my_kernel(compile_binary):
 | `tests/e2e/compiler` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` |
 | `tests/e2e/concurrent_collectives` | `hw.multi_gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
 | `tests/e2e/hwq_heuristic` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` |
+| `tests/e2e/hip_runtime` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` |
+| `tests/e2e/hipblaslt` | `hw.gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
+| `tests/e2e/rocprim` | `hw.gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
+| `tests/e2e/rocm_libs` | `hw.gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
 
 `runtime.*` is intentionally absent from all profiles — declare it explicitly on every test function.
 
-> **Note:** Paths for `ml_frameworks`, `multi_gpu`, `stack_validation`, and `debug_stack` are reserved in `taxonomy.py` (`CATEGORY_PROFILES`) for future test areas — those directories do not yet exist under `tests/e2e/`.
+> **Source of truth:** `CATEGORY_PROFILES` in `framework/markers/taxonomy.py`. Always read it before declaring or assessing directory-level markers — the table above is a mirror.
 
 ### Dynamic Scheduling & Smart Sharding
 
@@ -277,6 +316,7 @@ Two complementary mechanisms control test ordering and GPU assignment — both a
 
 **GPU / hardware:**
 - `node_pool` — Session-scoped `NodePool`; `None` when `--no-gpu` is active
+- `gpu_arch` — Session-scoped `str | None`; reads `--gpu-arch` CLI flag. Used by `arch_lib_path`, `compile_binary`, and all CMake-based conftest fixtures. `None` when `--gpu-arch` is not passed.
 - `gpu_fixture` — acquires a real or mock GPU; runs health checks in setup/teardown
 - `multi_gpu_fixture` — explicit N-GPU from ONE node; yields `NodeExecutorGroup`; prefer `target_executor`
 - `multi_node_fixture` — explicit per-node; yields `NodeExecutorGroup`; prefer `target_executor`
@@ -287,6 +327,7 @@ Two complementary mechanisms control test ordering and GPU assignment — both a
 - `compiler_build_dir` — binary output dir (default `output/test-binaries/`)
 - `compile_binary` — `BinaryBuilder` factory; compiles `.cpp` → binary via `hipcc`
 - `ld_path` — `{"LD_LIBRARY_PATH": "{rock_dir}/lib:..."}` dict for TheRock-linked binaries
+- `arch_lib_path` — session-scoped callable; resolves the arch-specific library subdirectory. Pass a `pathlib.Path` base (e.g. `Path(rock_dir)/"lib"/"hipblaslt"/"library"`); returns the `/<arch>` sub-path when `--gpu-arch` is set, or the base path otherwise. Required for hipBLASLt/Tensile tests (`HIPBLASLT_TENSILE_LIBPATH`).
 
 **Retry / reporting:**
 - `retry_fixture` — `RetryHelper`; use `.run(executor, cmd)` for manual retry; configured by `@pytest.mark.retry(count=N)` > `--retry-count` > default 1 attempt; marks test `flaky` in Allure on late success

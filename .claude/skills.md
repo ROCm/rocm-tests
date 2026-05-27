@@ -37,7 +37,8 @@ A deep-dive reference for Claude Code operating inside `rocm-tests`. This docume
 │  ┌─────────────────────────────────────────────────────────────┐   │
 │  │  framework/ — Core Engine                                   │   │
 │  │    config/      ← rocm-test.toml → env → CLI cascade       │   │
-│  │    common/      ← ExecutionResult, Outcome, parse_metric()  │   │
+│  │    common/      ← ExecutionResult, Outcome, parse_metric(),  │   │
+│  │                   executor_log_path(), gpu_monitor_log_path() │  │
 │  │    executors/   ← AbstractExecutor + 8 concrete backends    │   │
 │  │    nodes/       ← NodePool fleet: NodeSlot, GpuFileLock     │   │
 │  │    scheduling/  ← DynamicScheduler, SchedulePolicy          │   │
@@ -52,14 +53,15 @@ A deep-dive reference for Claude Code operating inside `rocm-tests`. This docume
 │  ┌─────────────────────────────────────────────────────────────┐   │
 │  │  tests/ — Test Suite                                        │   │
 │  │    dry_run/               ← ci.pr, hw.cpu_only, no GPU      │   │
-│  │    e2e/stack_validation/  ← layer.runtime, HIP / amd-smi   │   │
 │  │    e2e/compiler/          ← layer.runtime, hipcc            │   │
 │  │    e2e/concurrent_collectives/ ← layer.math_lib, RCCL       │   │
 │  │    e2e/hwq_heuristic/     ← layer.runtime, HW queue tests   │   │
-│  │    e2e/ml_frameworks/     ← layer.ml_framework, PyTorch     │   │
-│  │    e2e/debug_stack/       ← layer.debug_stack, rocgdb       │   │
-│  │    e2e/performance/baselines/ ← per-arch YAML baselines     │   │
-│  │    common/                ← shared fixtures (NOT tests)     │   │
+│  │    e2e/hip_runtime/       ← layer.runtime, HIP driver API   │   │
+│  │    e2e/hipblaslt/         ← layer.math_lib, GEMM heuristics │   │
+│  │    e2e/rocm_libs/         ← layer.math_lib, rocsolver/blas  │   │
+│  │    e2e/rocprim/           ← layer.math_lib, rocPRIM + HMM   │   │
+│  │    common/                ← shared helpers (NOT tests)      │   │
+│  │      _cmake_build.py      ← cmake_build() + find_rocm_clangpp() │
 │  └─────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -78,6 +80,8 @@ All GPU tests receive a `NodeExecutorGroup` from `target_executor`. Test code ne
 | `SshGpuExecutor` | SSH + `ROCR_VISIBLE_DEVICES` injection | Remote `hw.gpu` / `hw.multi_gpu` |
 | `LabeledExecutor` | Wraps any executor; prefixes lines with `[test\|node\|GPU]` | Created by `NodeSlot.make_executor()` |
 | `NodeExecutorGroup` | Uniform container returned by all GPU fixtures | Always — wraps 1 or N `LabeledExecutor`s |
+| `BackgroundProcess` | Thread-safe daemon; context manager; `.is_alive`, `.stop()` → `ExecutionResult` | Returned by `executor.start_background(cmd, log_path=...)` |
+| `NoOpBackgroundProcess` | Stub for `DryRunExecutor.start_background()`; same API, never alive | `--no-gpu` / `hw.cpu_only` background calls |
 
 ### Config Cascade
 
@@ -212,14 +216,15 @@ Claude Code ships three built-in agentic skills accessible via slash commands. E
 
 | Layer / Domain | Target Directory |
 |---|---|
-| HIP API, amd-smi, driver | `tests/e2e/stack_validation/` |
-| hipcc compilation | `tests/e2e/compiler/` |
+| hipcc compilation, LLVM/HIP codegen | `tests/e2e/compiler/` |
 | RCCL, multi-node collectives | `tests/e2e/concurrent_collectives/` |
 | HW queue heuristics | `tests/e2e/hwq_heuristic/` |
-| PyTorch, JAX, vLLM, MLPerf | `tests/e2e/ml_frameworks/` |
-| rocgdb, rocprof, roctracer | `tests/e2e/debug_stack/` |
-| Benchmarks with baselines | `tests/e2e/performance/` |
+| HIP runtime, driver API, multi-stream | `tests/e2e/hip_runtime/` |
+| hipBLASLt GEMM, Tensile heuristics | `tests/e2e/hipblaslt/` |
+| rocPRIM primitives, HMM | `tests/e2e/rocprim/` |
+| rocsolver, rocblas, montecarlo | `tests/e2e/rocm_libs/` |
 | DryRun / config / ci.pr only | `tests/dry_run/` |
+| New domain | Add profile to `taxonomy.py → CATEGORY_PROFILES` first |
 
 **Rules enforced:**
 - Never `subprocess.run()` / `subprocess.Popen()` — always `target_executor.run(cmd)`

@@ -11,7 +11,7 @@ node number is allocated first to minimise cross-node memory traffic.
 
 Usage (via gpu_fixture — not called directly in test code):
     allocator = GpuAllocator(detector=GpuDetector())
-    gpu_info = allocator.allocate(arch="gfx942")
+    gpu_info = allocator.allocate()
     try:
         ...
     finally:
@@ -67,11 +67,15 @@ class GpuAllocator:
 
     def allocate(
         self,
-        arch: str | None = None,
         vram_required_gb: float = 0.0,
         wait_timeout_secs: float = 0.0,
     ) -> GpuInfo:
         """Allocate one GPU from the pool, preferring NUMA locality.
+
+        GPU allocation is architecture-agnostic: ``--gpu-arch`` is used for
+        compilation (``--offload-arch``) and test filtering, not for slot
+        selection.  Every GPU in the pool is eligible regardless of its
+        detected arch string.
 
         When *wait_timeout_secs* > 0 and no eligible GPU is currently available,
         the call polls every second until a GPU is freed by another thread or
@@ -79,8 +83,6 @@ class GpuAllocator:
         where multi-GPU tests hold several slots temporarily.
 
         Args:
-            arch:              GFX architecture filter (e.g. ``"gfx942"``).
-                               ``None`` means any architecture is eligible.
             vram_required_gb:  Minimum VRAM the test needs (in GB).  GPUs where
                                ``vram_total_gb - headroom_gb < vram_required_gb``
                                are excluded from the candidate set.
@@ -102,7 +104,6 @@ class GpuAllocator:
                     gpu
                     for gpu in self._pool
                     if gpu.index in self._available
-                    and (arch is None or gpu.arch == arch)
                     and (vram_required_gb == 0.0 or (gpu.vram_mb / 1024) - self._headroom_gb >= vram_required_gb)
                 ]
                 if candidates:
@@ -120,12 +121,7 @@ class GpuAllocator:
 
                 # No candidate available — check if we should wait
                 if deadline is None or time.monotonic() >= deadline:
-                    detail_parts = []
-                    if arch:
-                        detail_parts.append(f"arch={arch}")
-                    if vram_required_gb > 0:
-                        detail_parts.append(f"vram_required={vram_required_gb}GB")
-                    detail = f" with {', '.join(detail_parts)}" if detail_parts else ""
+                    detail = f" with vram_required={vram_required_gb}GB" if vram_required_gb > 0 else ""
                     avail_vram = {g.index: f"{g.vram_mb}MB" for g in self._pool if g.index in self._available}
                     raise RuntimeError(
                         f"No available GPU{detail}. "
@@ -140,8 +136,7 @@ class GpuAllocator:
                 # it reacquires _condition before returning.
                 remaining = max(0.01, deadline - time.monotonic()) if deadline else 1.0
                 logger.debug(
-                    "GpuAllocator: no GPU available%s, waiting up to %.1fs for release",
-                    f" (arch={arch})" if arch else "",
+                    "GpuAllocator: no GPU available, waiting up to %.1fs for release",
                     min(remaining, 1.0),
                 )
                 self._condition.wait(timeout=min(remaining, 1.0))
