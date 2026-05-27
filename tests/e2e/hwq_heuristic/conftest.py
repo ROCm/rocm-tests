@@ -2,83 +2,112 @@
 # SPDX-License-Identifier: MIT
 
 """
-conftest.py -- CMake build fixture for tests/e2e/hwq_heuristic/.
+conftest.py -- CMake build fixtures for tests/e2e/hwq_heuristic/.
 
-Builds ``hwq_heuristic_test`` via CMake (not hipcc directly) because the
-source uses GPU architecture-specific compile flags set in CMakeLists.txt.
+Builds all hwq_heuristic test binaries via a single CMake configure+build
+invocation. All targets share the same CMakeLists.txt and build directory.
 
 Build output layout::
 
     output/test-binaries/hwq_heuristic/build/hwq_heuristic_test
+    output/test-binaries/hwq_heuristic/build/hwq_null_stream_protection_regr
+    output/test-binaries/hwq_heuristic/build/hwq_compute_copy_overlap_test
 
-GPU architecture is forwarded from ``--gpu-arch`` when provided; otherwise
-CMakeLists.txt falls back to its built-in default (``gfx950``).
-
-Unlike HIP binaries compiled by ``compile_binary`` (hipcc + xdist lock),
-this fixture uses ``subprocess.run`` directly because CMake manages its own
-incremental build state via the ``build/`` directory.
+GPU architecture is forwarded from ``--gpu-arch`` when provided; the
+CMakeLists.txt raises FATAL_ERROR when GPU_ARCH is absent.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import pathlib
-import subprocess
 
 import pytest
+
+from tests.common._cmake_build import cmake_build, find_rocm_clangpp
 
 logger = logging.getLogger(__name__)
 
 _SRC_DIR = "tests/e2e/hwq_heuristic/src"
-_BINARY_NAME = "hwq_heuristic_test"
+
+
+def _binary_path(build_dir: str, name: str) -> str:
+    binary = os.path.join(build_dir, name)
+    assert os.path.isfile(binary), f"hwq_heuristic: binary '{name}' not found at {binary} after successful build"
+    return binary
 
 
 @pytest.fixture(scope="session")
-def hwq_heuristic_binary(request, rock_dir: str, compiler_build_dir: str) -> str:
-    """Build hwq_heuristic_test via CMake; return absolute binary path.
+def _hwq_cmake_build_dir(gpu_arch: str | None, rock_dir: str, compiler_build_dir: str) -> str:
+    """Build all hwq_heuristic CMake targets; return absolute build directory path.
 
     Runs ``cmake -S <src> -B <build> -DROCM_PATH=<rock_dir> [-DGPU_ARCH=<arch>]``
-    followed by ``cmake --build <build> --parallel``.  Both steps raise
-    ``AssertionError`` on failure so pytest reports them as ``ERROR`` on every
-    test that depends on this fixture.
+    followed by ``cmake --build <build> --parallel``.  Builds all targets in one
+    invocation so individual binary fixtures are cheap path lookups.
 
     Args:
-        request:             Pytest fixture request (provides config access).
+        gpu_arch:            Target GPU architecture from the ``gpu_arch`` fixture (``--gpu-arch``).
         rock_dir:            Path to the ROCm/TheRock install (``--rock-dir``
                              / ``ROCK_DIR``).  Passed as ``ROCM_PATH`` to cmake.
         compiler_build_dir:  Session-scoped output root
                              (``output/test-binaries/`` by default).
 
     Returns:
-        Absolute path to the compiled ``hwq_heuristic_test`` binary.
+        Absolute path to the cmake build directory containing all binaries.
     """
+    rocm_path = os.path.realpath(rock_dir)
     build_dir = os.path.join(compiler_build_dir, "hwq_heuristic", "build")
-    pathlib.Path(build_dir).mkdir(parents=True, exist_ok=True)
 
-    gpu_arch: str | None = request.config.getoption("--gpu-arch", default=None)
-    rocm_path = os.path.realpath(rock_dir)  # resolve symlinks (e.g. /opt/rocm → /opt/rocm-6.4.x)
+    # Compiler is optional for hwq_heuristic: CMakeLists.txt falls back to hipcc
+    # when clang++ is absent. The conftest just forwards the flag when available.
+    clangpp = find_rocm_clangpp(rocm_path)
+    compiler_args = [f"-DCMAKE_CXX_COMPILER={clangpp}"] if clangpp else []
 
-    cmake_args = [
-        "cmake",
-        "-S",
-        os.path.abspath(_SRC_DIR),
-        "-B",
+    cmake_build(
+        _SRC_DIR,
         build_dir,
-        f"-DROCM_PATH={rocm_path}",
-    ]
-    if gpu_arch:
-        cmake_args.append(f"-DGPU_ARCH={gpu_arch}")
+        rocm_path,
+        gpu_arch=gpu_arch,
+        compiler_args=compiler_args,
+        label="hwq_heuristic",
+    )
+    return build_dir
 
-    logger.info("hwq_heuristic: cmake configure (ROCM_PATH=%s): %s", rocm_path, " ".join(cmake_args))
-    r = subprocess.run(cmake_args, capture_output=True, text=True)
-    assert r.returncode == 0, f"hwq_heuristic cmake configure failed:\n{r.stdout}\n{r.stderr}"
 
-    build_args = ["cmake", "--build", build_dir, "--parallel"]
-    logger.info("hwq_heuristic: cmake build: %s", " ".join(build_args))
-    r = subprocess.run(build_args, capture_output=True, text=True)
-    assert r.returncode == 0, f"hwq_heuristic cmake build failed:\n{r.stdout}\n{r.stderr}"
+@pytest.fixture(scope="session")
+def hwq_heuristic_binary(_hwq_cmake_build_dir: str) -> str:
+    """Return absolute path to the compiled ``hwq_heuristic_test`` binary.
 
-    binary = os.path.join(build_dir, _BINARY_NAME)
-    assert os.path.isfile(binary), f"hwq_heuristic: binary not found at {binary} after successful build"
-    return binary
+    Args:
+        _hwq_cmake_build_dir: Shared CMake build directory fixture.
+
+    Returns:
+        Absolute path to ``hwq_heuristic_test``.
+    """
+    return _binary_path(_hwq_cmake_build_dir, "hwq_heuristic_test")
+
+
+@pytest.fixture(scope="session")
+def hwq_null_stream_protection_binary(_hwq_cmake_build_dir: str) -> str:
+    """Return absolute path to the compiled ``hwq_null_stream_protection_regr`` binary.
+
+    Args:
+        _hwq_cmake_build_dir: Shared CMake build directory fixture.
+
+    Returns:
+        Absolute path to ``hwq_null_stream_protection_regr``.
+    """
+    return _binary_path(_hwq_cmake_build_dir, "hwq_null_stream_protection_regr")
+
+
+@pytest.fixture(scope="session")
+def hwq_compute_copy_overlap_binary(_hwq_cmake_build_dir: str) -> str:
+    """Return absolute path to the compiled ``hwq_compute_copy_overlap_test`` binary.
+
+    Args:
+        _hwq_cmake_build_dir: Shared CMake build directory fixture.
+
+    Returns:
+        Absolute path to ``hwq_compute_copy_overlap_test``.
+    """
+    return _binary_path(_hwq_cmake_build_dir, "hwq_compute_copy_overlap_test")

@@ -39,6 +39,8 @@ Prerequisites:
     - ``cmake`` on PATH (for the build fixture).
 """
 
+import warnings
+
 import pytest
 
 
@@ -66,3 +68,22 @@ def test_hwq_heuristic(
         f"hwq_heuristic scenario {scenario} failed (exit={result.exit_code}):\n"
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     )
+    # Belt-and-suspenders: binary writes "FAIL scenario X" to stderr when a
+    # scenario function returns non-zero.  Scenario C is the only exception —
+    # it may write "WARN: ..." to stderr but never "FAIL".
+    assert "FAIL" not in result.stderr, (
+        f"hwq_heuristic scenario {scenario}: unexpected FAIL in stderr "
+        f"(exit={result.exit_code}):\n"
+        f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
+    )
+    assert f"PASS scenario {scenario}" in result.stdout, (
+        f"hwq_heuristic scenario {scenario}: expected 'PASS scenario {scenario}' in stdout "
+        f"(scenario may not have run or printed unexpected output):\n"
+        f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
+    )
+    # Scenario C is timing-sensitive: the binary prints WARN to stderr when the
+    # phase1/phase0 ratio exceeds 2.0 (possible queue reassignment) but still
+    # exits 0.  Surface this as a Python warning so it appears in the test run
+    # output without causing a failure.
+    if scenario == "C" and result.stderr and "WARN" in result.stderr:
+        warnings.warn(f"hwq_heuristic scenario C timing warning: {result.stderr.strip()}", stacklevel=2)

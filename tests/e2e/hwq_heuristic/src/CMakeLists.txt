@@ -1,22 +1,21 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.21)
 
-if(NOT ROCM_PATH)
-  if(DEFINED ENV{ROCM_PATH})
-    set(ROCM_PATH "$ENV{ROCM_PATH}")
-  else()
-    set(ROCM_PATH "/opt/rocm")
-  endif()
-endif()
-set(ENV{ROCM_PATH} "${ROCM_PATH}")
+# Shared ROCm path resolution and CMAKE_PREFIX_PATH setup.
+# Does NOT set compiler variables — the hipcc fallback below owns that.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../../common/cmake")
+include(rocm_setup)
 
 if(NOT GPU_ARCH)
-  set(GPU_ARCH "gfx950" CACHE STRING "HIP offload arch, e.g. gfx950 gfx942")
+  message(FATAL_ERROR "GPU_ARCH is not set. Pass -DGPU_ARCH=<arch> (e.g. gfx942) to cmake.")
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Compiler detection: prefer what the conftest passes via -DCMAKE_CXX_COMPILER;
+# fall back to hipcc when clang++ is not available. The conftest may inject
+# -DCMAKE_CXX_COMPILER=<clangpp> which, as a -D flag, overrides CACHE values here.
 if(NOT CMAKE_CXX_COMPILER MATCHES "hipcc")
   set(_HIPCC "${ROCM_PATH}/bin/hipcc")
   if(EXISTS "${_HIPCC}")
@@ -26,16 +25,16 @@ endif()
 
 project(hwq_heuristic_test LANGUAGES CXX)
 
-list(APPEND CMAKE_PREFIX_PATH "${ROCM_PATH}")
-find_package(hip CONFIG QUIET)
-if(hip_FOUND)
-  set(HIP_LIBS hip::host)
-else()
-  set(HIP_LIBS amdhip64)
-  include_directories("${ROCM_PATH}/include")
-  link_directories("${ROCM_PATH}/lib")
-endif()
+find_package(hip CONFIG REQUIRED)
 
 add_executable(hwq_heuristic_test hwq_heuristic_test.cpp)
 target_compile_options(hwq_heuristic_test PRIVATE -O3 "--offload-arch=${GPU_ARCH}")
-target_link_libraries(hwq_heuristic_test PRIVATE ${HIP_LIBS})
+target_link_libraries(hwq_heuristic_test PRIVATE hip::host)
+
+add_executable(hwq_null_stream_protection_regr hwq_null_stream_protection_regr.cpp)
+target_compile_options(hwq_null_stream_protection_regr PRIVATE -O3 "--offload-arch=${GPU_ARCH}")
+target_link_libraries(hwq_null_stream_protection_regr PRIVATE hip::host)
+
+add_executable(hwq_compute_copy_overlap_test hwq_compute_copy_overlap_test.cpp)
+target_compile_options(hwq_compute_copy_overlap_test PRIVATE -O3 "--offload-arch=${GPU_ARCH}")
+target_link_libraries(hwq_compute_copy_overlap_test PRIVATE hip::host)
