@@ -118,7 +118,7 @@ def get_device_arch(executor: AbstractExecutor, _device: int = 0) -> str:
 
 
 def require_rocm_version(executor: AbstractExecutor, major: int, minor: int = 0) -> None:
-    """Skip the current test if the installed ROCm version is below ``major.minor``.
+    """Fail the current test if the installed ROCm version is below ``major.minor``.
 
     Reads ``/opt/rocm/.info/version`` first (most reliable), then falls back to
     ``hipconfig --version`` parsing.
@@ -129,23 +129,24 @@ def require_rocm_version(executor: AbstractExecutor, major: int, minor: int = 0)
         minor:    Minimum required minor version (default 0).
 
     Raises:
-        pytest.skip.Exception: When the installed version is below the requirement
-                               or cannot be detected.
+        pytest.fail.Exception: When the installed version is below the requirement
+                               or cannot be detected — missing ROCm is a prerequisite
+                               failure, not a resource shortage.
     """
     import pytest  # pylint: disable=import-outside-toplevel
 
     version_str = _detect_rocm_version(executor)
     if version_str is None:
-        pytest.skip(f"ROCm version not detectable — cannot assert >= {major}.{minor}")
+        pytest.fail(f"ROCm version not detectable — cannot assert >= {major}.{minor}")
 
     parts = version_str.split(".")
     try:
         installed = (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
     except (ValueError, IndexError):
-        pytest.skip(f"Could not parse ROCm version: {version_str!r}")
+        pytest.fail(f"Could not parse ROCm version: {version_str!r}")
 
     if installed < (major, minor):
-        pytest.skip(f"ROCm {major}.{minor}+ required; installed {version_str}")
+        pytest.fail(f"ROCm {major}.{minor}+ required; installed {version_str}")
 
 
 def _detect_rocm_version(executor: AbstractExecutor) -> str | None:

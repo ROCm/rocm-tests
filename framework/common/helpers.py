@@ -51,6 +51,19 @@ class ExecutionResult:
         """True when exit_code is 0."""
         return self.exit_code == 0
 
+    def __str__(self) -> str:
+        """Human-readable multiline representation with stdout/stderr on separate lines."""
+        lines = [f"ExecutionResult(exit_code={self.exit_code}, duration={self.duration:.3f}s)"]
+        if self.stdout:
+            lines.append("  stdout:")
+            for line in self.stdout.splitlines():
+                lines.append(f"    {line}")
+        if self.stderr:
+            lines.append("  stderr:")
+            for line in self.stderr.splitlines():
+                lines.append(f"    {line}")
+        return "\n".join(lines)
+
 
 def parse_metric(output: str, key: str) -> float | None:
     """Extract a ``KEY=<float>`` value from multi-line command output.

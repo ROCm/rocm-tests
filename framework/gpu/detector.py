@@ -38,6 +38,7 @@ import abc
 from dataclasses import dataclass
 import json
 import logging
+import os
 import pathlib
 import subprocess
 from typing import TYPE_CHECKING
@@ -49,6 +50,12 @@ if TYPE_CHECKING:
     from framework.executors.ssh_executor import SshExecutor
 
 logger = logging.getLogger(__name__)
+
+# PCI class name substrings that identify AMD GPU devices in lspci output.
+# "Display controller" — discrete GPUs on consumer/workstation cards.
+# "VGA compatible controller" — older Radeon discrete GPUs.
+# "Processing accelerators" — AMD Instinct compute GPUs (MI200/MI300 family).
+_GPU_PCI_CLASSES = ("Display controller", "VGA compatible controller", "Processing accelerators")
 
 
 @dataclass(frozen=True)
@@ -171,6 +178,19 @@ class GpuDetector(AbstractGpuDetector):
                 self._run_amd_smi_diagnostic(node_label=node_label)
                 return list(gpus)
             logger.warning("GPU detection [%s]: lspci returned 0 AMD GPUs", target)
+            # Print raw lspci output so engineers can see what PCI class names are present.
+            try:
+                raw = self._run_command("lspci -d 1002: -nn")
+                if raw.strip():
+                    print(f"\n[rocm-test] lspci AMD devices (all classes, unfiltered):\n{raw.strip()}")
+                else:
+                    print(
+                        "\n[rocm-test] lspci found NO AMD PCI devices (vendor 1002). "
+                        "Check that the GPU is passed through to this container "
+                        "(--device /dev/kfd --device /dev/dri)."
+                    )
+            except Exception:  # pylint: disable=broad-exception-caught
+                pass
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("GPU detection [%s]: lspci failed: %s", target, exc)
 
@@ -185,23 +205,27 @@ class GpuDetector(AbstractGpuDetector):
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.info("GPU detection [%s]: KFD sysfs failed (%s)", target, exc)
 
-        # --- amd-smi detection deferred; commented for future re-enablement ---
-        # try:
-        #     gpus = self._detect_via_amd_smi()
-        #     if gpus:
-        #         self._cached = gpus
-        #         return list(gpus)
-        # except Exception as exc:
-        #     logger.info("GPU detection [%s]: system amd-smi failed (%s)", target, exc)
-        #
-        # if self._rock_dir:
-        #     rock_amd_smi = os.path.join(self._rock_dir, "bin", "amd-smi")
-        #     try:
-        #         gpus = self._detect_via_amd_smi_at(rock_amd_smi)
-        #         self._cached = gpus
-        #         return list(gpus)
-        #     except Exception as exc:
-        #         logger.warning("GPU detection [%s]: rock_dir amd-smi failed: %s", target, exc)
+        # Print KFD and DRI diagnostics (local only — sysfs not traversable over SSH).
+        if self._ssh is None:
+            self._print_kfd_dri_diagnostics()
+
+        # THIRD FALLBACK: amd-smi from TheRock rock_dir.
+        # Activated when lspci and KFD both return 0 — common in containers where
+        # the AMD compute GPU appears as "Processing accelerators" in lspci and
+        # /sys/class/kfd is not exposed inside the container sysfs namespace.
+        # Returns real arch and VRAM (unlike lspci which yields arch="unknown").
+        if self._rock_dir:
+            rock_amd_smi = os.path.join(self._rock_dir, "bin", "amd-smi")
+            try:
+                gpus = self._detect_via_amd_smi_at(rock_amd_smi)
+                if gpus:
+                    logger.info("GPU detection [%s]: rock_dir amd-smi detected %d GPU(s)", target, len(gpus))
+                    self._cached = gpus
+                    self._run_amd_smi_diagnostic(node_label=node_label)
+                    return list(gpus)
+                logger.warning("GPU detection [%s]: rock_dir amd-smi returned 0 GPU(s)", target)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("GPU detection [%s]: rock_dir amd-smi failed: %s", target, exc)
 
         self._cached = []
         return []
@@ -252,9 +276,68 @@ class GpuDetector(AbstractGpuDetector):
             RuntimeError: If ``lspci`` exits non-zero or is not available.
         """
         out = self._run_command("lspci -d 1002: -nn")
-        gpu_lines = [line for line in out.splitlines() if "Display controller" in line]
-        logger.info("lspci detected %d AMD GPU(s)", len(gpu_lines))
+        all_amd_lines = [line for line in out.splitlines() if line.strip()]
+        gpu_lines = [line for line in all_amd_lines if any(cls in line for cls in _GPU_PCI_CLASSES)]
+
+        if all_amd_lines and not gpu_lines:
+            # AMD PCI devices present but none match known GPU class names.
+            # This can happen with unrecognised class strings — log the raw output.
+            logger.warning(
+                "lspci found %d AMD device(s) but none match GPU PCI classes %s. " "Raw lspci output:\n%s",
+                len(all_amd_lines),
+                list(_GPU_PCI_CLASSES),
+                out.strip(),
+            )
+
+        logger.info(
+            "lspci detected %d AMD GPU(s) (from %d total AMD PCI device(s))",
+            len(gpu_lines),
+            len(all_amd_lines),
+        )
         return [GpuInfo(index=i, arch="unknown", vram_mb=0) for i, _ in enumerate(gpu_lines)]
+
+    def _print_kfd_dri_diagnostics(self) -> None:
+        """Print KFD sysfs and /dev/dri state to the console when local detection returns 0.
+
+        Runs only on the local node (no SSH). Output helps engineers distinguish between
+        "KFD sysfs not mounted in container", "all nodes are CPU-only", and "GPU not passed through".
+        """
+        kfd_path = pathlib.Path("/sys/class/kfd/kfd/topology/nodes")
+        if kfd_path.exists():
+            try:
+                nodes = sorted(kfd_path.iterdir())
+                print(
+                    f"\n[rocm-test] KFD topology: {len(nodes)} node(s) found "
+                    "(all skipped because gpu_id=0 indicates CPU-only nodes):"
+                )
+                for node_dir in nodes[:8]:  # cap to avoid flooding the console
+                    prop_file = node_dir / "properties"
+                    if prop_file.exists():
+                        props = dict(line.split(None, 1) for line in prop_file.read_text().splitlines() if " " in line)
+                        print(
+                            f"  node {node_dir.name}: "
+                            f"gpu_id={props.get('gpu_id', '?').strip()}, "
+                            f"gfx_target_version={props.get('gfx_target_version', '?').strip()}, "
+                            f"name={props.get('name', '?').strip()}"
+                        )
+            except OSError as exc:
+                print(f"\n[rocm-test] KFD sysfs exists but could not be read: {exc}")
+        else:
+            print(
+                "\n[rocm-test] /sys/class/kfd not found. The ROCm kernel driver (amdgpu) "
+                "may not be loaded, or the KFD sysfs tree is not exposed inside this container. "
+                "Verify the host has amdgpu loaded: lsmod | grep amdgpu"
+            )
+
+        dri_path = pathlib.Path("/dev/dri")
+        if dri_path.exists():
+            try:
+                dri_devices = sorted(d.name for d in dri_path.iterdir())
+                print(f"[rocm-test] /dev/dri devices present: {dri_devices}")
+            except OSError:
+                print("[rocm-test] /dev/dri exists but could not be listed.")
+        else:
+            print("[rocm-test] /dev/dri not found — GPU device may not be passed through to this container.")
 
     def _run_amd_smi_diagnostic(self, node_label: str) -> None:
         """Run ``amd-smi list`` once for diagnostic output only.

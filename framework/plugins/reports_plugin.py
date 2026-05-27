@@ -28,10 +28,6 @@ Allure label mapping:
 The marker-to-Allure mapping runs at test setup so that the labels appear even
 if the test fails early. They require an active test context and therefore cannot
 run during collection.
-
-``--allure-db`` dashboard generation requires the ``allure`` CLI to be on PATH
-(install via ``allure-commandline`` package). When the CLI is absent the hook
-logs a warning and exits cleanly without failing the session.
 """
 
 from __future__ import annotations
@@ -279,9 +275,13 @@ def _test_execution_status(request: pytest.FixtureRequest) -> None:  # type: ign
     logger.info("[%s]  %s  %.1fs%s", status, request.node.nodeid, duration, dim_str)
 
     if not rep.passed and rep.longrepr:
-        # Last line of longrepr carries the AssertionError / exception message
+        # Last line of longrepr carries the AssertionError / exception message.
+        # Expand escaped \n sequences so multiline stdout/stderr renders line-by-line.
         reason = str(rep.longrepr).strip().splitlines()[-1]
-        logger.info("  Reason: %s", reason)
+        reason_lines = reason.replace("\\n", "\n").splitlines()
+        logger.info("  Reason: %s", reason_lines[0])
+        for line in reason_lines[1:]:
+            logger.info("    %s", line)
 
 
 @pytest.fixture
@@ -430,6 +430,26 @@ def _build_allure_dashboard(allure_results_dir: str, n_previous: int) -> None:
         logger.warning("Failed to generate Allure dashboard: %s", exc)
 
 
+def _render_skipped_items(tw, stats) -> None:
+    """Print the skipped-tests block with reasons."""
+    skipped_items: list[tuple[str, str]] = []
+    for report in stats.get("skipped", []):
+        reason = ""
+        if report.longrepr:
+            if isinstance(report.longrepr, tuple) and len(report.longrepr) == 3:
+                reason = str(report.longrepr[2])
+            else:
+                reason = str(report.longrepr).strip().splitlines()[-1]
+        skipped_items.append((report.nodeid, reason))
+
+    if skipped_items:
+        tw.write_line("")
+        tw.write_line(" Skipped tests:", yellow=True)
+        for nid, reason in skipped_items:
+            suffix = f"  \u2192  {reason}" if reason else ""
+            tw.write_line(f"   \u2022 {nid}{suffix}")
+
+
 def pytest_terminal_summary(terminalreporter) -> None:
     """Print a tabled test-suite summary grouped by directory at session end.
 
@@ -522,6 +542,8 @@ def pytest_terminal_summary(terminalreporter) -> None:
         tw.write_line(" Failed tests:", red=True)
         for nid in failed_nodeids:
             tw.write_line(f"   \u2022 {nid}")
+
+    _render_skipped_items(tw, stats)
 
     tw.write_sep("=", "")
 

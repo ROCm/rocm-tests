@@ -309,8 +309,7 @@ def session_executor(request, framework_config):
     # All other modes: allocate a real GPU from the pool.
     detector = getattr(config, "_gpu_detector", None) or GpuDetector()
     allocator = GpuAllocator(detector=detector)
-    gpu_arch = config.getoption("--gpu-arch", default=None)
-    gpu_info = allocator.allocate(arch=gpu_arch)
+    gpu_info = allocator.allocate()
 
     log_path = executor_log_path(framework_config.framework.artifact_dir, request.node.name, request.node.nodeid)
 

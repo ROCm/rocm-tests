@@ -1,92 +1,193 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+#
+# e2e-nightly workflow rocm-tests for TheRock & rockrel CI artifacts.
+#
+# Inputs:
+#   source_repo     — ROCm/TheRock or ROCm/rockrel
+#   artifact_source — behaviour depends on source_repo:
+#       ROCm/TheRock  : "latest-release" (full SDK tarball, default)
+#                       OR a release tag (e.g. "nightly-2026-05-25")
+#       ROCm/rockrel  : workflow filename (e.g. "build.yml"); setup_matrix
+#                       resolves the latest completed run_id via the GitHub API
+#   include_dev     — rockrel path only: also download _dev archives
+#                     (headers, CMake configs, static libs).
 
-name: E2E Nightly Tests
+name: E2E Nightly Tests 
 
 on:
-  schedule:
-    - cron: "0 3 * * *"  # 03:00 UTC daily
   workflow_call:
-    inputs:
-      artifact_run_id:
-        type: string
-      amdgpu_family:
-        type: string
-      test_runs_on:
-        type: string
-      pytest_k_expr:
-        type: string
   workflow_dispatch:
     inputs:
-      artifact_run_id:
+      source_repo:
+        description: 'GitHub repo to pull artifacts from'
+        type: choice
+        options:
+          - ROCm/TheRock
+          - ROCm/rockrel
+        default: ROCm/TheRock
+
+      artifact_source:
+        description: >
+          ROCm/TheRock: "latest-release" to download the latest nightly dist tarball,
+          OR a release tag (e.g. "nightly-2026-05-25") to install a specific build.
+          ROCm/rockrel: workflow filename (e.g. "multi_arch_release.yml") whose latest completed
+          run_id is resolved automatically via the GitHub API.
         type: string
-        description: "Pull Linux artifacts using this artifact_run_id"
-        default: ""
-      amdgpu_family:
-        type: string
-        description: "AMD GPU family to test (e.g. gfx90a, gfx94X-dcgpu, gfx120X)"
-      test_runs_on:
-        type: string
-        description: "Runner label for the test job"
-      pytest_k_expr:
-        type: string
-        description: "pytest -k expression to narrow test selection"
+        default: 'latest-release'
+
+      include_dev:
+        description: >
+          When artifact_source resolves to a run ID (rockrel path): Download
+          _dev artifacts needed for test binary compilation. 
+          This has no effect for latest-release or tag-based installs.
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
+  setup_matrix:
+    name: Setup test matrix
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.testplan.outputs.targets }}
+      run_id: ${{ steps.get_runid.outputs.run_id }}
+    steps:
+      - name: Checkout rocm-tests
+        uses: actions/checkout@v6 # v6.2.2
+
+      - name: Resolve rockrel run_id from workflow name
+        id: get_runid
+        if: ${{ inputs.source_repo == 'ROCm/rockrel' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: python
+        run: |
+          import os, requests
+          repo = "${{ inputs.source_repo }}"
+          workflow = "${{ inputs.artifact_source }}"
+          resp = requests.get(
+            f'https://api.github.com/repos/{repo}/actions/workflows/{workflow}/runs?status=completed&per_page=1',
+            headers={
+              'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+              'Accept': 'application/vnd.github+json',
+            },
+          )
+          resp.raise_for_status()
+          run_id = resp.json()['workflow_runs'][0]['id']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            f.write(f'run_id={run_id}\n')
+          print(f'Latest completed run of {repo}/{workflow}: {run_id}')
+
+      - name: Build test matrix from Test Configuration
+        id: testplan
+        shell: python
+        run: |
+          import os, configparser, json
+          conf = configparser.ConfigParser()
+          conf.read('testplan.ini')
+          testplan = [{'name': section, **dict(conf.items(section))} for section in conf.sections()]
+          print(f'testplan: {repr(testplan)}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'targets={json.dumps(testplan)}\n')
+
   e2e_nightly:
-    name: "E2E Nightly"
-    runs-on: ${{ inputs.test_runs_on || 'sc-hw-rocmci-31' }}
+    needs: setup_matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.setup_matrix.outputs.targets) }}
+    name: "E2E Nightly - ${{ matrix.target.name }}"
+    runs-on: ${{ matrix.target.runs_on }}
     timeout-minutes: 210
+    container:
+      image: ${{ 'ghcr.io/rocm/no_rocm_image_ubuntu24_04@sha256:4150afe4759d14822f0e3f8930e1124f26e11f68b5c7b91ec9a02b20b1ebbb98' || null }}
+      options: --ipc host
+        --device /dev/kfd
+        --device /dev/dri
+        --group-add 993
+        --group-add 992
+        --group-add 110
+        --ulimit memlock=-1:-1
+        --security-opt seccomp=unconfined
+        --env-file /etc/podinfo/gha-gpu-isolation-settings
+        --user 0:0
     defaults:
       run:
         shell: bash
 
     steps:
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        id: setup-python
+        with:
+          python-version: 3.12
+
       - name: Checkout rocm-tests
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6 # v6.2.2
 
       - name: Checkout TheRock
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v6 # v6.2.2
         with:
           repository: "ROCm/TheRock"
-          ref: b68757b3461145b85eabec29cea1223027a56da0 # 2026-04-01
+          ref: main
           path: TheRock
 
-      - name: Install TheRock artifacts
+      # ── Install ROCm artifacts ────────────────────────────────────────────
+      # source_repo = ROCm/TheRock:
+      #   artifact_source = "latest-release" → --latest-release (full SDK tarball)
+      #   artifact_source = <tag>            → --tag <tag> (specific nightly build)
+      # source_repo = ROCm/rockrel:
+      #   artifact_source = <workflow.yml>   → run_id resolved by setup_matrix;
+      #   When include_dev=true: also fetches _dev archives (headers, cmake, .a)
+      - name: Install ROCm artifacts
         run: |
           cd TheRock
           python3 -m pip install -r requirements-test.txt
-          python3 build_tools/install_rocm_from_artifacts.py \
-            --output-dir ../therock_build \
-            --tests \
-            --amdgpu-family ${{ inputs.amdgpu_family || 'gfx90a' }} \
-            --latest-release
 
-      - name: Install ROCm system packages
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            pciutils \
-            kmod \
-            libdrm-amdgpu1
+          COMMON_FLAGS="--artifact-group ${{ matrix.target.artifact_group }} --amdgpu-targets ${{ matrix.target.gpu_arch }} --tests --blas --prim --rand --hipblasltprovider --output-dir ../therock_build"
 
-      - name: Load amdgpu kernel module
-        run: |
-          if ! lsmod | grep -q amdgpu; then
-            sudo modprobe amdgpu
+          if [ "${{ inputs.source_repo }}" = "ROCm/rockrel" ]; then
+            RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
+              --run-github-repo "${{ inputs.source_repo }}" \
+              --run-id "${{ needs.setup_matrix.outputs.run_id }}" \
+              $COMMON_FLAGS
+          elif [ "${{ inputs.artifact_source || 'latest-release' }}" = "latest-release" ]; then
+            RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
+              --latest-release \
+              $COMMON_FLAGS
+          else
+            RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
+              --tag "${{ inputs.artifact_source }}" \
+              --run-github-repo "${{ inputs.source_repo }}" \
+              $COMMON_FLAGS
+          fi
+
+          # Supplement _dev artifacts (headers / CMake / static libs) when requested
+          if [ "${{ inputs.source_repo }}" = "ROCm/rockrel" ] && \
+             [ "${{ inputs.include_dev }}" = "true" ]; then
+            RELEASE_TYPE=nightly python3 build_tools/fetch_artifacts.py \
+              --run-id "${{ needs.setup_matrix.outputs.run_id }}" \
+              --run-github-repo "${{ inputs.source_repo }}" \
+              --artifact-group ${{ matrix.target.artifact_group }} \
+              --amdgpu-targets ${{ matrix.target.gpu_arch }} \
+              --output-dir ../therock_build \
+              --flatten \
+              '_dev'
           fi
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
+        uses: astral-sh/setup-uv@v6  # v6
         with:
           version: "0.7.x"
           enable-cache: true
 
       - name: Install test dependencies
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends make pciutils
           python3 -m venv .venv
           source .venv/bin/activate
           uv pip install -r requirements.txt
@@ -95,25 +196,55 @@ jobs:
         env:
           COMMIT_ID: ${{ github.sha }}
           CURRENT_BRANCH: ${{ github.ref_name }}
-          PYTEST_K_EXPR: ${{ inputs.pytest_k_expr }}
+          PYTHON_LIB: ${{ steps.setup-python.outputs.python-path }}
           LD_LIBRARY_PATH: "${{ github.workspace }}/therock_build/lib:${LD_LIBRARY_PATH}"
         run: |
           source .venv/bin/activate
-          pytest tests/e2e/compiler/test_llvm.py tests/e2e/hwq_heuristic/ \
-            -m "ci.nightly and hw.gpu" \
+          export LD_LIBRARY_PATH="$(dirname ${PYTHON_LIB})/../lib:${GITHUB_WORKSPACE}/therock_build/lib:${LD_LIBRARY_PATH}"
+          pytest tests/e2e/compiler/ \
+            tests/e2e/hwq_heuristic/ \
+            tests/e2e/hip* tests/e2e/roc* \
             --rock-dir=therock_build \
+            --gpu-arch=${{ matrix.target.gpu_arch }} \
             --html=nightly_report.html --self-contained-html \
-            --tb=short \
+            --md-report --md-report-verbose=1 --md-report-color=never \
+            --md-report-flavor gfm --md-report-output=md_summary.md --md-report-tee \
+            --md-report-show-duration --tb=short \
             -v \
-            ${PYTEST_K_EXPR:+-k "$PYTEST_K_EXPR"}
+            -m ${{ matrix.target.tests_filters }}
 
       - name: Upload test artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        id: upload
+        uses: actions/upload-artifact@v6 # v6.2.3
         with:
-          name: nightly-artifacts-${{ github.run_id }}
+          name: nightly-artifacts-${{ matrix.target.name }}-${{ github.run_id }}
           path: |
             nightly_report.html
             output/artifacts/
           retention-days: 30
           if-no-files-found: ignore
+
+      - name: Test Summary
+        if: always()
+        run: |
+          REPORT_FILE="md_summary.md"
+          ARTIFACT_URL="${{ steps.upload.outputs.artifact-url }}"
+          {
+            echo "## Test Summary — ${{ matrix.target.name }}"
+            echo ""
+            echo "> **[⬇ Download HTML Report (nightly_report.html)](${ARTIFACT_URL})**"
+            echo "> _(zip archive — extract \`nightly_report.html\` and open locally)_"
+            echo ""
+            echo "---"
+            echo ""
+            if [ -f "$REPORT_FILE" ]; then
+              echo "<details><summary>Full Test Report</summary>"
+              echo ""
+              cat "$REPORT_FILE"
+              echo ""
+              echo "</details>"
+            else
+              echo "_No summary file generated._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
