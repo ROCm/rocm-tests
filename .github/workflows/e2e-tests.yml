@@ -1,0 +1,340 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# e2e-tests workflow — reusable per-platform executor called by e2e-nightly.yml.
+#
+# Receives all platform parameters as workflow_call inputs. The job-level
+# if: condition uses inputs.target_available so that platforms marked as
+# unavailable in testplan.ini appear as grey/skipped in the GitHub UI without
+# consuming a runner.
+
+name: E2E Tests
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: 'Platform name (e.g. linux-gfx94x)'
+        required: true
+        type: string
+      runs_on:
+        description: 'Runner label for this platform'
+        required: true
+        type: string
+      artifact_group:
+        description: 'TheRock artifact group (e.g. gfx94X-dcgpu)'
+        required: true
+        type: string
+      gpu_arch:
+        description: 'GPU architecture string for --gpu-arch (e.g. gfx942)'
+        required: false
+        type: string
+        default: ''
+      tests_filters:
+        description: 'pytest -m filter expression (e.g. "ci.nightly and hw.gpu")'
+        required: true
+        type: string
+      source_repo:
+        description: 'GitHub repo to pull artifacts from (ROCm/TheRock or ROCm/rockrel)'
+        required: false
+        type: string
+        default: 'ROCm/TheRock'
+      artifact_source:
+        description: 'Artifact source: "latest-release", a tag, or a rockrel workflow filename'
+        required: false
+        type: string
+        default: 'latest-release'
+      include_dev:
+        description: 'Download _dev archives when using rockrel run_id path'
+        required: false
+        type: boolean
+        default: true
+      run_id:
+        description: 'Resolved rockrel run_id (empty for TheRock paths)'
+        required: false
+        type: string
+        default: ''
+      target_available:
+        description: 'Set to "false" to grey-out/skip this platform in the GitHub UI'
+        required: false
+        type: string
+        default: 'true'
+
+jobs:
+  platform:
+    name: "e2e tests"
+    runs-on: ${{ inputs.runs_on }}
+    if: ${{ inputs.target_available != 'false' }}
+    timeout-minutes: 210
+    container:
+      image: ghcr.io/rocm/no_rocm_image_ubuntu24_04@sha256:4150afe4759d14822f0e3f8930e1124f26e11f68b5c7b91ec9a02b20b1ebbb98
+      options: >-
+        --ipc host
+        --device /dev/kfd
+        --device /dev/dri
+        --group-add 993
+        --group-add 992
+        --group-add 110
+        --ulimit memlock=-1:-1
+        --security-opt seccomp=unconfined
+        --env-file /etc/podinfo/gha-gpu-isolation-settings
+        --user 0:0
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Resolve platform
+        run: |
+          echo "Platform: ${{ inputs.name }}"
+          echo "target_available: ${{ inputs.target_available }}"
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        id: setup-python
+        with:
+          python-version: 3.12
+
+      - name: Checkout rocm-tests
+        uses: actions/checkout@v6 # v6.2.2
+
+      - name: Checkout TheRock
+        uses: actions/checkout@v6 # v6.2.2
+        with:
+          repository: "ROCm/TheRock"
+          ref: main
+          path: TheRock
+
+      # ── Install ROCm artifacts ────────────────────────────────────────────
+      # source_repo = ROCm/TheRock:
+      #   artifact_source = "latest-release" → --latest-release (full SDK tarball)
+      #   artifact_source = <tag>            → --tag <tag> (specific nightly build)
+      # source_repo = ROCm/rockrel:
+      #   artifact_source = <workflow.yml>   → run_id resolved by setup_matrix;
+      #   When include_dev=true: also fetches _dev archives (headers, cmake, .a)
+      - name: Install ROCm artifacts
+        run: |
+          cd TheRock
+          python3 -m pip install -r requirements-test.txt
+
+          COMMON_FLAGS="--artifact-group ${{ inputs.artifact_group }} --amdgpu-targets ${{ inputs.gpu_arch }} --tests --blas --prim --rand --hipblasltprovider --output-dir ../therock_build"
+
+          if [ "${{ inputs.source_repo }}" = "ROCm/rockrel" ]; then
+            RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
+              --run-github-repo "${{ inputs.source_repo }}" \
+              --run-id "${{ inputs.run_id }}" \
+              $COMMON_FLAGS
+          elif [ "${{ inputs.artifact_source || 'latest-release' }}" = "latest-release" ]; then
+            RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
+              --latest-release \
+              $COMMON_FLAGS
+          else
+            RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
+              --tag "${{ inputs.artifact_source }}" \
+              --run-github-repo "${{ inputs.source_repo }}" \
+              $COMMON_FLAGS
+          fi
+
+          # Supplement _dev artifacts (headers / CMake / static libs) when requested
+          if [ "${{ inputs.source_repo }}" = "ROCm/rockrel" ] && \
+             [ "${{ inputs.include_dev }}" = "true" ]; then
+            RELEASE_TYPE=nightly python3 build_tools/fetch_artifacts.py \
+              --run-id "${{ inputs.run_id }}" \
+              --run-github-repo "${{ inputs.source_repo }}" \
+              --artifact-group ${{ inputs.artifact_group }} \
+              --amdgpu-targets ${{ inputs.gpu_arch }} \
+              --output-dir ../therock_build \
+              --flatten \
+              '_dev'
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6  # v6
+        with:
+          version: "0.7.x"
+          enable-cache: true
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends make pciutils
+          python3 -m venv .venv
+          source .venv/bin/activate
+          uv pip install -r requirements.txt
+
+      - name: Run nightly tests
+        env:
+          COMMIT_ID: ${{ github.sha }}
+          CURRENT_BRANCH: ${{ github.ref_name }}
+          PYTHON_LIB: ${{ steps.setup-python.outputs.python-path }}
+          LD_LIBRARY_PATH: "${{ github.workspace }}/therock_build/lib:${LD_LIBRARY_PATH}"
+        run: |
+          source .venv/bin/activate
+          export LD_LIBRARY_PATH="$(dirname ${PYTHON_LIB})/../lib:${GITHUB_WORKSPACE}/therock_build/lib:${LD_LIBRARY_PATH}"
+          pytest tests/e2e/compiler/ \
+            tests/e2e/hwq_heuristic/ \
+            tests/e2e/hip* tests/e2e/roc* \
+            --rock-dir=therock_build \
+            --gpu-arch=${{ inputs.gpu_arch }} \
+            --html=nightly_report.html --self-contained-html \
+            --md-report --md-report-verbose=1 --md-report-color=never \
+            --md-report-flavor gfm --md-report-output=md_summary.md --md-report-tee \
+            --md-report-show-duration --tb=short \
+            -v \
+            -m ${{ inputs.tests_filters }}
+
+      - name: Extract test counts
+        if: always()
+        shell: python
+        run: |
+          import re, json, os
+
+          counts = {
+              "platform": "${{ inputs.name }}",
+              "passed": 0, "skipped": 0, "failed": 0, "error": 0, "total": 0,
+          }
+
+          def to_int(s):
+              s = s.strip()
+              return int(s) if s.isdigit() else 0
+
+          try:
+              with open("md_summary.md") as f:
+                  lines = f.readlines()
+
+              # Locate the header row dynamically so parsing is correct whether
+              # or not a "skipped" column is present in the report.
+              header_idx = None
+              col_names = []
+              for i, line in enumerate(lines):
+                  if "|" in line:
+                      parts = [c.strip().lower() for c in line.split("|")]
+                      if "passed" in parts and "failed" in parts:
+                          header_idx = i
+                          col_names = parts
+                          break
+
+              if header_idx is not None:
+                  for line in lines[header_idx + 2:]:  # skip header + alignment row
+                      if "TOTAL" in line:
+                          cols = [re.sub(r"\*\*([^*]+)\*\*", r"\1", c).strip()
+                                  for c in line.split("|")]
+
+                          def get(name):
+                              try:
+                                  idx = col_names.index(name)
+                                  return to_int(cols[idx]) if idx < len(cols) else 0
+                              except ValueError:
+                                  return 0
+
+                          counts["passed"]  = get("passed")
+                          counts["skipped"] = get("skipped")
+                          counts["failed"]  = get("failed")
+                          counts["error"]   = get("error")
+                          # column may be labelled "subtotal" or "total"
+                          counts["total"] = get("total") or get("subtotal") or (
+                              counts["passed"] + counts["skipped"] +
+                              counts["failed"] + counts["error"]
+                          )
+                          break
+              else:
+                  print("Header row not found in md_summary.md")
+          except FileNotFoundError:
+              print("md_summary.md not found — counts will be zero")
+
+          os.makedirs("test-counts", exist_ok=True)
+          with open("test-counts/counts.json", "w") as f:
+              json.dump(counts, f)
+          print(f"Counts: {counts}")
+
+      - name: Write per-platform step summary
+        if: always()
+        shell: python
+        run: |
+          import json, os, pathlib
+
+          counts_file = pathlib.Path("test-counts/counts.json")
+          if not counts_file.exists():
+              print("counts.json not found, skipping step summary")
+              import sys; sys.exit(0)
+
+          r = json.loads(counts_file.read_text())
+          platform = r["platform"]
+          ok = r["failed"] == 0 and r["error"] == 0 and r["total"] > 0
+          status = "✅ Passed" if ok else "❌ Failed"
+          has_skip = r.get("skipped", 0) > 0
+
+          lines = []
+          run_id = "${{ github.run_id }}"
+          lines.append(f"## Test summary - {platform}")
+          lines.append("")
+
+          if has_skip:
+              lines.append("| Platform | Tests Run | Pass | Skip | Fail | Error | Status |")
+              lines.append("|---|--:|--:|--:|--:|--:|---|")
+              lines.append(
+                  f"| {platform} | {r['total']} | {r['passed']} | "
+                  f"{r.get('skipped', 0)} | {r['failed']} | {r['error']} | {status} |"
+              )
+          else:
+              lines.append("| Platform | Tests Run | Pass | Fail | Error | Status |")
+              lines.append("|---|--:|--:|--:|--:|---|")
+              lines.append(
+                  f"| {platform} | {r['total']} | {r['passed']} | "
+                  f"{r['failed']} | {r['error']} | {status} |"
+              )
+
+          lines.append("")
+          lines.append("---")
+          lines.append("")
+
+          md_path = pathlib.Path("md_summary.md")
+          if md_path.exists():
+              lines.append(f"<details open><summary>Full Test Report for {platform}</summary>")
+              lines.append("")
+              lines.append(md_path.read_text())
+              lines.append("")
+              lines.append("</details>")
+          else:
+              lines.append("_No summary file generated._")
+
+          lines.append("")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(lines) + "\n")
+
+      - name: Upload test artifacts
+        if: always()
+        id: upload
+        uses: actions/upload-artifact@v6 # v6.2.3
+        with:
+          name: nightly-artifacts-${{ inputs.name }}-${{ github.run_id }}
+          path: |
+            nightly_report.html
+            md_summary.md
+            output/artifacts/
+            test-counts/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload test counts
+        if: always()
+        uses: actions/upload-artifact@v6 # v6.2.3
+        with:
+          name: test-counts-${{ inputs.name }}
+          path: test-counts/counts.json
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Add report download link to summary
+        if: always()
+        run: |
+          url="${{ steps.upload.outputs.artifact-url }}"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$url" ]; then
+            echo "### ⬇ [Download nightly report — ${{ inputs.name }}]($url)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ⬇ Download nightly report — ${{ inputs.name }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> Zip archive — extract \`nightly_report.html\` and open locally." >> "$GITHUB_STEP_SUMMARY"
