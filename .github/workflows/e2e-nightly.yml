@@ -27,16 +27,38 @@
 name: ROCm Nightly Tests
 
 on:
+  schedule:
+    - cron: '0 11 * * *'   # 11:00 AM UTC daily
+    - cron: '30 16 * * *'  # 04:30 PM UTC daily
+
   workflow_call:
+    inputs:
+      source_repo:
+        description: 'Source repository: ROCm/TheRock or ROCm/rockrel'
+        type: string
+        default: ROCm/rockrel
+      artifact_source:
+        description: >
+          ROCm/TheRock: "latest-release" OR a release tag.
+          ROCm/rockrel: workflow filename (e.g. "multi_arch_release.yml") whose latest
+          run_id is resolved automatically.
+        type: string
+        default: multi_arch_release.yml
+      include_dev:
+        description: >
+          For ROCm/rockrel: Download _dev artifacts needed for test binary compilation.
+        type: boolean
+        default: true
+
   workflow_dispatch:
     inputs:
       source_repo:
         description: 'GitHub repo to pull artifacts from'
         type: choice
         options:
-          - ROCm/TheRock
           - ROCm/rockrel
-        default: ROCm/TheRock
+          - ROCm/TheRock
+        default: ROCm/rockrel
 
       artifact_source:
         description: >
@@ -44,7 +66,7 @@ on:
           ROCm/rockrel: workflow filename (e.g. "multi_arch_release.yml") whose latest
           run_id is resolved automatically.
         type: string
-        default: 'latest-release'
+        default: 'multi_arch_release.yml'
 
       include_dev:
         description: >
@@ -128,8 +150,8 @@ jobs:
       artifact_group:   ${{ matrix.target.artifact_group }}
       gpu_arch:         ${{ matrix.target.gpu_arch || '' }}
       tests_filters:    ${{ matrix.target.tests_filters }}
-      source_repo:      ${{ inputs.source_repo || 'ROCm/TheRock' }}
-      artifact_source:  ${{ inputs.artifact_source || 'latest-release' }}
+      source_repo:      ${{ inputs.source_repo || 'ROCm/rockrel' }}
+      artifact_source:  ${{ inputs.artifact_source || 'multi_arch_release.yml' }}
       include_dev:      ${{ inputs.include_dev || true }}
       run_id:           ${{ needs.setup_matrix.outputs.run_id || '' }}
       target_available: ${{ matrix.target.target_available || 'true' }}
