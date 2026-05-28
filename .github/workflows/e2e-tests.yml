@@ -115,7 +115,7 @@ jobs:
       - name: Install ROCm artifacts
         run: |
           cd TheRock
-          python3 -m pip install -r requirements-test.txt
+          python3 -m pip install --root-user-action=ignore -r requirements-test.txt
 
           COMMON_FLAGS="--artifact-group ${{ inputs.artifact_group }} --amdgpu-targets ${{ inputs.gpu_arch }} --tests --blas --prim --rand --hipblasltprovider --output-dir ../therock_build"
 
@@ -150,6 +150,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6  # v6
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
         with:
           version: "0.7.x"
           enable-cache: true
