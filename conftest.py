@@ -17,7 +17,6 @@ Plugin responsibilities (registration order — markers_plugin MUST be first):
     executor_plugin     -- --container-mode/--container-image, cpu_executor/container_executor
     os_plugin           -- os_adapter/platform_name fixtures, os.* marker skip hook
     health_plugin       -- Pre/post GPU health gates (temp, ECC, VRAM, clocks)
-    baseline_plugin     -- Regression comparison against baselines/*.yaml
     artifacts_plugin    -- Allure attachment of GPU state dumps on failure
     prereqs_plugin      -- Session-level prerequisite checks (driver, ROCm version)
     retry_plugin        -- --retry-count option, retry_fixture
@@ -60,13 +59,12 @@ MarkDecorator.__getattr__ = _mark_getattr  # type: ignore[assignment]
 # Do not move markers_plugin below scheduling_plugin or gpu_plugin.
 pytest_plugins = [
     "framework.plugins.markers_plugin",      # FIRST: category-profile marker injection (CATEGORY_PROFILES in taxonomy.py)
-    "framework.plugins.gpu_plugin",          # --no-gpu/--gpu-arch/--mock-gpu, gpu_fixture/dry_run_executor
+    "framework.plugins.gpu_plugin",          # --no-gpu/--gpu-arch/--mock-gpu, gpu_arch/dry_run_executor
     "framework.plugins.remote_node_plugin",  # --remote-node/--gpu-acquire-timeout, node_pool/target_executor/multi_gpu_fixture/multi_node_fixture
     "framework.plugins.scheduling_plugin",   # --schedule-policy/--collect-runtimes, unified collection hook + runtime collector
-    "framework.plugins.executor_plugin",     # --container-mode/--container-image, cpu_executor/session_executor/remote_pool/container_executor
+    "framework.plugins.executor_plugin",     # --container-mode/--container-image/--container-runtime, cpu_executor/container_executor
     "framework.plugins.os_plugin",           # os_adapter/platform_name fixtures, os.* marker skip hook
     "framework.plugins.health_plugin",       # health_fixture (temp/ECC/VRAM gates)
-    "framework.plugins.baseline_plugin",     # baseline_fixture (YAML regression compare)
     "framework.plugins.artifacts_plugin",    # artifacts_fixture, allure_reporter fixture
     "framework.plugins.prereqs_plugin",      # prereqs_fixture (session prereq checks)
     "framework.plugins.retry_plugin",        # retry_fixture, --retry-count option

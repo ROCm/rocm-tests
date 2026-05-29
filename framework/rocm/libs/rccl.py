@@ -9,7 +9,7 @@ AllGather) via ``rccl-tests`` binaries and parsing their bandwidth/latency outpu
 for assertions and baseline comparisons.
 
 All helpers delegate execution to the provided executor so they work in local
-(LocalExecutor), remote (SshGpuExecutor), and container (ContainerExecutor)
+(LocalExecutor), remote (SshExecutor with gpu_indices), and container (ContainerExecutor)
 contexts without change.
 
 Usage::

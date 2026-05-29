@@ -2,32 +2,13 @@
 # SPDX-License-Identifier: MIT
 
 """
-retry_plugin.py -- Auto-retry fixture with per-attempt artifact capture.
+retry_plugin.py -- Per-test retry with Allure flaky marking.
 
-Provides the ``retry_fixture`` which wraps test execution with configurable
-retry logic. On each failed attempt, GPU state is captured and attached to
-Allure before the next retry begins.
+retry_fixture.run(executor, cmd) retries on failure up to the configured count.
+Retry count priority: @pytest.mark.retry(count=N) > --retry-count CLI > default 1 attempt.
+Tests that pass on a late attempt are tagged "flaky" in Allure.
 
-Features:
-    - Per-test retry count configurable via ``@pytest.mark.retry(count=N)``
-      or via the ``--retry-count`` CLI flag.
-    - Each attempt runs in an isolated environment with fresh GPU state.
-    - Tests that pass on retry are tagged ``flaky`` in the Allure report.
-    - Persistent flakiness trends surface across the N-build Allure history.
-
-Usage in tests (via fixture injection):
-    def test_rccl(target_executor, retry_fixture):
-        result = retry_fixture.run(target_executor, "python3 -c 'import rccl'")
-        assert result.ok
-
-Or, use the ``@pytest.mark.retry`` marker for automatic retry:
-    @pytest.mark.retry(count=2)
-    @pytest.mark.hw.gpu
-    @pytest.mark.ci.nightly
-    @pytest.mark.layer.math_lib
-    def test_rccl_allreduce(target_executor):
-        result = target_executor.run("python3 bench/rccl_allreduce.py")
-        assert result.ok
+CLI options added: --retry-count.
 """
 
 from __future__ import annotations

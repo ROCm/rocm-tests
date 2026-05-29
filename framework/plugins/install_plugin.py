@@ -2,24 +2,11 @@
 # SPDX-License-Identifier: MIT
 
 """
-install_plugin.py -- Pre-session parallel package / ROCm installation.
+install_plugin.py -- Pre-session parallel ROCm and OS package installation.
 
-Adds ``--pre-install KEY=VALUE`` CLI option.  When set, the plugin runs
-check-then-install on all fleet nodes in parallel at session start.
-
-Supported keys:
-    rocm=<version>        ROCm version (e.g. rocm=6.4.0).  Checks installed
-                          rocm-core version; skips the node if already at
-                          <version>; otherwise installs via apt/dnf.
-    pkg=<name>[,<name>]   Comma-separated OS package names.  Checks if each
-                          package is installed; installs any that are missing.
-
-Multiple ``--pre-install`` flags are accepted:
-    --pre-install rocm=6.4.0 --pre-install pkg=curl,wget
-
-Default: plugin is a no-op (no installs performed unless flag is given).
-
-Loaded via ``pytest_plugins`` in ``conftest.py``.
+Handles --pre-install rocm=X (ROCm version upgrade) and --pre-install pkg=A,B
+(apt packages). Runs in parallel across all nodes in NodePool before any tests.
+Skips nodes already at the requested ROCm version.
 """
 
 from __future__ import annotations
@@ -36,11 +23,6 @@ from framework.common.helpers import ExecutionResult
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# CLI option
-# ---------------------------------------------------------------------------
-
-
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("rocm-install", "ROCm pre-session install options")
     group.addoption(
@@ -54,11 +36,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "Examples: --pre-install rocm=6.4.0  --pre-install pkg=curl,wget"
         ),
     )
-
-
-# ---------------------------------------------------------------------------
-# Session hook
-# ---------------------------------------------------------------------------
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -118,11 +95,6 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         print("[pre-install] All nodes ready. Proceeding with test collection.")
 
 
-# ---------------------------------------------------------------------------
-# Spec parsing
-# ---------------------------------------------------------------------------
-
-
 def _parse_install_specs(args: list[str]) -> list[dict[str, Any]]:
     """Parse ``--pre-install`` arg strings into typed spec dicts.
 
@@ -150,11 +122,6 @@ def _parse_install_specs(args: list[str]) -> list[dict[str, Any]]:
         else:
             logger.warning("pre-install: unknown install type %r — supported: rocm, pkg", key)
     return specs
-
-
-# ---------------------------------------------------------------------------
-# Per-node handlers (check → skip or install)
-# ---------------------------------------------------------------------------
 
 
 def _run(ssh, command: str, timeout: float = 120.0) -> ExecutionResult:

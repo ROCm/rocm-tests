@@ -2,35 +2,11 @@
 # SPDX-License-Identifier: MIT
 
 """
-cpu_executor.py -- Subprocess executor for CPU-bound commands with no GPU environment.
+cpu_executor.py -- Real subprocess executor with no GPU environment injection.
 
-Distinct roles in the executor hierarchy:
-
-    LocalExecutor   injects ``ROCR_VISIBLE_DEVICES`` and requires a GPU ordinal.
-                    → Use for ``@pytest.mark.hw.gpu`` tests.
-
-    DryRunExecutor  never shells out; returns synthetic ``RESULT_OK`` output.
-                    → Use for ``--no-gpu`` CI gate runs.
-
-    CpuExecutor     real subprocess, *no* GPU environment modifications.
-                    → Use for ``@pytest.mark.hw.cpu_only`` tests that need
-                      genuine command execution (version probes, compilation
-                      smoke tests, config validation).
-
-Streaming modes
----------------
-Default (``stream_stdout=False``):
-    STDERR is written to ``sys.stderr`` in real time.
-    STDOUT is buffered and returned in ``ExecutionResult.stdout`` only.
-    Both channels are written to *log_path* (when set).
-
-Verbose (``stream_stdout=True``):
-    STDOUT is also written to ``sys.stdout`` in real time.
-    Both channels still go to *log_path* (when set).
-
-Usage (via ``cpu_executor`` fixture — not instantiated directly in tests):
-    result = cpu_executor.run("rocm-smi --version")
-    assert result.ok
+Use for hw.cpu_only tests that need real shell commands. GPU env vars (ROCR_*)
+are stripped. Streaming modes: stdout/stderr captured by default; set
+stream_stdout=True for live output (useful for long-running build steps).
 """
 
 from __future__ import annotations
@@ -71,8 +47,8 @@ class CpuExecutor(AbstractExecutor):
         stream_stdout:  When True, subprocess STDOUT is written to ``sys.stdout``
                         in real time.
         stream_stderr:  When True (default), STDERR is written to ``sys.stderr``
-                        in real time.  Set to False when wrapped by
-                        ``LabeledExecutor``.
+                        in real time.  Set to False when ``LogConfig`` handles
+                        output routing.
         log_path:       If set, all subprocess output (STDOUT+STDERR) is appended
                         to this file.
     """
@@ -96,8 +72,8 @@ class CpuExecutor(AbstractExecutor):
             stream_stdout:        When True, subprocess STDOUT is written to ``sys.stdout``
                                   in real time.
             stream_stderr:        When True (default), subprocess STDERR is written to
-                                  ``sys.stderr`` in real time.  Pass False when this
-                                  executor is wrapped by ``LabeledExecutor``.
+                                  ``sys.stderr`` in real time.  Pass False when
+                                  ``LogConfig`` handles output routing.
             log_path:             If given, all subprocess output (STDOUT+STDERR) is
                                   appended to this per-test file.
             session_log_path:     If given, all subprocess output is also appended to

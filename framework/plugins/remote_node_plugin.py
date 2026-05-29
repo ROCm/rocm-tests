@@ -4,36 +4,18 @@
 """
 remote_node_plugin.py -- Location-transparent GPU test execution plugin.
 
-This plugin is the integration point between the test framework and the
-``framework/nodes/`` fleet manager.  It:
+Wires NodePool into pytest. Builds the pool at session start, registers topology
+with xdist workers, and provides: target_executor, multi_gpu_fixture,
+multi_node_fixture, node_pool.
 
-1. Registers CLI options (``--remote-node``, ``--gpu-acquire-timeout``).
-2. Builds a ``NodePool`` at session start (LOCAL or REMOTE depending on flags).
-3. Prints GPU topology and the recommended ``-n`` value to the console.
-4. Exits hard (returncode 3) if GPU detection completes but finds 0 slots.
-5. Closes SSH sessions at session end.
+CLI options: --remote-node, --gpu-acquire-timeout, --gpu-health-metrics,
+             --monitor-gpu, --gpu-drain-secs, --gpu-drain-timeout.
 
-Test scheduling and xdist_group assignment are handled by ``scheduling_plugin``.
-
-Fixtures provided:
-    node_pool       -- Session-scoped ``NodePool`` (single source of truth).
-    target_executor -- Primary GPU test fixture (replaces ``local_executor``).
-                       Acquires a ``NodeSlot``, yields a ``LabeledExecutor``,
-                       releases the slot on teardown.
-    multi_gpu_fixture  -- N GPUs from ONE node (same-node intra-node collective).
-    multi_node_fixture -- One or more GPUs from EACH node (multi-node).
-
-CLI options added:
-    --remote-node PATH          host.yaml with remote node definitions.
-    --gpu-acquire-timeout N     Seconds to wait for a GPU slot (default 30).
-
-Loaded via ``pytest_plugins`` in ``conftest.py``.
-
-PRIORITY ORDER for executor selection (``target_executor``):
-    1. ``--no-gpu``          → ``DryRunExecutor`` (CI gate, no hardware)
-    2. ``--container-mode``  → ``ContainerExecutor`` (docker/podman pipeline)
-    3. ``--remote-node``     → ``SshGpuExecutor`` (remote node)
-    4. (default)             → ``LocalExecutor`` (real AMD GPU, local host)
+Priority order (target_executor):
+    1. --no-gpu          → DryRunExecutor
+    2. --container-mode  → ContainerExecutor
+    3. --remote-node     → SshExecutor
+    4. (default)         → LocalExecutor
 """
 
 from __future__ import annotations
@@ -139,7 +121,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _append_session_log(session_log: str, msg: str) -> None:
+def _write_to_session_log(session_log: str, msg: str) -> None:
     """Append *msg* to the session log file (append-safe, best-effort).
 
     Args:
@@ -186,7 +168,7 @@ def _console_slot_acquired(
     print(msg, flush=True)
     logger.info(msg)
     if session_log:
-        _append_session_log(session_log, msg)
+        _write_to_session_log(session_log, msg)
 
 
 def _console_slot_released(
@@ -219,7 +201,7 @@ def _console_slot_released(
     print(msg, flush=True)
     logger.info(msg)
     if session_log:
-        _append_session_log(session_log, msg)
+        _write_to_session_log(session_log, msg)
 
 
 def _console_multi_acquired(
@@ -247,7 +229,7 @@ def _console_multi_acquired(
     print(msg, flush=True)
     logger.info(msg)
     if session_log:
-        _append_session_log(session_log, msg)
+        _write_to_session_log(session_log, msg)
 
 
 def _console_multi_released(
@@ -277,14 +259,7 @@ def _console_multi_released(
     print(msg, flush=True)
     logger.info(msg)
     if session_log:
-        _append_session_log(session_log, msg)
-
-
-# Keep backward-compatible aliases used by any code that references the old names.
-_log_slot_acquired = _console_slot_acquired
-_log_slot_released = _console_slot_released
-_log_multi_slot_acquired = _console_multi_acquired
-_log_multi_slot_released = _console_multi_released
+        _write_to_session_log(session_log, msg)
 
 
 # ---------------------------------------------------------------------------
@@ -541,11 +516,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
     cleanup_session_start()
 
-    rock_dir: str | None = (
-        config.getoption("--rock-dir", default=None)
-        or os.environ.get("ROCK_DIR")
-        or os.environ.get("ROCM_TEST_THEROCK_ROCK_DIR")
-    )
+    rock_dir = _resolve_rock_dir(config)
 
     remote_node_path = config.getoption("--remote-node", default=None)
     headroom_gb = config.getoption("--vram-headroom-gb", default=2.0)
@@ -733,6 +704,262 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Private helpers — shared by target_executor, multi_gpu_fixture, multi_node_fixture
+# ---------------------------------------------------------------------------
+
+
+def _resolve_test_context(request, framework_config, config):
+    """Extract all per-test configuration in one place.
+
+    Returns a dict with all keys needed by the three fixture paths so that
+    the marker/option reads are not duplicated across target_executor,
+    multi_gpu_fixture, and multi_node_fixture.
+
+    Returns:
+        dict with keys: test_name, acquire_timeout, monitor_gpu,
+        health_metrics, mon_metrics, mon_interval, mon_duration,
+        log_path, session_log, rock_dir, gpu_count_marker,
+        vram_required_gb, is_multi_gpu, is_multi_node.
+    """
+    test_name = request.node.name
+    acquire_timeout = config.getoption("--gpu-acquire-timeout", default=30.0)
+    monitor_gpu = config.getoption("--monitor-gpu", default=False)
+    health_metrics = _resolve_health_metrics(config, framework_config)
+    mon_metrics, mon_interval, mon_duration = _resolve_monitor_config(framework_config)
+    log_path = executor_log_path(framework_config.framework.artifact_dir, test_name, request.node.nodeid)
+    session_log = _resolve_session_log(config, framework_config)
+    rock_dir = _resolve_rock_dir(config)
+    gpu_count_marker = request.node.get_closest_marker("gpu_count")
+    vram_marker = request.node.get_closest_marker("gpu_vram")
+    vram_required_gb = float(vram_marker.args[0]) if vram_marker else 0.0
+    return {
+        "test_name": test_name,
+        "acquire_timeout": acquire_timeout,
+        "monitor_gpu": monitor_gpu,
+        "health_metrics": health_metrics,
+        "mon_metrics": mon_metrics,
+        "mon_interval": mon_interval,
+        "mon_duration": mon_duration,
+        "log_path": log_path,
+        "session_log": session_log,
+        "rock_dir": rock_dir,
+        "gpu_count_marker": gpu_count_marker,
+        "vram_required_gb": vram_required_gb,
+        "is_multi_gpu": request.node.get_closest_marker("hw.multi_gpu") is not None,
+        "is_multi_node": request.node.get_closest_marker("e2e.multinode") is not None,
+    }
+
+
+def _acquire_single(node_pool, ctx):
+    """Acquire a single GPU slot, translating errors to pytest outcomes.
+
+    Args:
+        node_pool: Active ``NodePool``.
+        ctx:       Context dict from ``_resolve_test_context``.
+
+    Returns:
+        ``NodeSlot`` on success.
+
+    Raises:
+        pytest.skip: When slots are transiently unavailable.
+        pytest.fail: When no GPUs are detected at all.
+    """
+    try:
+        return node_pool.acquire_slot(
+            vram_required_gb=ctx["vram_required_gb"],
+            wait_timeout_secs=ctx["acquire_timeout"],
+            test_id=ctx["test_name"],
+        )
+    except RuntimeError as exc:
+        if node_pool.total_gpu_slots() == 0:
+            pytest.fail(
+                f"No GPUs detected on this platform — GPU driver or hardware missing. "
+                f"Topology: {node_pool.topology_summary()}"
+            )
+        else:
+            pytest.skip(f"TEST PLATFORM missing required GPUs (transient): {exc}")
+    return None  # unreachable; satisfies type checker
+
+
+def _acquire_multi_gpu(node_pool, ctx, count):
+    """Acquire N GPUs from a single node, translating errors to pytest.skip.
+
+    Args:
+        node_pool: Active ``NodePool``.
+        ctx:       Context dict from ``_resolve_test_context``.
+        count:     Number of GPUs to acquire.
+
+    Returns:
+        ``MultiGpuSlots`` on success.
+
+    Raises:
+        pytest.skip: When fewer than *count* GPUs are available.
+    """
+    try:
+        return node_pool.acquire_slots(
+            count=count,
+            vram_required_gb=ctx["vram_required_gb"],
+            wait_timeout_secs=ctx["acquire_timeout"],
+            test_id=ctx["test_name"],
+        )
+    except RuntimeError as exc:
+        pytest.skip(f"TEST PLATFORM missing required GPUs: {exc}")
+    return None  # unreachable
+
+
+def _setup_monitoring(ctx, framework_config, multi_slots_list, is_multi_node_shape):
+    """Set up health snapshots and background monitors before the test body.
+
+    Returns a tuple of (health_monitors, pre_health_maps, bg_monitors)
+    that must be passed to ``_teardown_monitoring`` after the test body.
+
+    Args:
+        ctx:                Context dict from ``_resolve_test_context``.
+        framework_config:   Session-scoped ``FrameworkConfig``.
+        multi_slots_list:   ``list[MultiGpuSlots]`` — each element is one node's group.
+        is_multi_node_shape: When True, uses per-node labels for background monitor log files.
+
+    Returns:
+        Tuple ``(health_monitors, pre_health_maps, bg_monitors)`` for teardown.
+    """
+    health_metrics = ctx["health_metrics"]
+    monitor_gpu = ctx["monitor_gpu"]
+    mon_metrics, mon_interval, mon_duration = ctx["mon_metrics"], ctx["mon_interval"], ctx["mon_duration"]
+    test_name = ctx["test_name"]
+    rock_dir = ctx["rock_dir"]
+
+    node_mon_execs = [_monitoring_executor(multi.slots[0], rock_dir) for multi in multi_slots_list]
+
+    # Pre-test health snapshots
+    pre_health_maps: list[dict] = [{} for _ in multi_slots_list]
+    health_monitors: list = []
+    if health_metrics is not None:
+        from framework.gpu.monitor import GpuMonitor  # pylint: disable=import-outside-toplevel
+
+        for i, multi in enumerate(multi_slots_list):
+            hm = GpuMonitor(executor=node_mon_execs[i], metrics=health_metrics)
+            health_monitors.append(hm)
+            for slot in multi.slots:
+                pre = hm.snapshot(slot.gpu_info.index)
+                pre_health_maps[i][slot.gpu_info.index] = pre
+                logger.info("[pre-health] %s", hm.summary_line(pre, "pre"))
+
+    # Background continuous monitor
+    bg_monitors: list = []
+    if monitor_gpu:
+        from framework.gpu.monitor import GpuBackgroundMonitor  # pylint: disable=import-outside-toplevel
+
+        for i, multi in enumerate(multi_slots_list):
+            bgm = GpuBackgroundMonitor(
+                executor=node_mon_execs[i],
+                metrics=mon_metrics,
+                interval_secs=mon_interval,
+                duration_secs=mon_duration,
+            )
+            if is_multi_node_shape:
+                node_label = multi.node_spec.label.replace(".", "_")
+                log_suffix = f"{test_name}_{node_label}"
+            else:
+                log_suffix = test_name
+            bgm.start(
+                gpu_indices=[s.gpu_info.index for s in multi.slots],
+                log_path=gpu_monitor_log_path(framework_config.framework.artifact_dir, log_suffix),
+            )
+            bg_monitors.append(bgm)
+
+    return health_monitors, pre_health_maps, bg_monitors
+
+
+def _teardown_monitoring(ctx, multi_slots_list, health_monitors, pre_health_maps, bg_monitors, elapsed):
+    """Tear down monitors and log health deltas after the test body.
+
+    Args:
+        ctx:              Context dict from ``_resolve_test_context``.
+        multi_slots_list: ``list[MultiGpuSlots]`` matching the list passed to ``_setup_monitoring``.
+        health_monitors:  List returned by ``_setup_monitoring``.
+        pre_health_maps:  List returned by ``_setup_monitoring``.
+        bg_monitors:      List returned by ``_setup_monitoring``.
+        elapsed:          Wall-clock seconds from test start to finish.
+    """
+    health_metrics = ctx["health_metrics"]
+
+    for bgm in bg_monitors:
+        bgm.stop()
+
+    if health_metrics is not None and health_monitors:
+        for i, multi in enumerate(multi_slots_list):
+            hm = health_monitors[i]
+            for slot in multi.slots:
+                pre = pre_health_maps[i].get(slot.gpu_info.index)
+                post = hm.snapshot(slot.gpu_info.index)
+                logger.info("[post-health] %s", hm.summary_line(post, "post"))
+                if pre is not None:
+                    logger.info("[health-delta] %s", hm.delta_line(pre, post))
+
+
+def _acquire_and_yield(
+    *,
+    multi_list: list[MultiGpuSlots],
+    ctx: dict,
+    framework_config,
+    config,
+    node_pool: NodePool,
+    is_multi_node: bool,
+):
+    """Shared generator: set up monitoring, yield NodeExecutorGroup, tear down.
+
+    Normalises the single-slot and multi-slot shapes into a uniform list so the
+    try/finally block is written exactly once. Callers supply the acquired
+    ``MultiGpuSlots`` list and the resolved context dict.
+
+    Args:
+        multi_list: One or more acquired ``MultiGpuSlots`` (single-GPU callers pass a
+            one-element list; multi-node callers pass one slot per node).
+        ctx: Resolved test context from ``_resolve_test_context()``. Required keys:
+            ``test_name`` (str), ``log_path`` (str), ``session_log`` (str),
+            ``rock_dir`` (str), plus monitoring keys consumed by ``_setup_monitoring``.
+        framework_config: Session-scoped ``FrameworkConfig``.
+        config: ``pytest.Config`` (for drain/monitoring options).
+        node_pool: Active ``NodePool`` used to release slots in the finally block.
+        is_multi_node: ``True`` for ``e2e.multinode`` shapes (one executor per node);
+            ``False`` for single-node multi-GPU shapes.
+    """
+    import time as _time  # pylint: disable=import-outside-toplevel
+
+    from framework.executors.executor_group import NodeExecutorGroup  # pylint: disable=import-outside-toplevel
+
+    test_name = ctx["test_name"]
+    log_path = ctx["log_path"]
+    session_log = ctx["session_log"]
+    rock_dir = ctx["rock_dir"]
+
+    for multi in multi_list:
+        multi._log_path = log_path
+        multi._session_log_path = session_log
+        _console_multi_acquired(node_pool, multi, test_name, session_log)
+    _write_session_separator(session_log, test_name, "START")
+
+    health_monitors, pre_health_maps, bg_monitors = _setup_monitoring(
+        ctx, framework_config, multi_list, is_multi_node_shape=is_multi_node
+    )
+    executors = [
+        m.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log) for m in multi_list
+    ]
+    _t = _time.monotonic()
+    try:
+        yield NodeExecutorGroup(executors)
+    finally:
+        elapsed = _time.monotonic() - _t
+        _teardown_monitoring(ctx, multi_list, health_monitors, pre_health_maps, bg_monitors, elapsed)
+        _write_session_separator(session_log, test_name, "END", elapsed)
+        all_indices = [s.gpu_info.index for m in multi_list for s in m.slots]
+        _drain_gpu_slots(config, rock_dir, all_indices)
+        for multi in multi_list:
+            node_pool.release_multi(multi)
+            _console_multi_released(node_pool, multi, test_name, elapsed, session_log)
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
@@ -751,7 +978,7 @@ def node_pool(request) -> NodePool | None:
 
 
 @pytest.fixture
-def target_executor(request, framework_config, node_pool):  # noqa: C901
+def target_executor(request, framework_config, node_pool):
     """Unified GPU test fixture: location- and topology-transparent executor.
 
     Reads the test's ``hw.*`` and ``e2e.*`` markers to dispatch automatically:
@@ -824,7 +1051,6 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
     from framework.executors.executor_group import NodeExecutorGroup
 
     config = request.config
-    test_name = request.node.name
 
     # --no-gpu: synthetic executor, no hardware needed
     if config.getoption("--no-gpu", default=False):
@@ -849,25 +1075,17 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
         )
         return
 
-    acquire_timeout = config.getoption("--gpu-acquire-timeout", default=30.0)
-    monitor_gpu = config.getoption("--monitor-gpu", default=False)
-    health_metrics = _resolve_health_metrics(config, framework_config)
-    mon_metrics, mon_interval, mon_duration = _resolve_monitor_config(framework_config)
-    log_path = executor_log_path(framework_config.framework.artifact_dir, test_name, request.node.nodeid)
-    session_log = _resolve_session_log(config, framework_config)
-    rock_dir = _resolve_rock_dir(config)
-
-    gpu_count_marker = request.node.get_closest_marker("gpu_count")
-    vram_marker = request.node.get_closest_marker("gpu_vram")
-    vram_required_gb = float(vram_marker.args[0]) if vram_marker else 0.0
-
-    is_multi_gpu = request.node.get_closest_marker("hw.multi_gpu") is not None
-    is_multi_node = request.node.get_closest_marker("e2e.multinode") is not None
+    ctx = _resolve_test_context(request, framework_config, config)
+    test_name = ctx["test_name"]
+    log_path = ctx["log_path"]
+    session_log = ctx["session_log"]
+    rock_dir = ctx["rock_dir"]
+    gpu_count_marker = ctx["gpu_count_marker"]
 
     # -------------------------------------------------------------------------
     # Multi-node path: acquire GPUs from every node in the fleet
     # -------------------------------------------------------------------------
-    if is_multi_node:
+    if ctx["is_multi_node"]:
         if len(node_pool.node_specs) < 2:
             pytest.skip(
                 "target_executor: e2e.multinode requires --remote-node with 2+ nodes "
@@ -880,232 +1098,62 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
         try:
             multi_list: list[MultiGpuSlots] = node_pool.acquire_multi_node(
                 gpu_count_per_node=gpu_count_per_node,
-                vram_required_gb=vram_required_gb,
-                wait_timeout_secs=acquire_timeout,
+                vram_required_gb=ctx["vram_required_gb"],
+                wait_timeout_secs=ctx["acquire_timeout"],
                 test_id=test_name,
             )
         except RuntimeError as exc:
             pytest.skip(f"TEST PLATFORM missing required GPUs: {exc}")
             return
 
-        for multi in multi_list:
-            multi._log_path = log_path
-            multi._session_log_path = session_log
-            _console_multi_acquired(node_pool, multi, test_name, session_log)
-        _write_session_separator(session_log, test_name, "START")
-
-        # Per-node monitoring executors (local CpuExecutor or remote SshExecutor).
-        node_mon_execs = [_monitoring_executor(multi.slots[0], rock_dir) for multi in multi_list]
-
-        # Pre-test health snapshots (--gpu-health-metrics).
-        pre_health_maps: list[dict] = [{} for _ in multi_list]
-        health_monitors: list = []
-        if health_metrics is not None:
-            from framework.gpu.monitor import GpuMonitor
-
-            for i, multi in enumerate(multi_list):
-                hm = GpuMonitor(executor=node_mon_execs[i], metrics=health_metrics)
-                health_monitors.append(hm)
-                for slot in multi.slots:
-                    pre = hm.snapshot(slot.gpu_info.index)
-                    pre_health_maps[i][slot.gpu_info.index] = pre
-                    logger.info("[pre-health] %s", hm.summary_line(pre, "pre"))
-
-        # Background continuous monitor (--monitor-gpu) — one per node.
-        bg_monitors: list = []
-        if monitor_gpu:
-            from framework.gpu.monitor import GpuBackgroundMonitor
-
-            for i, multi in enumerate(multi_list):
-                bgm = GpuBackgroundMonitor(
-                    executor=node_mon_execs[i],
-                    metrics=mon_metrics,
-                    interval_secs=mon_interval,
-                    duration_secs=mon_duration,
-                )
-                node_label = multi.node_spec.label.replace(".", "_")
-                bgm.start(
-                    gpu_indices=[s.gpu_info.index for s in multi.slots],
-                    log_path=gpu_monitor_log_path(
-                        framework_config.framework.artifact_dir,
-                        f"{test_name}_{node_label}",
-                    ),
-                )
-                bg_monitors.append(bgm)
-
-        executors = [
-            m.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log) for m in multi_list
-        ]
-        _t = _time.monotonic()
-        try:
-            yield NodeExecutorGroup(executors)
-        finally:
-            elapsed = _time.monotonic() - _t
-            for bgm in bg_monitors:
-                bgm.stop()
-
-            if health_metrics is not None and health_monitors:
-                for i, multi in enumerate(multi_list):
-                    hm = health_monitors[i]
-                    for slot in multi.slots:
-                        pre = pre_health_maps[i].get(slot.gpu_info.index)
-                        post = hm.snapshot(slot.gpu_info.index)
-                        logger.info("[post-health] %s", hm.summary_line(post, "post"))
-                        if pre is not None:
-                            logger.info("[health-delta] %s", hm.delta_line(pre, post))
-
-            _write_session_separator(session_log, test_name, "END", elapsed)
-            all_indices = [s.gpu_info.index for m in multi_list for s in m.slots]
-            _drain_gpu_slots(config, rock_dir, all_indices)
-            for multi in multi_list:
-                node_pool.release_multi(multi)
-                _console_multi_released(node_pool, multi, test_name, elapsed, session_log)
+        yield from _acquire_and_yield(
+            multi_list=multi_list,
+            ctx=ctx,
+            framework_config=framework_config,
+            config=config,
+            node_pool=node_pool,
+            is_multi_node=True,
+        )
         return
 
     # -------------------------------------------------------------------------
     # Multi-GPU same-node path: acquire N GPUs from one node
     # -------------------------------------------------------------------------
-    if is_multi_gpu:
+    if ctx["is_multi_gpu"]:
         count = int(gpu_count_marker.args[0]) if gpu_count_marker and gpu_count_marker.args else 2
-
-        try:
-            multi: MultiGpuSlots = node_pool.acquire_slots(
-                count=count,
-                vram_required_gb=vram_required_gb,
-                wait_timeout_secs=acquire_timeout,
-                test_id=test_name,
-            )
-        except RuntimeError as exc:
-            pytest.skip(f"TEST PLATFORM missing required GPUs: {exc}")
-            return
-
-        multi._log_path = log_path
-        multi._session_log_path = session_log
-        _console_multi_acquired(node_pool, multi, test_name, session_log)
-        _write_session_separator(session_log, test_name, "START")
-
-        mon_exec = _monitoring_executor(multi.slots[0], rock_dir)
-
-        # Pre-test health snapshots (--gpu-health-metrics).
-        health_monitor = None
-        pre_health_list: list = []
-        if health_metrics is not None:
-            from framework.gpu.monitor import GpuMonitor
-
-            health_monitor = GpuMonitor(executor=mon_exec, metrics=health_metrics)
-            for slot in multi.slots:
-                pre = health_monitor.snapshot(slot.gpu_info.index)
-                pre_health_list.append(pre)
-                logger.info("[pre-health] %s", health_monitor.summary_line(pre, "pre"))
-
-        # Background continuous monitor (--monitor-gpu).
-        bg_monitor = None
-        if monitor_gpu:
-            from framework.gpu.monitor import GpuBackgroundMonitor
-
-            bg_monitor = GpuBackgroundMonitor(
-                executor=mon_exec,
-                metrics=mon_metrics,
-                interval_secs=mon_interval,
-                duration_secs=mon_duration,
-            )
-            bg_monitor.start(
-                gpu_indices=[s.gpu_info.index for s in multi.slots],
-                log_path=gpu_monitor_log_path(framework_config.framework.artifact_dir, test_name),
-            )
-
-        executor = multi.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log)
-        _t = _time.monotonic()
-        try:
-            yield NodeExecutorGroup([executor])
-        finally:
-            elapsed = _time.monotonic() - _t
-            if bg_monitor is not None:
-                bg_monitor.stop()
-
-            if health_metrics is not None and health_monitor is not None and pre_health_list:
-                for pre, slot in zip(pre_health_list, multi.slots, strict=False):
-                    post = health_monitor.snapshot(slot.gpu_info.index)
-                    logger.info("[post-health] %s", health_monitor.summary_line(post, "post"))
-                    logger.info("[health-delta] %s", health_monitor.delta_line(pre, post))
-
-            _write_session_separator(session_log, test_name, "END", elapsed)
-            _drain_gpu_slots(config, rock_dir, [s.gpu_info.index for s in multi.slots])
-            node_pool.release_multi(multi)
-            _console_multi_released(node_pool, multi, test_name, elapsed, session_log)
+        multi = _acquire_multi_gpu(node_pool, ctx, count)
+        yield from _acquire_and_yield(
+            multi_list=[multi],
+            ctx=ctx,
+            framework_config=framework_config,
+            config=config,
+            node_pool=node_pool,
+            is_multi_node=False,
+        )
         return
 
     # -------------------------------------------------------------------------
     # Single-GPU path (hw.gpu — default)
     # -------------------------------------------------------------------------
-    try:
-        slot: NodeSlot = node_pool.acquire_slot(
-            vram_required_gb=vram_required_gb,
-            wait_timeout_secs=acquire_timeout,
-            test_id=test_name,
-        )
-    except RuntimeError as exc:
-        if node_pool.total_gpu_slots() == 0:
-            pytest.fail(
-                f"No GPUs detected on this platform — GPU driver or hardware missing. "
-                f"Topology: {node_pool.topology_summary()}"
-            )
-        else:
-            pytest.skip(f"TEST PLATFORM missing required GPUs (transient): {exc}")
-        return
-
+    slot = _acquire_single(node_pool, ctx)
     _console_slot_acquired(node_pool, slot, test_name, session_log)
     _write_session_separator(session_log, test_name, "START")
 
-    mon_exec = _monitoring_executor(slot, rock_dir)
+    # Wrap slot as a single-item MultiGpuSlots for unified monitoring API
+    from framework.nodes.node_pool import MultiGpuSlots as _MultiGpuSlots  # pylint: disable=import-outside-toplevel
 
-    # Pre-test health snapshot (--gpu-health-metrics).
-    health_monitor = None
-    pre_health = None
-    if health_metrics is not None:
-        from framework.gpu.monitor import GpuMonitor
-
-        health_monitor = GpuMonitor(executor=mon_exec, metrics=health_metrics)
-        pre_health = health_monitor.snapshot(slot.gpu_info.index)
-        logger.info("[pre-health] %s", health_monitor.summary_line(pre_health, "pre"))
-
-    # Background continuous monitor (--monitor-gpu).
-    bg_monitor = None
-    if monitor_gpu:
-        from framework.gpu.monitor import GpuBackgroundMonitor
-
-        bg_monitor = GpuBackgroundMonitor(
-            executor=mon_exec,
-            metrics=mon_metrics,
-            interval_secs=mon_interval,
-            duration_secs=mon_duration,
-        )
-        bg_monitor.start(
-            gpu_indices=[slot.gpu_info.index],
-            log_path=gpu_monitor_log_path(framework_config.framework.artifact_dir, test_name),
-        )
-
-    _t_slot = _time.monotonic()
+    slot_as_multi = _MultiGpuSlots(slots=[slot], node_spec=slot.node_spec)
+    health_monitors, pre_health_maps, bg_monitors = _setup_monitoring(
+        ctx, framework_config, [slot_as_multi], is_multi_node_shape=False
+    )
+    _t = _time.monotonic()
     try:
         yield NodeExecutorGroup(
-            [
-                slot.make_executor(
-                    test_id=test_name,
-                    log_path=log_path,
-                    session_log_path=session_log,
-                )
-            ]
+            [slot.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log)]
         )
     finally:
-        elapsed = _time.monotonic() - _t_slot
-        if bg_monitor is not None:
-            bg_monitor.stop()
-
-        if health_metrics is not None and health_monitor is not None and pre_health is not None:
-            post_health = health_monitor.snapshot(slot.gpu_info.index)
-            logger.info("[post-health] %s", health_monitor.summary_line(post_health, "post"))
-            logger.info("[health-delta] %s", health_monitor.delta_line(pre_health, post_health))
-
+        elapsed = _time.monotonic() - _t
+        _teardown_monitoring(ctx, [slot_as_multi], health_monitors, pre_health_maps, bg_monitors, elapsed)
         _write_session_separator(session_log, test_name, "END", elapsed)
         _drain_gpu_slots(config, rock_dir, [slot.gpu_info.index])
         node_pool.release([slot])
@@ -1145,12 +1193,8 @@ def multi_gpu_fixture(request, framework_config, node_pool):
             result = multi_gpu_fixture.run("python3 rccl_allreduce.py")
             assert result.ok
     """
-    import time as _time
-
-    from framework.executors.executor_group import NodeExecutorGroup
 
     config = request.config
-    test_name = request.node.name
 
     if config.getoption("--no-gpu", default=False):
         pytest.skip("multi_gpu_fixture: skipped — --no-gpu is active")
@@ -1163,85 +1207,23 @@ def multi_gpu_fixture(request, framework_config, node_pool):
         )
         return
 
-    gpu_count_marker = request.node.get_closest_marker("gpu_count")
+    ctx = _resolve_test_context(request, framework_config, config)
+    gpu_count_marker = ctx["gpu_count_marker"]
     count = int(gpu_count_marker.args[0]) if gpu_count_marker and gpu_count_marker.args else 2
 
-    acquire_timeout = config.getoption("--gpu-acquire-timeout", default=30.0)
-    monitor_gpu = config.getoption("--monitor-gpu", default=False)
-    health_metrics = _resolve_health_metrics(config, framework_config)
-    mon_metrics, mon_interval, mon_duration = _resolve_monitor_config(framework_config)
-    log_path = executor_log_path(framework_config.framework.artifact_dir, test_name, request.node.nodeid)
-    session_log = _resolve_session_log(config, framework_config)
-    rock_dir = _resolve_rock_dir(config)
-
-    try:
-        multi: MultiGpuSlots = node_pool.acquire_slots(
-            count=count,
-            wait_timeout_secs=acquire_timeout,
-            test_id=test_name,
-        )
-    except RuntimeError as exc:
-        pytest.skip(f"multi_gpu_fixture: {exc}")
-        return
-
-    multi._log_path = log_path
-    multi._session_log_path = session_log
-    _console_multi_acquired(node_pool, multi, test_name, session_log)
-    _write_session_separator(session_log, test_name, "START")
-
-    mon_exec = _monitoring_executor(multi.slots[0], rock_dir)
-
-    # Pre-test health snapshots (--gpu-health-metrics).
-    health_monitor = None
-    pre_health_list: list = []
-    if health_metrics is not None:
-        from framework.gpu.monitor import GpuMonitor
-
-        health_monitor = GpuMonitor(executor=mon_exec, metrics=health_metrics)
-        for slot in multi.slots:
-            pre = health_monitor.snapshot(slot.gpu_info.index)
-            pre_health_list.append(pre)
-            logger.info("[pre-health] %s", health_monitor.summary_line(pre, "pre"))
-
-    # Background continuous monitor (--monitor-gpu).
-    bg_monitor = None
-    if monitor_gpu:
-        from framework.gpu.monitor import GpuBackgroundMonitor
-
-        bg_monitor = GpuBackgroundMonitor(
-            executor=mon_exec,
-            metrics=mon_metrics,
-            interval_secs=mon_interval,
-            duration_secs=mon_duration,
-        )
-        bg_monitor.start(
-            gpu_indices=[s.gpu_info.index for s in multi.slots],
-            log_path=gpu_monitor_log_path(framework_config.framework.artifact_dir, test_name),
-        )
-
-    executor = multi.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log)
-    _t_slot = _time.monotonic()
-    try:
-        yield NodeExecutorGroup([executor])
-    finally:
-        elapsed = _time.monotonic() - _t_slot
-        if bg_monitor is not None:
-            bg_monitor.stop()
-
-        if health_metrics is not None and health_monitor is not None and pre_health_list:
-            for pre, slot in zip(pre_health_list, multi.slots, strict=False):
-                post = health_monitor.snapshot(slot.gpu_info.index)
-                logger.info("[post-health] %s", health_monitor.summary_line(post, "post"))
-                logger.info("[health-delta] %s", health_monitor.delta_line(pre, post))
-
-        _write_session_separator(session_log, test_name, "END", elapsed)
-        _drain_gpu_slots(config, rock_dir, [s.gpu_info.index for s in multi.slots])
-        node_pool.release_multi(multi)
-        _console_multi_released(node_pool, multi, test_name, elapsed, session_log)
+    multi = _acquire_multi_gpu(node_pool, ctx, count)
+    yield from _acquire_and_yield(
+        multi_list=[multi],
+        ctx=ctx,
+        framework_config=framework_config,
+        config=config,
+        node_pool=node_pool,
+        is_multi_node=False,
+    )
 
 
 @pytest.fixture
-def multi_node_fixture(request, framework_config, node_pool):  # noqa: C901
+def multi_node_fixture(request, framework_config, node_pool):
     """GPU slots from EACH node — yields a ready executor group (explicit alternative).
 
     Prefer ``target_executor`` with ``@pytest.mark.e2e.multinode`` for new tests.
@@ -1276,12 +1258,8 @@ def multi_node_fixture(request, framework_config, node_pool):  # noqa: C901
                 result = exec_.run("torchrun --nproc_per_node=2 allreduce.py")
                 assert result.ok
     """
-    import time as _time
-
-    from framework.executors.executor_group import NodeExecutorGroup
 
     config = request.config
-    test_name = request.node.name
 
     if config.getoption("--no-gpu", default=False):
         pytest.skip("multi_node_fixture: skipped — --no-gpu is active")
@@ -1298,96 +1276,25 @@ def multi_node_fixture(request, framework_config, node_pool):  # noqa: C901
         pytest.skip("multi_node_fixture: requires --remote-node with 2+ nodes " "(currently only one node in the pool)")
         return
 
-    gpu_count_marker = request.node.get_closest_marker("gpu_count")
+    ctx = _resolve_test_context(request, framework_config, config)
+    gpu_count_marker = ctx["gpu_count_marker"]
     gpu_count_per_node = int(gpu_count_marker.args[0]) if gpu_count_marker and gpu_count_marker.args else 1
-
-    acquire_timeout = config.getoption("--gpu-acquire-timeout", default=30.0)
-    monitor_gpu = config.getoption("--monitor-gpu", default=False)
-    health_metrics = _resolve_health_metrics(config, framework_config)
-    mon_metrics, mon_interval, mon_duration = _resolve_monitor_config(framework_config)
-    log_path = executor_log_path(framework_config.framework.artifact_dir, test_name, request.node.nodeid)
-    session_log = _resolve_session_log(config, framework_config)
-    rock_dir = _resolve_rock_dir(config)
 
     try:
         multi_list: list[MultiGpuSlots] = node_pool.acquire_multi_node(
             gpu_count_per_node=gpu_count_per_node,
-            wait_timeout_secs=acquire_timeout,
-            test_id=test_name,
+            wait_timeout_secs=ctx["acquire_timeout"],
+            test_id=ctx["test_name"],
         )
     except RuntimeError as exc:
         pytest.skip(f"multi_node_fixture: {exc}")
         return
 
-    for multi in multi_list:
-        multi._log_path = log_path
-        multi._session_log_path = session_log
-        _console_multi_acquired(node_pool, multi, test_name, session_log)
-    _write_session_separator(session_log, test_name, "START")
-
-    # Per-node monitoring executors (local CpuExecutor or remote SshExecutor).
-    node_mon_execs = [_monitoring_executor(multi.slots[0], rock_dir) for multi in multi_list]
-
-    # Pre-test health snapshots (--gpu-health-metrics).
-    pre_health_maps: list[dict] = [{} for _ in multi_list]
-    health_monitors: list = []
-    if health_metrics is not None:
-        from framework.gpu.monitor import GpuMonitor
-
-        for i, multi in enumerate(multi_list):
-            hm = GpuMonitor(executor=node_mon_execs[i], metrics=health_metrics)
-            health_monitors.append(hm)
-            for slot in multi.slots:
-                pre = hm.snapshot(slot.gpu_info.index)
-                pre_health_maps[i][slot.gpu_info.index] = pre
-                logger.info("[pre-health] %s", hm.summary_line(pre, "pre"))
-
-    # Background continuous monitor (--monitor-gpu) — one per node.
-    bg_monitors: list = []
-    if monitor_gpu:
-        from framework.gpu.monitor import GpuBackgroundMonitor
-
-        for i, multi in enumerate(multi_list):
-            bgm = GpuBackgroundMonitor(
-                executor=node_mon_execs[i],
-                metrics=mon_metrics,
-                interval_secs=mon_interval,
-                duration_secs=mon_duration,
-            )
-            node_label = multi.node_spec.label.replace(".", "_")
-            bgm.start(
-                gpu_indices=[s.gpu_info.index for s in multi.slots],
-                log_path=gpu_monitor_log_path(
-                    framework_config.framework.artifact_dir,
-                    f"{test_name}_{node_label}",
-                ),
-            )
-            bg_monitors.append(bgm)
-
-    executors = [
-        m.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log) for m in multi_list
-    ]
-    _t_slot = _time.monotonic()
-    try:
-        yield NodeExecutorGroup(executors)
-    finally:
-        elapsed = _time.monotonic() - _t_slot
-        for bgm in bg_monitors:
-            bgm.stop()
-
-        if health_metrics is not None and health_monitors:
-            for i, multi in enumerate(multi_list):
-                hm = health_monitors[i]
-                for slot in multi.slots:
-                    pre = pre_health_maps[i].get(slot.gpu_info.index)
-                    post = hm.snapshot(slot.gpu_info.index)
-                    logger.info("[post-health] %s", hm.summary_line(post, "post"))
-                    if pre is not None:
-                        logger.info("[health-delta] %s", hm.delta_line(pre, post))
-
-        _write_session_separator(session_log, test_name, "END", elapsed)
-        all_indices = [s.gpu_info.index for m in multi_list for s in m.slots]
-        _drain_gpu_slots(config, rock_dir, all_indices)
-        for multi in multi_list:
-            node_pool.release_multi(multi)
-            _console_multi_released(node_pool, multi, test_name, elapsed, session_log)
+    yield from _acquire_and_yield(
+        multi_list=multi_list,
+        ctx=ctx,
+        framework_config=framework_config,
+        config=config,
+        node_pool=node_pool,
+        is_multi_node=True,
+    )

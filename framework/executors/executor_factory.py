@@ -2,57 +2,11 @@
 # SPDX-License-Identifier: MIT
 
 """
-executor_factory.py -- Config-driven executor selection for the test framework.
+executor_factory.py -- Static executor factory for CLI-flag-driven backend selection.
 
-WHY A FACTORY?
---------------
-Without a factory, every test that wants "an executor" must duplicate this
-branching logic:
-
-    if config.getoption("--no-gpu"):
-        executor = DryRunExecutor()
-    elif config.getoption("--container-mode"):
-        executor = ContainerExecutor(image=..., gpu_index=...)
-    else:
-        executor = LocalExecutor(gpu_index=...)
-
-That is three lines of framework plumbing inside test business logic.  Worse,
-adding a fourth backend (e.g. a Podman remote daemon) requires touching every
-test file.
-
-WITH THE FACTORY:
------------------
-The same test becomes:
-
-    def test_hip_runtime(session_executor):       # fixture backed by the factory
-        result = session_executor.run("rocm-smi --showid")
-        assert result.ok
-
-The factory reads active CLI options once and returns the correct executor.
-Tests remain unchanged as the infrastructure evolves.
-
-CONCRETE EXAMPLE:
------------------
-Running locally against real GPU hardware:
-    $ pytest tests/e2e/stack_validation/test_hip_runtime.py
-    #  ExecutorFactory.resolve() sees no special flags
-    #  → returns LocalExecutor(gpu_index=0)
-
-Running in a container-based CI pipeline:
-    $ pytest tests/e2e/stack_validation/test_hip_runtime.py \\
-          --container-mode --container-image rocm/pytorch:6.3
-    #  → returns ContainerExecutor(image="rocm/pytorch:6.3", gpu_index=0)
-
-Running on a PR gate with no GPU hardware:
-    $ pytest tests/ --no-gpu
-    #  → returns DryRunExecutor()
-
-The test code is identical in all three cases.
-
-PRIORITY ORDER (highest wins):
-    1. --no-gpu          → DryRunExecutor    (CI gate, no hardware)
-    2. --container-mode  → ContainerExecutor (docker/podman pipeline)
-    3. (default)         → LocalExecutor     (real AMD GPU, local host)
+ExecutorFactory.resolve() returns DryRunExecutor, ContainerExecutor, or LocalExecutor
+based on --no-gpu / --container-mode / default priority. Used internally by
+executor_plugin and remote_node_plugin — tests never call it directly.
 """
 
 from __future__ import annotations
@@ -83,11 +37,9 @@ class ExecutorFactory:
 
     Classmethods:
         resolve()  Auto-select executor from ``--no-gpu`` / ``--container-mode``
-                   CLI flags.  Used by the ``session_executor`` fixture.
+                   CLI flags.
         cpu()      Return a ``CpuExecutor`` for CPU-only operations.
         remote()   Return a new ``SshExecutor`` for a named remote host.
-                   The ``remote_pool`` fixture is preferred in tests because
-                   it deduplicates connections to the same host.
     """
 
     @classmethod
@@ -166,10 +118,7 @@ class ExecutorFactory:
     ) -> SshExecutor:
         """Return a new ``SshExecutor`` for the given remote host.
 
-        In test code, the ``remote_pool`` fixture is preferred because it
-        deduplicates connections: calling ``remote_pool.acquire("gpu-node-01")``
-        twice returns the same ``SshExecutor`` instance.  This classmethod is
-        useful in non-fixture contexts (e.g. framework health checks or
+        Useful in non-fixture contexts (e.g. framework health checks or
         prerequisite probes) where fixture injection is not available.
 
         Args:

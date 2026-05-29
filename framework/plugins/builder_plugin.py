@@ -2,42 +2,15 @@
 # SPDX-License-Identifier: MIT
 
 """
-builder_plugin.py -- Compiler path options, build-directory fixtures, and generic
-                     binary compilation factory for any e2e test component.
+builder_plugin.py -- HIP/C++ binary compilation fixtures.
 
-Responsibilities:
-    - Register ``--rock-dir`` and ``--compiler-build-dir`` pytest CLI options.
-    - Provide ``rock_dir`` session fixture that resolves the TheRock/ROCm
-      installation path from (highest to lowest priority):
-          1. ``--rock-dir`` CLI flag
-          2. ``ROCK_DIR`` environment variable
-          3. ``ROCM_TEST_THEROCK_ROCK_DIR`` environment variable
-          4. ``framework_config.therock.rock_dir`` (rocm-test.toml / defaults)
-    - Provide ``compiler_build_dir`` session fixture that creates the binary
-      output directory on first use (default: ``output/test-binaries/``).
-    - Provide ``ld_path`` session fixture that prepends ``{rock_dir}/lib`` to
-      ``LD_LIBRARY_PATH`` for running TheRock-linked binaries.
-    - Provide ``compile_binary`` session fixture: a factory callable that wraps
-      ``BinaryBuilder`` so any e2e component can compile a HIP/C++ binary
-      without importing ``BinaryBuilder`` directly.
+Provides: rock_dir, compiler_build_dir, compile_binary, ld_path, gpu_arch, arch_lib_path.
 
-Loaded automatically via pytest_plugins in conftest.py.
+rock_dir resolution order: --rock-dir CLI → ROCK_DIR env → rocm-test.toml → "" (empty).
+compile_binary wraps BinaryBuilder — session-scoped, incremental, xdist-safe via file lock.
+For .hip sources or CMake builds use cmake_build() from tests/common/_cmake_build.py instead.
 
-pytest options added:
-    --rock-dir PATH           Path to TheRock/ROCm installation.
-    --compiler-build-dir PATH Override for compiled-binary output directory.
-
-Example usage in any e2e conftest::
-
-    @pytest.fixture(scope="session")
-    def my_kernel_binary(compile_binary):
-        return compile_binary(
-            src="tests/e2e/myarea/src/my_kernel.cpp",
-            output_name="my_kernel",
-            include_dirs=["tests/common/include"],
-            subdir="myarea",    # → output/test-binaries/myarea/my_kernel
-            arch="gfx942",      # optional
-        )
+CLI options added: --rock-dir, --compiler-build-dir.
 """
 
 from __future__ import annotations
@@ -51,11 +24,6 @@ import pytest
 from framework.builder.binary_builder import BinaryBuilder
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# pytest hooks
-# ---------------------------------------------------------------------------
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -81,11 +49,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "Defaults to output/test-binaries/ (or rocm-test.toml [therock] build_dir)."
         ),
     )
-
-
-# ---------------------------------------------------------------------------
-# Session-scoped fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="session")

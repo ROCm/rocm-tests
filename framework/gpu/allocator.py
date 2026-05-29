@@ -2,20 +2,10 @@
 # SPDX-License-Identifier: MIT
 
 """
-allocator.py -- Thread-safe, NUMA-aware GPU allocator.
+allocator.py -- Per-node GPU slot allocator with file-based locking.
 
-The GpuAllocator manages a pool of available GPUs across concurrent pytest
-workers (xdist) using a simple lock-based allocation scheme. NUMA locality
-is preferred when filtering by architecture: the GPU with the lowest NUMA
-node number is allocated first to minimise cross-node memory traffic.
-
-Usage (via gpu_fixture — not called directly in test code):
-    allocator = GpuAllocator(detector=GpuDetector())
-    gpu_info = allocator.allocate()
-    try:
-        ...
-    finally:
-        allocator.release(gpu_info)
+GpuAllocator manages GPU index assignment across parallel xdist workers.
+GpuFileLock provides cross-process safety. Used internally by NodePool.
 """
 
 from __future__ import annotations

@@ -2,31 +2,12 @@
 # SPDX-License-Identifier: MIT
 
 """
-scheduling_plugin.py -- Unified resource-aware test scheduling plugin.
+scheduling_plugin.py -- Resource-aware test ordering and runtime collection.
 
-Provides resource-aware test ordering and xdist group assignment via ``DynamicScheduler``.
-A single ``--schedule-policy`` flag and a single ``pytest_collection_modifyitems``
-hook replace earlier per-plugin ordering flags.
+Integrates DynamicScheduler at collection time to assign xdist groups and sort
+tests by GPU resource weight (--schedule-policy resource-most/resource-least).
 
-CLI flags added here:
-    --schedule-policy {resource-most,resource-least}
-        Test ordering policy (default: resource-most).
-        resource-most: multinode → multi_gpu DESC → single_gpu
-        resource-least: single_gpu → multi_gpu ASC → multinode
-
-    --collect-runtimes PATH
-        Write per-test wall-clock durations and outcomes to PATH as JSON at session end.
-        Used as a seed for future hint-file input; NOT used for scheduling.
-
-    --vram-headroom-gb GB
-        VRAM headroom reserved per GPU in gigabytes (default: 2.0).
-        Tests annotated with @pytest.mark.gpu_vram(N) are only assigned to GPUs
-        where (total_vram_gb - headroom) >= N.  Read by gpu_plugin and remote_node_plugin.
-
-Hook responsibilities:
-    pytest_collection_modifyitems -- delegate to DynamicScheduler; no-op when --no-gpu.
-    pytest_runtest_logreport      -- collect (nodeid, duration, outcome) for each test call.
-    pytest_sessionfinish          -- flush collected runtimes to --collect-runtimes PATH.
+Adds: --schedule-policy, --collect-runtimes, --vram-headroom-gb.
 """
 
 from __future__ import annotations
@@ -41,11 +22,6 @@ logger = logging.getLogger(__name__)
 
 # Module-level accumulator for runtime data (cleared on each session).
 _runtimes: list[dict] = []
-
-
-# ---------------------------------------------------------------------------
-# CLI options
-# ---------------------------------------------------------------------------
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -89,11 +65,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "to GPUs where (total_vram_gb - headroom) >= N."
         ),
     )
-
-
-# ---------------------------------------------------------------------------
-# Collection-time scheduling
-# ---------------------------------------------------------------------------
 
 
 def pytest_collection_modifyitems(
@@ -141,11 +112,6 @@ def pytest_collection_modifyitems(
             f"           Add -n {recommended} to run in parallel (one test per GPU).\n"
             f"           Requires: pip install pytest-xdist\n"
         )
-
-
-# ---------------------------------------------------------------------------
-# Runtime data collection
-# ---------------------------------------------------------------------------
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:

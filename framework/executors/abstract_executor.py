@@ -79,7 +79,7 @@ class AbstractExecutor(abc.ABC):
             ``LocalExecutor``, ``CpuExecutor``, ``DryRunExecutor``.
 
         Not yet supported by:
-            ``SshExecutor``, ``SshGpuExecutor`` — raises ``NotImplementedError``
+            ``SshExecutor`` — raises ``NotImplementedError``
             (Paramiko channel background support is a future extension).
 
         Args:

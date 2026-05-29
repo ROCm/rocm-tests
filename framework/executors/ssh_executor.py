@@ -13,10 +13,9 @@ alive across subsequent calls.  This avoids per-command handshake overhead in
 tests that issue many commands to the same node.
 
 Call ``close()`` — or use the executor as a context manager — to release the
-connection when finished.  The ``remote_pool`` fixture in ``executor_plugin``
-manages this lifecycle automatically.
+connection when finished.
 
-Usage (via ``remote_pool`` fixture — not instantiated directly in tests):
+Usage (via ``NodePool`` / ``target_executor`` — not instantiated directly in tests):
     with SshExecutor(host="gpu-node-01", user="ci", key_path="~/.ssh/id_rsa") as node:
         result = node.run("rocm-smi --showid")
         assert result.ok
@@ -30,6 +29,7 @@ import time
 
 from framework.common.helpers import ExecutionResult
 from framework.executors.abstract_executor import AbstractExecutor
+from framework.executors.log_config import LogConfig, run_with_logging
 
 try:
     import paramiko
@@ -60,13 +60,9 @@ class SshExecutor(AbstractExecutor):
     uses to deduplicate connections when the same host is requested multiple
     times within a single test.
 
-    Args:
-        host:            Remote hostname or IP address.
-        user:            SSH login name (default: ``$USER`` environment variable).
-        key_path:        Path to an SSH private key file; ``~`` is expanded.
-        password:        SSH password — prefer *key_path* for automated environments.
-        port:            SSH server port (default 22).
-        connect_timeout: Seconds allowed for the initial TCP handshake (default 30 s).
+    When *gpu_indices* is non-empty, ``ROCR_VISIBLE_DEVICES`` is injected
+    automatically on every ``run()`` call to restrict GPU visibility on the
+    remote host.
     """
 
     def __init__(
@@ -77,6 +73,8 @@ class SshExecutor(AbstractExecutor):
         password: str | None = None,
         port: int = 22,
         connect_timeout: float = 30.0,
+        gpu_indices: list[int] | None = None,
+        log_config: LogConfig | None = None,
     ) -> None:
         self.host = host
         self.user = user or os.getenv("USER", "root")
@@ -84,6 +82,8 @@ class SshExecutor(AbstractExecutor):
         self.password = password
         self.port = port
         self.connect_timeout = connect_timeout
+        self.gpu_indices: list[int] = list(gpu_indices) if gpu_indices else []
+        self.log_config = log_config
         self._client: paramiko.SSHClient | None = None
 
         # Silence INFO-level messages from paramiko.transport / paramiko.auth
@@ -183,12 +183,15 @@ class SshExecutor(AbstractExecutor):
         *command* as ``export K=V`` shell assignments so the remote shell sees
         them without relying on SSH ``SendEnv`` configuration.
 
+        When the executor was constructed with *gpu_indices*, ``ROCR_VISIBLE_DEVICES``
+        is injected automatically before any caller-supplied *env_overrides*.
+
         Args:
             command:       Shell command string to execute on the remote host.
             timeout:       Maximum seconds to wait for the command to finish
                            (default 300 s).
-            env_overrides: Environment variables to export on the remote shell
-                           before running *command*.
+            env_overrides: Additional environment variables to export on the
+                           remote shell before running *command*.
 
         Returns:
             ExecutionResult with exit_code, stdout, stderr, and wall-clock duration.
@@ -199,31 +202,39 @@ class SshExecutor(AbstractExecutor):
         """
         effective_timeout = timeout if timeout is not None else 300.0
 
-        if env_overrides:
-            assignments = " ".join(f"{k}={v}" for k, v in env_overrides.items())
-            command = f"export {assignments}; {command}"
+        def _inner_run(cmd: str, t: float | None) -> ExecutionResult:
+            t_eff = t if t is not None else effective_timeout
+            effective_env: dict = {}
+            if self.gpu_indices:
+                effective_env["ROCR_VISIBLE_DEVICES"] = ",".join(str(i) for i in self.gpu_indices)
+            if env_overrides:
+                effective_env.update(env_overrides)
 
-        client = self._connect()
-        logger.debug("SshExecutor[%s] running: %s", self.session_key, command)
+            full_cmd = cmd
+            if effective_env:
+                assignments = " ".join(f"{k}={v}" for k, v in effective_env.items())
+                full_cmd = f"export {assignments}; {cmd}"
 
-        t0 = time.monotonic()
-        _, stdout_ch, stderr_ch = client.exec_command(command, timeout=effective_timeout)
-        stdout_ch.channel.settimeout(effective_timeout)
+            client = self._connect()
+            logger.debug("SshExecutor[%s] running: %s", self.session_key, full_cmd)
 
-        raw_stdout = stdout_ch.read().decode("utf-8", errors="replace")
-        raw_stderr = stderr_ch.read().decode("utf-8", errors="replace")
-        exit_code = stdout_ch.channel.recv_exit_status()
-        duration = time.monotonic() - t0
+            t0 = time.monotonic()
+            _, stdout_ch, stderr_ch = client.exec_command(full_cmd, timeout=t_eff)
+            stdout_ch.channel.settimeout(t_eff)
 
-        logger.debug(
-            "SshExecutor[%s] rc=%d duration=%.3fs",
-            self.session_key,
-            exit_code,
-            duration,
-        )
-        return ExecutionResult(
-            exit_code=exit_code,
-            stdout=raw_stdout.rstrip(),
-            stderr=raw_stderr.rstrip(),
-            duration=duration,
-        )
+            raw_stdout = stdout_ch.read().decode("utf-8", errors="replace")
+            raw_stderr = stderr_ch.read().decode("utf-8", errors="replace")
+            exit_code = stdout_ch.channel.recv_exit_status()
+            duration = time.monotonic() - t0
+
+            logger.debug("SshExecutor[%s] rc=%d duration=%.3fs", self.session_key, exit_code, duration)
+            return ExecutionResult(
+                exit_code=exit_code,
+                stdout=raw_stdout.rstrip(),
+                stderr=raw_stderr.rstrip(),
+                duration=duration,
+            )
+
+        if self.log_config is not None:
+            return run_with_logging(self.log_config, command, timeout, _inner_run)
+        return _inner_run(command, timeout)

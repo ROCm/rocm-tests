@@ -2,22 +2,12 @@
 # SPDX-License-Identifier: MIT
 
 """
-markers_plugin.py -- Apply per-directory category profiles at collection time.
+markers_plugin.py -- CATEGORY_PROFILES marker injection at collection time.
 
-Reads ``CATEGORY_PROFILES`` from ``framework.markers.taxonomy`` and injects
-profile markers onto collected test items.  The injection is purely additive:
-a profile marker is only added when the test function has no existing marker
-in that dimension, so function-level markers always win (overrides are silent).
-
-Category profiles centralise the "what hardware / layer / CI gate" answer for
-an entire test directory.  Individual test functions then only need to declare
-their test-specific markers (e.g. ``runtime.medium``).
-
-The longest matching path prefix in ``CATEGORY_PROFILES`` wins when a test
-file lives under a nested sub-path.
-
-This plugin is registered in the root ``conftest.py`` ``pytest_plugins`` list
-and runs before the sharding / remote-node plugins sort the collected items.
+Reads CATEGORY_PROFILES from taxonomy.py. For each test item, injects missing
+required-dimension markers based on the item's file path prefix. Function-level
+markers always win; this plugin only fills gaps. Must be loaded FIRST in
+pytest_plugins (markers_plugin.py → all other plugins).
 """
 
 from __future__ import annotations
@@ -42,11 +32,6 @@ def pytest_collection_modifyitems(  # pylint: disable=unused-argument
         items:   Collected test items, modified in place.
     """
     _apply_profiles(items)
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 
 def _apply_profiles(items: list) -> None:
