@@ -18,9 +18,6 @@ Regression for SWDEV-508590 / TMS 1002344.
 Binary compiled via CMake from:
     tests/e2e/hip_runtime/src/hip_invalid_codeobject_load_test.cpp
 
-Markers auto-injected by CATEGORY_PROFILES (tests/e2e/hip_runtime):
-    hw.gpu, layer.runtime, ci.nightly, e2e.stack, os.linux
-
 This test exercises HIP driver error paths (no GPU compute), so e2e.stack from
 the profile is technically loose — the test is a driver-level regression test.
 runtime.fast is declared explicitly.
@@ -38,15 +35,7 @@ def test_hip_invalid_codeobject_load(
     rock_dir: str,
     subtest: str,
 ):
-    """Validate HIP graceful error handling for invalid code object operations.
-
-    Args:
-        target_executor:                   Location-transparent GPU executor.
-        ld_path:                           LD_LIBRARY_PATH dict for ROCm libs.
-        hip_invalid_codeobject_load_binary: Path to compiled binary.
-        rock_dir:                          ROCm install root (for ROCM_PATH env).
-        subtest:                           Sub-test name to run.
-    """
+    """Validate HIP graceful error handling for invalid code object operations."""
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld} ROCM_PATH={rock_dir}" f" {hip_invalid_codeobject_load_binary} -t {subtest}"

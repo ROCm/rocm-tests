@@ -2,22 +2,11 @@
 # SPDX-License-Identifier: MIT
 
 """
-framework.os_adapter -- Cross-platform OS abstraction layer.
+framework.os_adapter -- OS-level GPU enumeration and kernel module interface.
 
-Unifies Linux and Windows GPU enumeration and platform-specific operations
-behind a single interface so test code never contains ``sys.platform`` checks.
-
-Modules:
-    abstract_adapter  -- AbstractOsAdapter base class.
-    linux_adapter     -- Linux implementation (/dev/kfd, modprobe, etc.).
-    windows_adapter   -- Windows implementation (amd-smi, runas, etc.).
-
-Usage:
-    from framework.os_adapter import os_adapter_factory
-
-    adapter = os_adapter_factory()
-    gpu_paths = adapter.list_gpu_device_paths()
-    adapter.load_kernel_module("amdgpu")
+AbstractOsAdapter: unified interface for Linux and Windows.
+LinuxOsAdapter: uses lspci for GPU paths, modprobe for kernel modules.
+Factory: get_os_adapter() returns the correct adapter for the current platform.
 """
 
 from __future__ import annotations

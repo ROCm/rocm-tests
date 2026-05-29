@@ -62,11 +62,6 @@ def test_rocprim_stress(
 
     Excluded from nightly (``ci.nightly``) because individual cases can exceed
     2 minutes; scheduled in the weekly CI gate (``ci.weekly``, ``runtime.soak``).
-
-    Args:
-        target_executor:      Executor bound to the allocated GPU.
-        ld_path:              ``LD_LIBRARY_PATH`` dict for ROCm libs.
-        rocprim_tests_binary: Path to the compiled GTest binary.
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(

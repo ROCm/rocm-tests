@@ -20,9 +20,6 @@ Environment variables used (set by binary internally, no pre-export needed):
     KS_ELEMENTS=65536         (smoke; default=262144)
     KS_ROUNDS=8               (smoke; default=900)
 
-Markers auto-injected by CATEGORY_PROFILES (tests/e2e/hip_runtime):
-    hw.gpu, layer.runtime, ci.nightly, e2e.stack, os.linux
-
 runtime.fast is declared explicitly.
 """
 
@@ -35,13 +32,7 @@ def test_multi_stream_serialization(
     ld_path: dict,
     multi_stream_serialization_binary: str,
 ):
-    """Validate HIP multi-stream serialization correctness (smoke: 8 rounds).
-
-    Args:
-        target_executor:                    Location-transparent GPU executor.
-        ld_path:                            LD_LIBRARY_PATH dict for ROCm libs.
-        multi_stream_serialization_binary: Path to compiled binary.
-    """
+    """Validate HIP multi-stream serialization correctness (smoke: 8 rounds)."""
     ld = ld_path["LD_LIBRARY_PATH"]
     # Smoke parameters: KS_ROUNDS=8, KS_KERNELS=8, KS_ELEMENTS=65536
     # AMD_SERIALIZE_KERNEL is set internally by the binary via setenv().

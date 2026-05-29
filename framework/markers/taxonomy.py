@@ -2,23 +2,12 @@
 # SPDX-License-Identifier: MIT
 
 """
-taxonomy.py -- Ground truth for all valid rocm-test pytest marker values.
+taxonomy.py -- Marker schema and category profile definitions.
 
-``MARKER_SCHEMA`` is the single authoritative definition of the 6-dimension
-marker taxonomy. Every test function MUST carry at least one marker from
-``hw``, ``ci``, and ``layer`` dimensions.
-
-Never add marker values in test files. Add them here first.
-
-Marker format: ``<dimension>.<value>``   e.g. ``hw.gpu``, ``ci.nightly``
-
-Usage:
-    from framework.markers.taxonomy import MARKER_SCHEMA, REQUIRED_DIMENSIONS
-
-    allowed_hw = MARKER_SCHEMA["hw"]   # {"gpu", "multi_gpu", "cpu_only"}
-    for dim in REQUIRED_DIMENSIONS:
-        # check test has at least one marker from each required dim
-        ...
+MARKER_SCHEMA: authoritative set of valid marker values per dimension.
+CATEGORY_PROFILES: per-directory default marker injection (markers_plugin reads this).
+PARAMETRIC_MARKERS: markers that take arguments (gpu_vram, gpu_count, etc.).
+Add new values to MARKER_SCHEMA before using them in test files.
 """
 
 from __future__ import annotations
@@ -31,15 +20,15 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     # Hardware requirement (REQUIRED)
     "hw": {"gpu", "multi_gpu", "cpu_only"},
     # CI gate membership (REQUIRED)
-    "ci": {"pr", "nightly", "weekly", "smoke_e2e"},
+    "ci": {"pr", "nightly", "weekly"},
     # ROCm stack layer under test (REQUIRED)
-    "layer": {"driver", "runtime", "math_lib", "ml_framework", "debug_stack"},
+    "layer": {"runtime", "math_lib"},
     # Expected duration (optional but strongly recommended)
-    "runtime": {"fast", "medium", "longevity", "soak"},
+    "runtime": {"fast", "medium", "soak"},
     # Target platform (optional)
-    "os": {"linux", "windows", "wsl", "both"},
+    "os": {"linux"},
     # Scenario type (optional)
-    "e2e": {"stack", "multinode", "app", "upgrade"},
+    "e2e": {"stack", "multinode"},
 }
 
 REQUIRED_DIMENSIONS: set[str] = {"hw", "ci", "layer"}
@@ -56,7 +45,6 @@ PARAMETRIC_MARKERS: dict[str, str] = {
 DURATION_GUIDANCE: dict[str, str] = {
     "fast": "< 5 minutes    — use with ci.pr",
     "medium": "< 30 minutes   — use with ci.nightly",
-    "longevity": "< 2 hours      — use with ci.weekly",
     "soak": "hours          — use with ci.weekly",
 }
 
@@ -109,13 +97,6 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
-    "tests/e2e/concurrent_collectives": [
-        "hw.multi_gpu",
-        "layer.math_lib",
-        "ci.nightly",
-        "e2e.stack",
-        "os.linux",
-    ],
     "tests/e2e/hwq_heuristic": [
         "hw.gpu",
         "layer.runtime",
@@ -146,6 +127,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     ],
     "tests/e2e/rocprim": [
         "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/concurrent_collectives": [
+        "hw.multi_gpu",
         "layer.math_lib",
         "ci.nightly",
         "e2e.stack",

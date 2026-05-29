@@ -16,9 +16,6 @@ Runtime: < 2 minutes (8 parametrized forward passes, no training).
 This test exercises the PyTorch → hipBLASLt integration path for edge-case
 input shapes (integer overflow boundary condition).
 
-Markers auto-injected by CATEGORY_PROFILES (tests/e2e/hipblaslt):
-    hw.gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux
-
 runtime.fast is declared explicitly.
 """
 
@@ -34,12 +31,7 @@ def test_hipblaslt_shape_boundary(
     target_executor,
     ld_path: dict,
 ):
-    """Run hipBLASLt nn.Linear shape boundary test (8 cases) via subprocess.
-
-    Args:
-        target_executor: Location-transparent GPU executor.
-        ld_path:         LD_LIBRARY_PATH dict for ROCm libs.
-    """
+    """Run hipBLASLt nn.Linear shape boundary test (8 cases) via subprocess."""
     try:
         import torch as _torch  # noqa: F401
     except ImportError as exc:

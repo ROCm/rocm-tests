@@ -19,9 +19,6 @@ Prerequisites:
       installation that provides ``bin/hipcc`` and ``lib/``.
     - Real AMD GPU hardware.
 
-Markers (auto-injected by CATEGORY_PROFILES for tests/e2e/compiler/):
-    hw.gpu, layer.runtime, ci.nightly, e2e.stack, os.linux
-
 Explicit marker (not in profile):
     runtime.medium  -- Expected duration < 30 minutes.
 """
@@ -40,12 +37,6 @@ def test_llvm_mem_intrinsic_stress(
     Exercises multi-stream large-buffer memset/memcpy/memmove kernels and
     validates results against a host-side golden replay.  The binary exits
     non-zero on any mismatch or HIP API error.
-
-    Args:
-        target_executor:                  Location-transparent executor bound to
-                                          the allocated GPU (local or remote).
-        ld_path:                          LD_LIBRARY_PATH dict for TheRock libs.
-        llvm_mem_intrinsic_stress_binary: Path to the compiled binary.
     """
     ld_library_path = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(f"env LD_LIBRARY_PATH={ld_library_path} {llvm_mem_intrinsic_stress_binary}")

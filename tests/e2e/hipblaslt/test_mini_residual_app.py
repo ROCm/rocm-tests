@@ -13,9 +13,6 @@ Binary compiled from:
 
 Smoke args (< 10 s): --M 512 --N 512 --K 256 --iters 5
 
-Markers auto-injected by CATEGORY_PROFILES (tests/e2e/hipblaslt):
-    hw.gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux
-
 runtime.fast is declared explicitly.
 """
 
@@ -33,14 +30,7 @@ def test_mini_residual_app(
     arch_lib_path,
     mini_residual_app_binary: str,
 ):
-    """Validate hipBLASLt GEMM beta-path zero invariant (FP8/BF16).
-
-    Args:
-        target_executor:          Location-transparent GPU executor.
-        ld_path:                  LD_LIBRARY_PATH dict for ROCm libs.
-        arch_lib_path:            Callable resolving per-arch library subdirectory.
-        mini_residual_app_binary: Path to compiled binary.
-    """
+    """Validate hipBLASLt GEMM beta-path zero invariant (FP8/BF16)."""
     library_base = pathlib.Path(rock_dir) / "lib" / "hipblaslt" / "library"
     # Tensile kernels live under a per-arch subdirectory:
     #   <rock_dir>/lib/hipblaslt/library/<arch>/TensileLibrary_lazy_<arch>.dat

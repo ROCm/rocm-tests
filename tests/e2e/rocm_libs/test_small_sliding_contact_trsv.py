@@ -15,9 +15,6 @@ Binary compiled via CMake from:
 
 Smoke args: N=3, BATCH_COUNT=100000 (< 30 s)
 
-Markers auto-injected by CATEGORY_PROFILES (tests/e2e/rocm_libs):
-    hw.gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux
-
 runtime.fast is declared explicitly.
 """
 
@@ -33,14 +30,7 @@ def test_small_sliding_contact_trsv(
     small_sliding_contact_binary: str,
     rock_dir: str,
 ):
-    """Validate rocBLAS big-batch STRSV for contact mechanics (N=3, batch=100K).
-
-    Args:
-        target_executor:             Location-transparent GPU executor.
-        ld_path:                     LD_LIBRARY_PATH dict for ROCm libs.
-        small_sliding_contact_binary: Path to compiled binary.
-        rock_dir:                    ROCm install root (for rocBLAS library check).
-    """
+    """Validate rocBLAS big-batch STRSV for contact mechanics (N=3, batch=100K)."""
     check_rocblas_library(rock_dir)
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(f"env LD_LIBRARY_PATH={ld} {small_sliding_contact_binary} 3 100000")

@@ -21,9 +21,6 @@ Args: --compute-streams=4 --copy-streams=4 --elems=1048576 --iters=64
       --rounds=4 --check-overlap
 Parametrized over DEBUG_HIP_DYNAMIC_QUEUES modes 0, 1, 2.
 
-Markers auto-injected by CATEGORY_PROFILES (tests/e2e/hwq_heuristic):
-    hw.gpu, layer.runtime, ci.nightly, e2e.stack, os.linux
-
 runtime.fast is declared explicitly.
 """
 
@@ -42,12 +39,6 @@ def test_hwq_compute_copy_overlap(
 
     Uses --check-overlap to make pass/fail deterministic: fails if
     t_mixed >= t_compute + t_copy (i.e., operations are not truly overlapping).
-
-    Args:
-        target_executor:               Location-transparent GPU executor.
-        ld_path:                       LD_LIBRARY_PATH dict for ROCm libs.
-        hwq_compute_copy_overlap_binary: Path to compiled binary.
-        dq_mode:                       DEBUG_HIP_DYNAMIC_QUEUES value (0/1/2).
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(

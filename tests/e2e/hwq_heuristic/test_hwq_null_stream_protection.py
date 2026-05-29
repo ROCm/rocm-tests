@@ -23,9 +23,6 @@ Binary compiled via CMake from:
 Args: --n=8 --elems=262144 --iters=32
 Parametrized over DEBUG_HIP_DYNAMIC_QUEUES modes 0, 1, 2.
 
-Markers auto-injected by CATEGORY_PROFILES (tests/e2e/hwq_heuristic):
-    hw.gpu, layer.runtime, ci.nightly, e2e.stack, os.linux
-
 runtime.fast is declared explicitly.
 """
 
@@ -40,14 +37,7 @@ def test_hwq_null_stream_protection(
     hwq_null_stream_protection_binary: str,
     dq_mode: int,
 ):
-    """Validate null stream queue integrity after heavy explicit-stream workload.
-
-    Args:
-        target_executor:                      Location-transparent GPU executor.
-        ld_path:                              LD_LIBRARY_PATH dict for ROCm libs.
-        hwq_null_stream_protection_binary:    Path to compiled binary.
-        dq_mode:                              DEBUG_HIP_DYNAMIC_QUEUES value (0/1/2).
-    """
+    """Validate null stream queue integrity after heavy explicit-stream workload."""
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld}"

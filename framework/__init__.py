@@ -6,7 +6,7 @@ framework -- Core test automation framework for AMD ROCm validation.
 
 Sub-packages:
     config      -- Runtime configuration loader (rocm-test.toml → env vars → CLI defaults)
-    common      -- Shared utilities: ExecutionResult, Outcome, parse_metric(), retry decorator
+    common      -- Shared utilities: ExecutionResult, Outcome, executor_log_path(), gpu_monitor_log_path()
     executors   -- Command executor hierarchy (DryRun, Local, SSH, Container, Labeled, Group)
     nodes       -- NodePool fleet manager: NodeSpec, NodeSlot, GpuFileLock, PendingTracker
     scheduling  -- DynamicScheduler and SchedulePolicy for resource-aware xdist scheduling

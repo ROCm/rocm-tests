@@ -72,7 +72,7 @@ pytest tests/e2e/ -m "hw.gpu and ci.pr" -v
 
 # Full nightly matrix for a specific architecture
 pytest tests/e2e/ -m "hw.gpu and ci.nightly" --gpu-arch gfx942 \
-  --alluredir=allure-results -v
+  --html=nightly_report.html --self-contained-html -v
 ```
 
 **Common pytest flags:**
@@ -101,7 +101,6 @@ The framework is structured around a clean plugin boundary. All GPU management, 
 **Minimal example:**
 
 ```python
-@pytest.mark.layer.math_lib
 @pytest.mark.hw.multi_gpu
 @pytest.mark.gpu_count(2)       # acquire 2 GPUs from one node
 @pytest.mark.gpu_vram(16)       # each GPU must have ≥ 16 GB free VRAM
@@ -126,33 +125,9 @@ pytest tests/e2e/<layer>/test_<name>.py --collect-only -q --no-gpu
 pytest tests/e2e/<layer>/test_<name>.py --no-gpu -v
 ```
 
-### Where to place your file
-
-```
-tests/e2e/<layer/category>/test_<feature>.py
-```
-
-Match the layer directory to the `layer.*` marker you intend to use:
-
-| Directory | Marker | ROCm Layer / Category |
-|---|---|---|
-| `compiler/` | `layer.runtime` | hipcc compilation, kernel execution, LLVM codegen |
-| `concurrent_collectives/` | `layer.math_lib` | RCCL collectives, multi-GPU communication ops |
-| `hwq_heuristic/` | `layer.runtime` | GPU hardware queue heuristics and scheduling behavior |
-
-
-### Marker dimensions in Tests (required vs optional)
+### Markers in Testcase (required vs optional)
 
 Each dimension is an independent axis of classification. A test carrying `hw.gpu`, `ci.nightly`, `layer.math_lib`, and `runtime.medium` is simultaneously a GPU test, a nightly-tier test, a math-library test, and a medium-duration test — these dimensions compose orthogonally, so any combination is a valid query with no special-casing required. As a test suite scales to thousands of tests across multiple GPU architectures, firmware versions, and ROCm releases, this orthogonality is what keeps execution control tractable: a single marker expression such as `hw.gpu and ci.nightly and layer.runtime` precisely selects the intended subset without enumerating individual test names or maintaining separate lists. CI workflows never need to be modified when a new test is added — the test's markers slot it into the correct runner and schedule automatically. The same mechanism drives Dynamic Scheduling: the `hw.*` dimension signals GPU slot requirements, `runtime.*` supplies duration weights for the LPT algorithm, and `gpu_count`/`gpu_vram` parametric markers allow the nodepool to pre-filter devices by capacity before any test begins — turning marker metadata into a live resource contract between the test and the infrastructure.
-
-| Dimension | Required | Values |
-|---|---|---|
-| `hw.*` | **YES** | `gpu`, `multi_gpu`, `cpu_only` |
-| `ci.*` | **YES** | `pr`, `nightly`, `weekly`, `smoke_e2e` |
-| `layer.*` | **YES** | `driver`, `runtime`, `math_lib`, `ml_framework`, `debug_stack` |
-| `runtime.*` | no | `fast` (<5 min), `medium` (<30 min), `longevity` (<2 hr), `soak` (hours) |
-| `os.*` | no | `linux`, `windows`, `wsl`, `both` |
-| `e2e.*` | no | `stack`, `multinode`, `app`, `upgrade` |
 
 ### AI-assisted authoring (optional)
 
@@ -190,7 +165,7 @@ rocm-tests/
 │
 ├── framework/                          # Core framework — never imported directly by test files
 │   ├── builder/                        # Binary compilation helpers (compile_binary fixture)
-│   ├── common/                         # Shared utilities: ExecutionResult, parse_metric, Outcome
+│   ├── common/                         # Shared utilities: ExecutionResult, Outcome, log path helpers
 │   ├── config/                         # Config cascade: rocm-test.toml → env → CLI overrides
 │   ├── executors/                      # Execution backends — local, SSH, container, dry_run
 │   ├── gpu/                            # GPU enumeration, VRAM introspection, health checks
@@ -209,7 +184,6 @@ rocm-tests/
 │   ├── dry_run/                        # Config and framework tests — no GPU required (ci.pr)
 │   └── e2e/                            # End-to-end tests against the full ROCm stack
 │       ├── compiler/                   # hipcc compilation, LLVM codegen, kernel execution
-│       ├── concurrent_collectives/     # RCCL collectives: AllReduce, Broadcast, multi-GPU ops
 │       └── hwq_heuristic/              # GPU hardware queue heuristics and scheduling behavior
 │
 ├── docs/                               # MkDocs source — auto-deployed to GitHub Pages on merge
@@ -271,10 +245,12 @@ flowchart TD
 |---|---|---|---|
 | `pre-commit.yml` | Every pull request | No | DryRun tests, ruff, bandit, marker lint, MkDocs strict build |
 | `e2e-nightly.yml` | Scheduled cron 02:00 UTC | Yes | Full E2E matrix across GPU cluster (gfx942, gfx1100, …) |
-| `security-scan.yml` | Every pull request | No | Bandit SAST + pip-audit CVE scan |
-| `docs.yml` | Merge to main | No | Auto-generate marker reference + test catalog → deploy docs |
+| `security-scan.yml` | Every pull request | No | Bandit SAST + pip-audit CVE scan (WIP) |
+| `docs.yml` | Merge to main | No | Auto-generate marker reference + test catalog → deploy docs (WIP) |
 
 ---
 
 ## Contribution Guidelines
-To be added later
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide — quickstart,
+marker system, two-step test registration, fixture discovery, and porting guide.
+Run `pytest tests/ --collect-only -q --no-gpu` to validate any change without GPU hardware.

@@ -18,7 +18,7 @@ uv pip install -r requirements-dev.txt   # runtime deps + lint/type/docs tools
 
 **Run a single test file:**
 ```bash
-pytest tests/e2e/stack_validation/test_hip_runtime.py -v
+pytest tests/e2e/hip_runtime/test_hip_invalid_codeobject_load.py -v
 ```
 
 **Preview matched tests without executing:**
@@ -90,11 +90,11 @@ Markers act as flexible metadata tags that empowers to curate test execution: de
 | Dimension   | Required | Values |
 |-------------|----------|--------|
 | `hw.*`      | YES | `gpu`, `multi_gpu`, `cpu_only` |
-| `ci.*`      | YES | `pr`, `nightly`, `weekly`, `smoke_e2e` |
-| `layer.*`   | YES | `driver`, `runtime`, `math_lib`, `ml_framework`, `debug_stack` |
-| `runtime.*` | no¹ | `fast` (<5 min), `medium` (<30 min), `longevity` (<2 hr), `soak` (hours) |
-| `os.*`      | no | `linux`, `windows`, `wsl`, `both` |
-| `e2e.*`     | no | `stack`, `multinode`, `app`, `upgrade` |
+| `ci.*`      | YES | `pr`, `nightly`, `weekly` |
+| `layer.*`   | YES | `runtime`, `math_lib` |
+| `runtime.*` | no¹ | `fast` (<5 min), `medium` (<30 min), `soak` (hours) |
+| `os.*`      | no | `linux` |
+| `e2e.*`     | no | `stack` |
 
 ¹ Not enforced by the linter (`REQUIRED_DIMENSIONS = {"hw", "ci", "layer"}`), but always declare it explicitly — omitting it disables smart-sharding runtime weights.
 
@@ -114,6 +114,7 @@ Dotted syntax (`@pytest.mark.ci.pr`) is enabled by a `MarkDecorator.__getattr__`
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.hw.cpu_only
+@pytest.mark.runtime.fast
 def test_example(dry_run_executor):
     result = dry_run_executor.run("echo RESULT_OK")
     assert result.ok
@@ -139,7 +140,6 @@ conftest.py (root)
             ├── executor_plugin.py      # --container-mode/--container-image, executor fixtures
             ├── os_plugin.py            # os_adapter/platform_name fixtures, os.* marker skip hook
             ├── health_plugin.py        # Pre/post GPU health gates (temp, ECC, VRAM, clocks)
-            ├── baseline_plugin.py      # Regression compare vs baselines/*.yaml
             ├── artifacts_plugin.py     # Allure attachment on failure
             ├── prereqs_plugin.py       # Session-level driver/ROCm version checks
             ├── retry_plugin.py         # --retry-count, retry_fixture, @pytest.mark.retry
@@ -186,10 +186,8 @@ All GPU tests receive a `NodeExecutorGroup` from `target_executor`. Tests never 
 | `CpuExecutor` | Real subprocess, no GPU env | `hw.cpu_only` tests needing real commands |
 | `LocalExecutor` | Local subprocess; injects `ROCR_VISIBLE_DEVICES` | Local `hw.gpu` and `hw.multi_gpu` |
 | `ContainerExecutor` | Docker/Podman with AMD GPU passthrough | `--container-mode` |
-| `SshExecutor` | Raw SSH | Used by `SshGpuExecutor` and `NodePool` — not in tests |
-| `SshGpuExecutor` | SSH + `ROCR_VISIBLE_DEVICES` injection | Remote `hw.gpu` and `hw.multi_gpu` |
-| `LabeledExecutor` | Wraps any executor; prefixes lines with `[test\|node\|GPU]` | Created by `NodeSlot.make_executor()` |
-| `NodeExecutorGroup` | Uniform container returned by all GPU fixtures | Always: wraps 1 or N `LabeledExecutor`s |
+| `SshExecutor` | Raw SSH + `ROCR_VISIBLE_DEVICES` injection | Remote `hw.gpu` and `hw.multi_gpu` |
+| `NodeExecutorGroup` | Uniform container returned by all GPU fixtures | Always: wraps 1 or N executors |
 
 **Fixture decision guide — use `target_executor` for all GPU tests:**
 
@@ -256,21 +254,9 @@ Key rules:
 
 ### Category Profiles (Auto-Injected Markers)
 
-`markers_plugin.py` injects markers at collection time for tests under these directories **if no function-level marker exists for that dimension** (function-level always wins):
+`markers_plugin.py` injects markers at collection time for tests under profile directories **if no function-level marker exists for that dimension** (function-level always wins). `runtime.*` is intentionally absent from all profiles — declare it explicitly on every test function.
 
-| Directory | Auto-injected markers |
-|---|---|
-| `tests/e2e/compiler` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` |
-| `tests/e2e/concurrent_collectives` | `hw.multi_gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
-| `tests/e2e/hwq_heuristic` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` |
-| `tests/e2e/hip_runtime` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` |
-| `tests/e2e/hipblaslt` | `hw.gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
-| `tests/e2e/rocprim` | `hw.gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
-| `tests/e2e/rocm_libs` | `hw.gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
-
-`runtime.*` is intentionally absent from all profiles — declare it explicitly on every test function.
-
-> **Source of truth:** `CATEGORY_PROFILES` in `framework/markers/taxonomy.py`. Always read it before declaring or assessing directory-level markers — the table above is a mirror.
+> **Source of truth:** `CATEGORY_PROFILES` in `framework/markers/taxonomy.py`. Read it directly — do not rely on any out-of-band copy.
 
 ### Dynamic Scheduling & Smart Sharding
 
@@ -311,8 +297,6 @@ Two complementary mechanisms control test ordering and GPU assignment — both a
 - `dry_run_executor` — `DryRunExecutor`; synthetic, no subprocess; for `hw.cpu_only` / PR gate tests
 - `cpu_executor` — `CpuExecutor`; real subprocess, no GPU env; for `hw.cpu_only` tests needing real commands
 - `container_executor` — `ContainerExecutor` with AMD GPU passthrough; use `probe()` / `exec_in()` directly
-- `session_executor` — legacy single-GPU fixture; prefer `target_executor` for new tests
-- `remote_pool` — legacy `RemoteNodePool`; prefer `target_executor` with `e2e.multinode`
 
 **GPU / hardware:**
 - `node_pool` — Session-scoped `NodePool`; `None` when `--no-gpu` is active
@@ -332,7 +316,6 @@ Two complementary mechanisms control test ordering and GPU assignment — both a
 **Retry / reporting:**
 - `retry_fixture` — `RetryHelper`; use `.run(executor, cmd)` for manual retry; configured by `@pytest.mark.retry(count=N)` > `--retry-count` > default 1 attempt; marks test `flaky` in Allure on late success
 - `outcome_fixture` — exposes the classified `Outcome` post-test; auto-detects pass/fail/skip; attaches label to Allure
-- `baseline_fixture` — regression comparison against per-arch YAML baselines
 - `artifacts_fixture` / `allure_reporter` — Allure attachment on failure
 - `mock_gpu_info` / `mock_ok_result` / `mock_fail_result` — synthetic test objects (from `tests/conftest.py`)
 
@@ -405,10 +388,6 @@ monitor_duration_secs = 0.0
 rock_dir  = ""              # path to TheRock/ROCm install; also --rock-dir / ROCK_DIR env
 build_dir = "output/test-binaries/"
 # build_timeout_secs / build_inactivity_timeout_secs come from code defaults (7200 / 600)
-
-[baselines]
-regression_pct = 5.0
-baseline_dir   = "tests/performance/baselines/"
 
 [reporting]
 allure_results_dir = "output/artifacts/allure-results/"

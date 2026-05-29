@@ -14,9 +14,6 @@ Binary compiled via CMake from:
 
 Smoke args: matrix_size=64 (64x64 matrices, ~1.2 GB VRAM, < 2 min)
 
-Markers auto-injected by CATEGORY_PROFILES (tests/e2e/rocm_libs):
-    hw.gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux
-
 runtime.medium is declared (100 streams x 100 SVDs may take 1-2 min on some GPUs).
 """
 
@@ -32,14 +29,7 @@ def test_jacobian_svd_multistream(
     jacobian_svd_multistream_binary: str,
     rock_dir: str,
 ):
-    """Validate Jacobi SVD correctness across 100 concurrent HIP streams.
-
-    Args:
-        target_executor:               Location-transparent GPU executor.
-        ld_path:                       LD_LIBRARY_PATH dict for ROCm libs.
-        jacobian_svd_multistream_binary: Path to compiled binary.
-        rock_dir:                      ROCm install root (for rocBLAS library check).
-    """
+    """Validate Jacobi SVD correctness across 100 concurrent HIP streams."""
     check_rocblas_library(rock_dir)
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
@@ -48,6 +38,6 @@ def test_jacobian_svd_multistream(
     )
     assert result.ok, (
         f"jacobian_svd_multistream failed (exit={result.exit_code}):\n"
-        f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
+        f"stdout: {result.stdout[:3000]}\nstderr: {result.stderr[:800]}"
     )
     assert "SUCCESS" in result.stdout, f"Expected 'SUCCESS' in stdout:\n{result.stdout[:2000]}"

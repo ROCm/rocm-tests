@@ -2,30 +2,11 @@
 # SPDX-License-Identifier: MIT
 
 """
-linter.py -- AST-based marker validator, importable without a CLI.
+linter.py -- MarkerLinter: validates test functions carry required marker dimensions.
 
-The MarkerLinter reads a Python test file, extracts all ``@pytest.mark.*``
-decorators, and checks them against ``MARKER_SCHEMA``.
-
-This module is intentionally free of pytest internals so it can run in any
-Python context (CI scripts, pre-commit hooks, unit tests, IDEs).
-
-Usage (Python):
-    from framework.markers.linter import MarkerLinter
-
-    linter = MarkerLinter()
-    violations = linter.lint_file("tests/e2e/test_foo.py")
-    if violations:
-        print(MarkerLinter.format_violations(violations))
-
-Usage (shell, no CLI needed):
-    python3 -c "
-    from framework.markers.linter import MarkerLinter
-    import sys
-    v = MarkerLinter().lint_file('tests/e2e/test_foo.py')
-    print(MarkerLinter.format_violations(v)) if v else print('Markers OK')
-    sys.exit(1 if v else 0)
-    "
+Required dimensions: hw.*, ci.*, layer.* (from REQUIRED_DIMENSIONS in this file).
+Run via: python3 -m framework.markers.linter tests/e2e/myfile.py
+Integrated into the PostToolUse hook in .claude/settings.json.
 """
 
 from __future__ import annotations

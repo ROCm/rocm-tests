@@ -15,9 +15,6 @@ Binary compiled via CMake from:
 Binary output location:
     output/test-binaries/hwq_heuristic/build/hwq_heuristic_test
 
-Markers auto-injected by CATEGORY_PROFILES in taxonomy.py (for this directory):
-    hw.gpu, layer.runtime, ci.nightly, e2e.stack, os.linux
-
 ``runtime.fast`` is declared explicitly on the test function.
 
 Scenario reference:
@@ -52,14 +49,7 @@ def test_hwq_heuristic(
     hwq_heuristic_binary: str,
     scenario: str,
 ):
-    """Validate HIP queue-selection heuristic for the given scenario.
-
-    Args:
-        target_executor:       Executor bound to the allocated GPU.
-        ld_path:               ``LD_LIBRARY_PATH`` dict for ROCm libs.
-        hwq_heuristic_binary:  Path to the compiled binary.
-        scenario:              One of ``"A"``, ``"B"``, ``"C"``, ``"D"``.
-    """
+    """Validate HIP queue-selection heuristic for the given scenario."""
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld} DEBUG_HIP_DYNAMIC_QUEUES=1 " f"{hwq_heuristic_binary} --scenario={scenario}"

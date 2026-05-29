@@ -16,9 +16,6 @@ Binary compiled via CMake from:
 Smoke args: --size 128 --ngpus 1 (< 30 s)
 Multi-GPU variant: --size 128 --ngpus 2 (requires 2 GPUs)
 
-Markers auto-injected by CATEGORY_PROFILES (tests/e2e/rocm_libs):
-    hw.gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux
-
 runtime.fast is declared explicitly on the single-GPU function.
 """
 
@@ -37,11 +34,6 @@ def test_precond_conjugate_gradient_single_gpu(
 
     Stack exercised: hipBLAS (dot/axpy/scal) + hipSPARSE (SpMV/SpSV) +
     rocSOLVER (ILU0 factorization) + HIP runtime + KFD/driver.
-
-    Args:
-        target_executor:                    Location-transparent GPU executor.
-        ld_path:                            LD_LIBRARY_PATH dict for ROCm libs.
-        precond_conjugate_gradient_binary: Path to compiled binary.
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
@@ -49,11 +41,11 @@ def test_precond_conjugate_gradient_single_gpu(
     )
     assert result.ok, (
         f"precond_conjugate_gradient failed (exit={result.exit_code}):\n"
-        f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
+        f"stdout: {result.stdout[:2500]}\nstderr: {result.stderr[:600]}"
     )
     assert re.search(
         r"Total Errors:\s+0\b", result.stdout
-    ), f"Expected zero total errors in output:\n{result.stdout[:2000]}"
+    ), f"Expected zero total errors in output:\n{result.stdout[:2500]}"
 
 
 @pytest.mark.hw.multi_gpu
@@ -64,21 +56,15 @@ def test_precond_conjugate_gradient_multi_gpu(
     ld_path: dict,
     precond_conjugate_gradient_binary: str,
 ):
-    """Validate ILU(0) preconditioned CG with 2-GPU P2P transfers.
-
-    Args:
-        target_executor:                    Multi-GPU executor (2 GPUs).
-        ld_path:                            LD_LIBRARY_PATH dict for ROCm libs.
-        precond_conjugate_gradient_binary: Path to compiled binary.
-    """
+    """Validate ILU(0) preconditioned CG with 2-GPU P2P transfers."""
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld}" f" {precond_conjugate_gradient_binary} --size 128 --ngpus 2"
     )
     assert result.ok, (
         f"precond_conjugate_gradient multi-GPU failed (exit={result.exit_code}):\n"
-        f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
+        f"stdout: {result.stdout[:2500]}\nstderr: {result.stderr[:600]}"
     )
     assert re.search(
         r"Total Errors:\s+0\b", result.stdout
-    ), f"Expected zero total errors in output:\n{result.stdout[:2000]}"
+    ), f"Expected zero total errors in output:\n{result.stdout[:2500]}"

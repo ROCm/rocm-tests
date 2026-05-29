@@ -13,9 +13,6 @@ Binary compiled from:
 
 Smoke args (< 2 min): M=2048 -> A[2048x2048] x B[2048x4096]
 
-Markers auto-injected by CATEGORY_PROFILES (tests/e2e/hipblaslt):
-    hw.gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux
-
 runtime.fast is declared explicitly.
 """
 
@@ -33,14 +30,7 @@ def test_gemm_heuristic_workspace(
     arch_lib_path,
     gemm_heuristic_workspace_budget_binary: str,
 ):
-    """Validate hipBLASLt workspace budget TFLOPS consistency (M=2048 smoke).
-
-    Args:
-        target_executor:                     Location-transparent GPU executor.
-        ld_path:                             LD_LIBRARY_PATH dict for ROCm libs.
-        arch_lib_path:                       Callable resolving per-arch library subdirectory.
-        gemm_heuristic_workspace_budget_binary: Path to compiled binary.
-    """
+    """Validate hipBLASLt workspace budget TFLOPS consistency (M=2048 smoke)."""
     library_base = pathlib.Path(rock_dir) / "lib" / "hipblaslt" / "library"
     # Tensile kernels live under a per-arch subdirectory:
     #   <rock_dir>/lib/hipblaslt/library/<arch>/TensileLibrary_lazy_<arch>.dat

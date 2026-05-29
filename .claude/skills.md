@@ -6,7 +6,7 @@ A deep-dive reference for Claude Code operating inside `rocm-tests`. This docume
 
 ## 1. System Overview
 
-`rocm-tests` is a **pytest-based system e2e test framework**. It validates the full ROCm software stack — kernel driver → HIP runtime → compute libraries → ML frameworks — on real AMD GPU hardware (nightly/weekly). New tests added shall auto subscribe to pre-defined test markers to run in CI (nightly/weekly)
+`rocm-tests` is a **pytest-based system e2e test framework**. It validates the full ROCm software stack — kernel driver → HIP runtime → compute libraries → ML frameworks — on real GPU hardware (nightly/weekly). New tests added shall auto subscribe to pre-defined test markers to run in CI (nightly/weekly)
 
 ### Architecture Layers
 
@@ -25,7 +25,6 @@ A deep-dive reference for Claude Code operating inside `rocm-tests`. This docume
 │  │    executor_plugin  → container_executor, cpu_executor      │   │
 │  │    os_plugin        → os_adapter, platform_name, skip hook  │   │
 │  │    health_plugin    → pre/post GPU health gates             │   │
-│  │    baseline_plugin  → YAML regression comparison            │   │
 │  │    artifacts_plugin → Allure attachment on failure          │   │
 │  │    prereqs_plugin   → session-level ROCm version checks     │   │
 │  │    retry_plugin     → --retry-count, retry_fixture          │   │
@@ -76,10 +75,8 @@ All GPU tests receive a `NodeExecutorGroup` from `target_executor`. Test code ne
 | `CpuExecutor` | Real subprocess, no GPU env | `hw.cpu_only` needing real commands |
 | `LocalExecutor` | Subprocess + `ROCR_VISIBLE_DEVICES` | Local `hw.gpu` / `hw.multi_gpu` |
 | `ContainerExecutor` | Docker/Podman + AMD device passthrough | `--container-mode` |
-| `SshExecutor` | Raw SSH via paramiko | Used internally by `SshGpuExecutor` |
-| `SshGpuExecutor` | SSH + `ROCR_VISIBLE_DEVICES` injection | Remote `hw.gpu` / `hw.multi_gpu` |
-| `LabeledExecutor` | Wraps any executor; prefixes lines with `[test\|node\|GPU]` | Created by `NodeSlot.make_executor()` |
-| `NodeExecutorGroup` | Uniform container returned by all GPU fixtures | Always — wraps 1 or N `LabeledExecutor`s |
+| `SshExecutor` | SSH + `ROCR_VISIBLE_DEVICES` injection; handles remote GPU tests directly | Remote `hw.gpu` / `hw.multi_gpu` |
+| `NodeExecutorGroup` | Uniform container returned by all GPU fixtures | Always — wraps 1 or N executors |
 | `BackgroundProcess` | Thread-safe daemon; context manager; `.is_alive`, `.stop()` → `ExecutionResult` | Returned by `executor.start_background(cmd, log_path=...)` |
 | `NoOpBackgroundProcess` | Stub for `DryRunExecutor.start_background()`; same API, never alive | `--no-gpu` / `hw.cpu_only` background calls |
 
@@ -91,7 +88,7 @@ Priority order (lowest → highest):
 Code defaults → rocm-test.toml → ROCM_TEST_* env vars → pytest CLI flags
 ```
 
-Section-to-dataclass mapping: `[framework]` → `FrameworkSection`, `[gpu]` → `GpuSection`, `[therock]` → `TheRockSection`, `[baselines]` → `BaselinesSection`, `[reporting]` → `ReportingSection`, `[results]` → `ResultsSection`, `[notifications]` → `NotificationsSection`.
+Section-to-dataclass mapping: `[framework]` → `FrameworkSection`, `[gpu]` → `GpuSection`, `[therock]` → `TheRockSection`, `[reporting]` → `ReportingSection`.
 
 ---
 
@@ -197,34 +194,20 @@ Claude Code ships three built-in agentic skills accessible via slash commands. E
 1. **Gather requirement** — reads the description; asks if not provided.
 2. **Resolve markers** — applies the decision table below to every dimension.
 3. **Declare resources** — adds `@pytest.mark.gpu_vram(N)` / `@pytest.mark.gpu_count(N)` / `@pytest.mark.container_image(...)` where needed.
-4. **Select fixtures** — `target_executor` for GPU tests; `dry_run_executor` for `hw.cpu_only`; `baseline_fixture` for performance tests.
-5. **Write file** — copyright + module docstring (`Validates:` list) + module-level script constants + `allure_reporter.step()`-wrapped executor calls + `parse_metric()` assertions + `@pytest.mark.parametrize` where multi-value.
-6. **Validate + next-steps checklist** — collect-only → DryRun → GPU run → baseline YAML if perf.
+4. **Select fixtures** — `target_executor` for GPU tests; `dry_run_executor` for `hw.cpu_only`.
+5. **Write file** — copyright + module docstring (`Validates:` list) + module-level script constants + `allure_reporter.step()`-wrapped executor calls + `@pytest.mark.parametrize` where multi-value.
+6. **Validate + next-steps checklist** — collect-only → DryRun → GPU run.
 
 **Marker decision table:**
 
 | Dimension | Decision Rule |
 |---|---|
-| `layer.*` | `driver`: kernel/driver ops; `runtime`: HIP API; `math_lib`: rocBLAS/RCCL/rocFFT; `ml_framework`: PyTorch/JAX/vLLM; `debug_stack`: rocgdb/profiler |
-| `ci.*` | `pr`: fast + DryRun-safe (< 5 min, no GPU download); `nightly`: typical E2E; `weekly`: soak/longevity |
+| `layer.*` | `runtime`: HIP API; `math_lib`: rocBLAS/RCCL/rocFFT |
+| `ci.*` | `pr`: fast + DryRun-safe (< 5 min, no GPU download); `nightly`: typical E2E; `weekly`: soak |
 | `hw.*` | `gpu`: one GPU; `multi_gpu`: two or more; `cpu_only`: DryRun / framework tests |
-| `runtime.*` | `fast` <5 min; `medium` <30 min; `longevity` <2 hr; `soak` hours |
-| `os.*` | `linux` for most E2E tests; `both` for cross-platform |
-| `e2e.*` | `stack`: full-stack; `multinode`: multi-node collectives; `app`: third-party; `upgrade`: ROCm version path |
-
-**File placement guide:**
-
-| Layer / Domain | Target Directory |
-|---|---|
-| hipcc compilation, LLVM/HIP codegen | `tests/e2e/compiler/` |
-| RCCL, multi-node collectives | `tests/e2e/concurrent_collectives/` |
-| HW queue heuristics | `tests/e2e/hwq_heuristic/` |
-| HIP runtime, driver API, multi-stream | `tests/e2e/hip_runtime/` |
-| hipBLASLt GEMM, Tensile heuristics | `tests/e2e/hipblaslt/` |
-| rocPRIM primitives, HMM | `tests/e2e/rocprim/` |
-| rocsolver, rocblas, montecarlo | `tests/e2e/rocm_libs/` |
-| DryRun / config / ci.pr only | `tests/dry_run/` |
-| New domain | Add profile to `taxonomy.py → CATEGORY_PROFILES` first |
+| `runtime.*` | `fast` <5 min; `medium` <30 min; `soak` hours |
+| `os.*` | `linux` for all current E2E tests |
+| `e2e.*` | `stack`: full-stack; `multinode`: multi-node collectives |
 
 **Rules enforced:**
 - Never `subprocess.run()` / `subprocess.Popen()` — always `target_executor.run(cmd)`
@@ -234,16 +217,15 @@ Claude Code ships three built-in agentic skills accessible via slash commands. E
 - Never `from framework.plugins import ...` — use fixture injection only
 - Always module docstring with numbered `Validates:` list
 - Always `allure_reporter.step()` around every `target_executor.run()` call
-- Strong assertion: `parse_metric()` + numeric threshold, not just `exit_code == 0`
+- Strong assertion: numeric threshold checks on stdout content, not just `exit_code == 0`
 
 **Example:**
 ```
 /creator
-> Validate that rocBLAS SGEMM achieves at least 10 TFLOPS on gfx1100
+> Validate that rocBLAS SGEMM completes without error on gfx1100
 
 → layer: math_lib, ci: nightly, hw: gpu, runtime: medium, os: linux
-→ Creates: tests/e2e/performance/test_rocblas_sgemm_perf.py
-→ Next: add baseline tests/e2e/performance/baselines/gfx1100/rocblas.yaml
+→ Creates: tests/e2e/rocm_libs/test_rocblas_sgemm.py
 ```
 
 ---
@@ -299,7 +281,7 @@ VRAM requirements, prerequisite declarations, health gate impact, artifact volum
 - gfx1100 (RX 7900 XTX): 24 GB VRAM; gfx942 (MI300X): 192 GB VRAM — safe on MI300X may OOM on gfx1100
 - Missing `@pytest.mark.gpu_vram(N)` when workload needs a minimum VRAM threshold
 - Missing `pytest.skip` for optional prereqs (PyTorch, specific ROCm version) = silent failure
-- Artifact volume: ~150 KB baseline per test; soak tests logging per-second stdout can generate GB
+- Artifact volume: soak tests logging per-second stdout can generate GB — use `runtime.soak` + `ci.weekly` markers to gate them out of nightly
 
 **Internal process — Extend:**
 
@@ -311,8 +293,7 @@ VRAM requirements, prerequisite declarations, health gate impact, artifact volum
    | "test more sizes" / "parametrize" | `@pytest.mark.parametrize(...)` on new function |
    | "what if it fails" / "negative test" | New function: `hw.cpu_only` + `dry_run_executor`, assert non-zero exit |
    | "run longer" / "soak variant" | New function: `ci.weekly` + `runtime.soak` + explicit `timeout` arg |
-   | "add baseline comparison" | `parse_metric()` + `allure_reporter.metric()` + `baseline_fixture.compare()` |
-   | "weekly regression" | New function: `ci.weekly` + `runtime.longevity` |
+   | "weekly regression" | New function: `ci.weekly` + `runtime.soak` |
 
 2. Shows clear diff: added lines, unchanged functions explicitly noted.
 3. Validates with `--collect-only` — all original + new functions must appear.

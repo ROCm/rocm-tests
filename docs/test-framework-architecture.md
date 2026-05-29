@@ -20,7 +20,6 @@ This document is a deep-dive companion to the root README. It covers every frame
    - [Test Harness: Retry & Artifact Capture](#test-harness-retry--artifact-capture)
    - [Prerequisite Contract](#prerequisite-contract)
    - [Configuration Reference](#configuration-reference)
-   - [Performance Baselines & Regression Detection](#performance-baselines--regression-detection)
    - [Pre-Install Fleet Provisioning](#pre-install-fleet-provisioning)
    - [Structured Observability & Reporting](#structured-observability--reporting)
    - [Agentic AI Test Authoring](#agentic-ai-test-authoring)
@@ -30,7 +29,6 @@ This document is a deep-dive companion to the root README. It covers every frame
    - [Single-GPU E2E Test](#single-gpu-e2e-test)
    - [Multi-GPU Test](#multi-gpu-test)
    - [HIP Compiler Test](#hip-compiler-test)
-   - [Performance Test with Regression Baseline](#performance-test-with-regression-baseline)
    - [Test with Retry Harness](#test-with-retry-harness)
 4. [Operating the Framework](#operating-the-framework)
    - [Local Single-GPU Run](#local-single-gpu-run)
@@ -55,15 +53,14 @@ Test files call `Requisite Executor` and receive an `Execution Result` — they 
 pytest invocation
   └── conftest.py (root)
         ├── MarkDecorator.__getattr__ patch   # enables @pytest.mark.ci.pr dotted syntax (pytest 7+)
-        └── pytest_plugins = [14 plugins, registration order matters]
+        └── pytest_plugins = [13 plugins, registration order matters]
               ├── markers_plugin      # FIRST: category-profile marker injection (CATEGORY_PROFILES)
-              ├── gpu_plugin          # --no-gpu/--gpu-arch/--mock-gpu; gpu_fixture; dry_run_executor
+              ├── gpu_plugin          # --no-gpu/--gpu-arch/--mock-gpu; gpu_arch; dry_run_executor
               ├── remote_node_plugin  # NodePool; target_executor; multi_gpu_fixture; multi_node_fixture
               ├── scheduling_plugin   # DynamicScheduler; --schedule-policy; --collect-runtimes
-              ├── executor_plugin     # cpu_executor; session_executor; container_executor; remote_pool
+              ├── executor_plugin     # cpu_executor; container_executor
               ├── os_plugin           # os_adapter; platform_name; os.* marker skip hook
               ├── health_plugin       # health_fixture; GpuHealthChecker (temp/ECC/VRAM gates)
-              ├── baseline_plugin     # baseline_fixture; BaselineChecker (YAML regression)
               ├── artifacts_plugin    # allure_reporter; artifacts_fixture; GPU state dump on failure
               ├── prereqs_plugin      # prereqs_fixture; Python>=3.10 + ROCm tool checks
               ├── retry_plugin        # retry_fixture; --retry-count; RetryHelper
@@ -73,8 +70,8 @@ pytest invocation
 
 framework/
   config/       FrameworkConfig dataclasses; load_config() 4-level cascade
-  common/       ExecutionResult; Outcome enum; parse_metric(); classify()
-  executors/    AbstractExecutor + 8 concrete backends + BackgroundProcess
+  common/       ExecutionResult; Outcome enum; executor_log_path(); gpu_monitor_log_path()
+  executors/    AbstractExecutor + concrete backends + BackgroundProcess
   nodes/        NodePool; NodeSlot; MultiGpuSlots; GpuFileLock; PendingTracker
   scheduling/   DynamicScheduler; SchedulePolicy (LPT algorithm; xdist_group assignment)
   builder/      BinaryBuilder; hipcc compilation; xdist-safe file locking; incremental builds
@@ -89,7 +86,6 @@ tests/
   dry_run/                       ci.pr DryRun / cpu_only tests (no GPU required)
   e2e/
     compiler/                    hipcc compilation tests; CompileSpec conftest registry
-    concurrent_collectives/      RCCL multi-GPU stress tests
     hwq_heuristic/               hardware queue heuristic tests; CMake build
 ```
 
@@ -104,13 +100,12 @@ Every plugin is listed in `conftest.py -> pytest_plugins`. Pytest loads them lef
 | Plugin | CLI options added | Key fixtures provided |
 |---|---|---|
 | `markers_plugin` | — | — (hook only: injects profile markers at collection) |
-| `gpu_plugin` | `--no-gpu`, `--gpu-arch`, `--mock-gpu`, `--rocm-config` | `gpu_fixture`, `dry_run_executor` |
+| `gpu_plugin` | `--no-gpu`, `--gpu-arch`, `--mock-gpu`, `--rocm-config` | `gpu_arch`, `dry_run_executor` |
 | `remote_node_plugin` | `--remote-node`, `--gpu-acquire-timeout`, `--gpu-health-metrics`, `--monitor-gpu`, `--gpu-drain-secs`, `--gpu-drain-timeout` | `node_pool`, `target_executor`, `multi_gpu_fixture`, `multi_node_fixture` |
 | `scheduling_plugin` | `--schedule-policy`, `--collect-runtimes`, `--vram-headroom-gb` | — (hook only: sorts items, assigns xdist_group) |
-| `executor_plugin` | `--container-mode`, `--container-image`, `--container-runtime` | `cpu_executor`, `session_executor`, `container_executor`, `remote_pool` |
+| `executor_plugin` | `--container-mode`, `--container-image`, `--container-runtime` | `cpu_executor`, `container_executor` |
 | `os_plugin` | — | `os_adapter`, `platform_name` |
 | `health_plugin` | — | `health_fixture` |
-| `baseline_plugin` | — | `baseline_fixture` |
 | `artifacts_plugin` | — | `allure_reporter`, `artifacts_fixture` |
 | `prereqs_plugin` | `--strict-prereqs` | `prereqs_fixture` |
 | `retry_plugin` | `--retry-count` | `retry_fixture` |
@@ -135,10 +130,8 @@ Test code always calls `executor.run(command)` and receives an `ExecutionResult(
 | `CpuExecutor` | Real subprocess, no GPU env injection | `hw.cpu_only` tests needing real commands |
 | `LocalExecutor` | Local subprocess; injects `ROCR_VISIBLE_DEVICES` | Local `hw.gpu` and `hw.multi_gpu` |
 | `ContainerExecutor` | Docker/Podman with AMD GPU passthrough | `--container-mode` |
-| `SshExecutor` | Raw Paramiko SSH subprocess | Used by `SshGpuExecutor` and `NodePool` — not directly in tests |
-| `SshGpuExecutor` | SSH + `ROCR_VISIBLE_DEVICES` injection | Remote `hw.gpu` and `hw.multi_gpu` |
-| `LabeledExecutor` | Wraps any executor; prefixes every output line with `[nodeid \| node-label \| GPU-N]` | Created by `NodeSlot.make_executor()` — never construct directly |
-| `NodeExecutorGroup` | Uniform container wrapping 1 or N `LabeledExecutor`s | Always: the type `target_executor` yields |
+| `SshExecutor` | SSH + `ROCR_VISIBLE_DEVICES` injection | Remote `hw.gpu` and `hw.multi_gpu` |
+| `NodeExecutorGroup` | Uniform container returned by all GPU fixtures | Always: the type `target_executor` yields |
 
 All concrete executors share `AbstractExecutor` with a single required method `run(command, timeout)` and an optional `start_background(command, timeout, log_path)`.
 
@@ -148,12 +141,12 @@ Use `target_executor` for **all** GPU tests. It dispatches internally based on m
 
 | Markers on test | `target_executor` yields | Test code pattern |
 |---|---|---|
-| `hw.gpu` | `NodeExecutorGroup(1 LabeledExecutor)` | `target_executor.run(cmd)` |
+| `hw.gpu` | `NodeExecutorGroup(1 executor)` | `target_executor.run(cmd)` |
 | `hw.multi_gpu` + `gpu_count(N)` | `NodeExecutorGroup(1 exec, ROCR=0,1,...,N-1)` | `target_executor.run(cmd)` |
 | `e2e.multinode` + `gpu_count(N)` | `NodeExecutorGroup(N execs, 1 per node)` | `for e in target_executor: e.run(cmd)` |
 | any + `--no-gpu` | `NodeExecutorGroup(DryRunExecutor)` | `target_executor.run(cmd)` |
 
-**GPU isolation:** `ROCR_VISIBLE_DEVICES` is always set by `LocalExecutor` / `SshGpuExecutor`. Never set it in test code.
+**GPU isolation:** `ROCR_VISIBLE_DEVICES` is always set by `LocalExecutor` / `SshExecutor`. Never set it in test code.
 
 #### Background Processes
 
@@ -341,11 +334,11 @@ Every test function **must** carry at least one marker from each required dimens
 | Dimension | Required | Valid Values | Purpose |
 |---|---|---|---|
 | `hw.*` | **YES** | `gpu`, `multi_gpu`, `cpu_only` | Hardware gate — skips on incompatible runners |
-| `ci.*` | **YES** | `pr`, `nightly`, `weekly`, `smoke_e2e` | CI tier — controls runner provisioning and schedule |
-| `layer.*` | **YES** | `driver`, `runtime`, `math_lib`, `ml_framework`, `debug_stack` | ROCm stack layer — drives Allure grouping |
-| `runtime.*` | no* | `fast` (<5 min), `medium` (<30 min), `longevity` (<2 hr), `soak` (hours) | Wall-time weight — feeds `DynamicScheduler` |
-| `os.*` | no | `linux`, `windows`, `wsl`, `both` | Platform gate — auto-skips on incompatible OS |
-| `e2e.*` | no | `stack`, `multinode`, `app`, `upgrade` | Scenario type — drives dashboard categorisation |
+| `ci.*` | **YES** | `pr`, `nightly`, `weekly` | CI tier — controls runner provisioning and schedule |
+| `layer.*` | **YES** | `runtime`, `math_lib` | ROCm stack layer — drives Allure grouping |
+| `runtime.*` | no* | `fast` (<5 min), `medium` (<30 min), `soak` (hours) | Wall-time weight — feeds `DynamicScheduler` |
+| `os.*` | no | `linux` | Platform gate — auto-skips on incompatible OS |
+| `e2e.*` | no | `stack`, `multinode` | Scenario type — drives dashboard categorisation |
 
 *`runtime.*` is not enforced by the linter (`REQUIRED_DIMENSIONS = {"hw", "ci", "layer"}`), but always declare it explicitly — omitting it disables `DynamicScheduler` runtime-weight ordering for that test.
 
@@ -364,13 +357,10 @@ Every test function **must** carry at least one marker from each required dimens
 
 | Directory | Auto-injected markers |
 |---|---|
-| `tests/e2e/compiler` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` |
-| `tests/e2e/concurrent_collectives` | `hw.multi_gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
-| `tests/e2e/hwq_heuristic` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` |
+| `tests/e2e/compiler` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `os.linux` |
+| `tests/e2e/rocm_libs` | `hw.gpu`, `layer.math_lib`, `ci.weekly`, `os.linux` |
 
 `runtime.*` is intentionally absent from all profiles — duration varies per test and must always be declared explicitly on each function.
-
-> **Note:** Paths for `ml_frameworks`, `multi_gpu`, `stack_validation`, and `debug_stack` are reserved in `taxonomy.py` (`CATEGORY_PROFILES`) for future test areas — those directories do not yet exist under `tests/e2e/`.
 
 #### MarkerLinter
 
@@ -398,6 +388,7 @@ pytest tests/ -m "hw.gpu and ci.nightly" --collect-only -q --no-gpu
 #### Allure Label Mapping
 
 `ALLURE_DIMENSION_MAP` in `taxonomy.py` drives `reports_plugin`'s dynamic Allure label injection:
+Allure usage is optional, mapping of markers in test log (WIP).
 
 | Dimension | Allure label type |
 |---|---|
@@ -574,36 +565,6 @@ def hwq_heuristic_binary(compiler_build_dir, rock_dir):
 
 ---
 
-### Cross-Platform Support
-
-`framework/os_adapter/` provides a unified interface for GPU enumeration across Linux and Windows. The factory selects the correct adapter at session start based on `sys.platform`.
-
-| Platform | Adapter | GPU Enumeration | Module Operations |
-|---|---|---|---|
-| Linux | `LinuxOsAdapter` | `/dev/dri/renderD*` via sysfs | `lsmod`, `modprobe` |
-| Windows | `WindowsOsAdapter` | BDF strings from system registry | No-op (kernel modules not applicable) |
-
-The `os_adapter` and `platform_name` fixtures expose the selected adapter to tests:
-
-```python
-def test_gpu_device_paths(os_adapter, platform_name):
-    paths = os_adapter.list_gpu_device_paths()
-    assert len(paths) > 0, f"No GPU device paths found on {platform_name}"
-```
-
-**Platform skip hook:** `os_plugin.pytest_runtest_setup` reads `os.*` markers and skips tests on incompatible platforms — no `if sys.platform` guards in test code:
-
-```python
-@pytest.mark.os.linux   # skipped automatically on Windows/WSL runners
-@pytest.mark.runtime.fast
-def test_linux_kfd_device(os_adapter):
-    assert os_adapter.is_module_loaded("amdgpu")
-```
-
-`os.both` never skips on any platform.
-
----
-
 ### Test Harness: Retry & Artifact Capture
 
 #### Retry
@@ -697,18 +658,9 @@ rock_dir  = ""                 # Override via: --rock-dir CLI / ROCK_DIR env
 build_dir = "output/test-binaries/"
 # build_timeout_secs / build_inactivity_timeout_secs: code defaults (7200 / 600 s)
 
-[baselines]
-regression_pct = 5.0
-baseline_dir   = "tests/e2e/performance/baselines/"
-
 [reporting]
 allure_results_dir = "output/artifacts/allure-results/"
 history_depth = 5              # number of prior runs kept by --allure-db
-
-[results]
-upload_mode = "auto"           # "auto" | "local" | "disabled"
-local_dir   = "output/results/"
-sqlite_db   = "output/rocm_test.db"
 ```
 
 #### Common Environment Variable Overrides
@@ -721,8 +673,7 @@ sqlite_db   = "output/rocm_test.db"
 | `ROCM_TEST_GPU_MAX_ECC_ERRORS` | `[gpu].max_ecc_errors` |
 | `ROCM_TEST_GPU_MIN_VRAM_FREE_MB` | `[gpu].min_vram_free_mb` |
 | `ROCM_TEST_FRAMEWORK_LOG_LEVEL` | `[framework].log_level` |
-| `ROCM_TEST_BASELINES_REGRESSION_PCT` | `[baselines].regression_pct` |
-| `ROCM_TEST_NOTIFICATIONS_WEBHOOK_URL` | Webhook URL (secrets only -- never commit to toml) |
+| `ROCM_TEST_REPORTING_HISTORY_DEPTH` | `[reporting].history_depth` |
 
 #### Complete CLI Flag Reference
 
@@ -791,6 +742,7 @@ If any node fails to install, the session exits with rc=4.
 #### Allure Integration
 
 `AllureReporter` (`framework/reporting/allure_reporter.py`) wraps the `allure` library:
+> WIP
 
 ```python
 # Available via allure_reporter fixture
@@ -828,9 +780,17 @@ pytest tests/ --no-gpu --html=build/report.html --self-contained-html -v
 `reports_plugin.pytest_terminal_summary` prints a grouped results table at session end:
 
 ```
-=== ROCm Test Suite Summary ===
-  tests/e2e/compiler       PASS: 3  FAIL: 0  SKIP: 0  ERROR: 0   12.4s
-  tests/e2e/hwq_heuristic  PASS: 4  FAIL: 1  SKIP: 0  ERROR: 0   45.2s
+==================== ROCm Test Suite Summary ==================
+ Test Directory             PASS  FAIL  SKIP  ERROR    Duration
+───────────────────────────────────────────────────────────────
+ tests/e2e/compiler            1     0     0      0     255.5 s
+ tests/e2e/hip_runtime         4     0     0      0       0.8 s
+ tests/e2e/hipblaslt           3     1     0      0       4.2 s
+ tests/e2e/hwq_heuristic      10     0     0      0       3.2 s
+ tests/e2e/rocm_libs           3     0     0      0      77.6 s
+ tests/e2e/rocprim             1     0     0      0       0.8 s
+───────────────────────────────────────────────────────────────
+ TOTAL  23 tests │ 22 passed │ 1 failed │ 0 skipped │ 0 error │   342.0 s
 ```
 
 #### Live Test Progress
@@ -843,7 +803,7 @@ pytest tests/ --no-gpu --html=build/report.html --self-contained-html -v
 
 #### Outcome Classifier
 
-`framework/common/helpers.py` defines the `Outcome` enum and `classify()` function:
+`framework/common/helpers.py` defines the `Outcome` enum:
 
 | Outcome | Meaning |
 |---|---|
@@ -853,8 +813,6 @@ pytest tests/ --no-gpu --html=build/report.html --self-contained-html -v
 | `ERROR` | Unexpected exception in test or fixture setup/teardown |
 | `TIMEOUT` | Command exceeded configured wall-time budget |
 | `HEALTH_FAIL` | Pre- or post-execution GPU health check failed |
-| `REGRESSION` | Performance drop beyond `regression_pct` threshold |
-| `PERF_DROP` | Specific performance metric below baseline |
 
 #### Run Correlation
 
@@ -1140,6 +1098,7 @@ pytest tests/e2e/ -m "ci.nightly" -n 4 --collect-runtimes build/runtimes.json
 ```
 
 ### Remote Fleet Run
+> WIP
 
 ```bash
 # Discover topology (dry-run, no tests execute)
@@ -1166,32 +1125,8 @@ pytest tests/e2e/ --remote-node host.yaml \
   -n 4 -v
 ```
 
-### Container Mode
-> In Testing
-
-```bash
-# Run GPU tests inside Docker with AMD GPU passthrough
-pytest tests/e2e/ -m "hw.gpu and ci.nightly" \
-  --container-mode \
-  --container-image rocm/pytorch:6.3 \
-  -v
-
-# Use Podman instead of Docker
-pytest tests/e2e/ --container-mode --container-runtime podman \
-  --container-image rocm/rocm-terminal:6.3 -v
-```
-
-Per-test image override via marker:
-
-```python
-@pytest.mark.container_image("rocm/pytorch:6.3")
-@pytest.mark.runtime.medium
-def test_pytorch_on_rocm(target_executor):
-    result = target_executor.run("python -c 'import torch; print(torch.cuda.is_available())'")
-    assert "True" in result.stdout
-```
-
 ### HTML and Allure Reports
+> log capture enabled. Workflow integration pending.
 
 ```bash
 # Lightweight HTML report (no Allure CLI required)
@@ -1261,10 +1196,8 @@ flowchart TD
     P --> Q[NodePool: Release GPU Slot]
     Q --> R[Classify Outcome]
     R --> S{Passed?}
-    S -- YES with baseline_fixture --> T[Baseline Compare]
-    T --> U[Write Allure result JSON]
-    U --> PASS([PASS or REGRESSION])
-    S -- YES no baseline --> U
+    S -- YES --> U[Write Allure result JSON]
+    U --> PASS([PASS])
     S -- NO --> V{retry count less than max?}
     V -- YES --> W[Tag attempt in Allure + re-run command]
     W --> K

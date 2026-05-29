@@ -12,9 +12,6 @@ over-allocates workspace.
 Binary compiled via CMake from:
     tests/e2e/hipblaslt/src/hipblaslt_heuristic_workspace/hipblaslt_heuristic_workspace.hip
 
-Markers auto-injected by CATEGORY_PROFILES (tests/e2e/hipblaslt):
-    hw.gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux
-
 This test exercises the hipBLASLt heuristic API integration path (not a full
 GEMM workload), so e2e.stack is inherited from the directory profile — the
 auto-injected profile is retained; override only if reclassifying this test.
@@ -48,17 +45,7 @@ def test_hipblaslt_heuristic_workspace_constraint(
     rock_dir: str,
     gpu_arch: str | None,
 ):
-    """Validate hipBLASLt heuristic workspace constraint is respected.
-
-    Args:
-        target_executor:                       Location-transparent GPU executor.
-        ld_path:                               LD_LIBRARY_PATH dict for ROCm libs.
-        arch_lib_path:                         Callable that resolves an arch-specific
-                                               library subdirectory path (from ``gpu_arch``).
-        hipblaslt_heuristic_workspace_binary:  Path to compiled binary.
-        rock_dir:                              ROCm install root (for HIPBLASLT_TENSILE_LIBPATH).
-        gpu_arch:                              Target GPU architecture (from ``--gpu-arch``).
-    """
+    """Validate hipBLASLt heuristic workspace constraint is respected."""
     ld = ld_path["LD_LIBRARY_PATH"]
     library_base = pathlib.Path(rock_dir) / "lib" / "hipblaslt" / "library"
     # hipBLASLt lays out its tensile library files under a per-arch subdirectory:
