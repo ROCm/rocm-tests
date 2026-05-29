@@ -2,26 +2,11 @@
 # SPDX-License-Identifier: MIT
 
 """
-loader.py -- Framework configuration with ENV → file → defaults cascade.
+loader.py -- FrameworkConfig loader: toml → env vars → CLI flags cascade.
 
-Priority (lowest → highest):
-    1. Code defaults in FrameworkConfig / sub-dataclasses
-    2. rocm-test.toml found in CWD, then $HOME
-    3. ROCM_TEST_<SECTION>_<KEY> environment variables
-       e.g. ROCM_TEST_GPU_MAX_TEMP_CELSIUS=85
-            ROCM_TEST_FRAMEWORK_LOG_LEVEL=verbose
-    4. pytest CLI flag --rocm-config <path> (overrides file search)
-
-Secrets (webhook URLs, API tokens) come from environment variables ONLY.
-They are never read from or written to the config file.
-
-Usage:
-    from framework.config.loader import load_config
-
-    config = load_config()                       # auto-find rocm-test.toml
-    config = load_config("/ci/rocm-test.toml")  # explicit path
-
-    # In pytest, use the framework_config session fixture instead.
+Load order (lowest → highest priority): code defaults → rocm-test.toml →
+ROCM_TEST_* env vars → pytest CLI flags. Use FrameworkConfig.load() to get
+the merged config object. Never commit secrets — use env vars.
 """
 
 from __future__ import annotations
@@ -67,36 +52,11 @@ class GpuSection:
 
 
 @dataclass
-class ResultsSection:
-    """[results] config section."""
-
-    upload_mode: str = "auto"
-    local_dir: str = "output/results/"
-    sqlite_db: str = "output/rocm_test.db"
-
-
-@dataclass
-class BaselinesSection:
-    """[baselines] config section."""
-
-    regression_pct: float = 5.0
-    baseline_dir: str = "tests/performance/baselines/"
-
-
-@dataclass
 class ReportingSection:
     """[reporting] config section."""
 
     allure_results_dir: str = "output/artifacts/allure-results/"
     history_depth: int = 5
-
-
-@dataclass
-class NotificationsSection:
-    """[notifications] config section."""
-
-    webhook_url: str = ""
-    notify_on: list[str] = field(default_factory=lambda: ["FAIL", "REGRESSION", "HEALTH_FAIL"])
 
 
 @dataclass
@@ -141,10 +101,7 @@ class FrameworkConfig:
 
     framework: FrameworkSection = field(default_factory=FrameworkSection)
     gpu: GpuSection = field(default_factory=GpuSection)
-    results: ResultsSection = field(default_factory=ResultsSection)
-    baselines: BaselinesSection = field(default_factory=BaselinesSection)
     reporting: ReportingSection = field(default_factory=ReportingSection)
-    notifications: NotificationsSection = field(default_factory=NotificationsSection)
     therock: TheRockSection = field(default_factory=TheRockSection)
 
     def new_run_context(self) -> RunContext:
@@ -241,10 +198,7 @@ def _build_config(raw: dict) -> FrameworkConfig:
     return FrameworkConfig(
         framework=_merge(FrameworkSection, "framework"),
         gpu=_merge(GpuSection, "gpu"),
-        results=_merge(ResultsSection, "results"),
-        baselines=_merge(BaselinesSection, "baselines"),
         reporting=_merge(ReportingSection, "reporting"),
-        notifications=_merge(NotificationsSection, "notifications"),
         therock=_merge(TheRockSection, "therock"),
     )
 
@@ -255,17 +209,14 @@ def _apply_env_overrides(cfg: FrameworkConfig) -> None:
     Mapping examples:
         ROCM_TEST_GPU_MAX_TEMP_CELSIUS=85  → cfg.gpu.max_temp_celsius = 85
         ROCM_TEST_FRAMEWORK_LOG_LEVEL=verbose → cfg.framework.log_level = "verbose"
-        ROCM_TEST_NOTIFICATIONS_WEBHOOK_URL=https://... → cfg.notifications.webhook_url
+        ROCM_TEST_REPORTING_HISTORY_DEPTH=10 → cfg.reporting.history_depth = 10
 
     Type conversion is inferred from the existing default type.
     """
     section_map = {
         "FRAMEWORK": cfg.framework,
         "GPU": cfg.gpu,
-        "RESULTS": cfg.results,
-        "BASELINES": cfg.baselines,
         "REPORTING": cfg.reporting,
-        "NOTIFICATIONS": cfg.notifications,
         "THEROCK": cfg.therock,
     }
 

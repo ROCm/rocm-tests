@@ -22,8 +22,6 @@ Read these files before writing any code:
 Optional (read only if the user's feature needs it):
 
 5. `framework/plugins/artifacts_plugin.py` — `allure_reporter` fixture
-6. `framework/plugins/baseline_plugin.py` — `baseline_fixture`
-7. `framework/common/helpers.py` — `parse_metric()`
 
 ---
 
@@ -74,7 +72,6 @@ If a requirements document or C++ source is provided, read it completely and ide
 | System binary (no compilation) | `target_executor` | e.g. `rocm-smi`, `hipconfig` |
 | DryRun / cpu_only | `dry_run_executor` | Only for `tests/dry_run/` framework unit tests |
 | Optional Allure reporting | add `allure_reporter` | Not required; no existing test uses it |
-| Optional performance baseline | add `baseline_fixture` | Only when regression comparison is needed |
 | hipBLASLt / Tensile binary | `target_executor`, `ld_path`, `rock_dir`, `arch_lib_path`, binary fixture | `arch_lib_path` resolves `lib/hipblaslt/library/<arch>`; set `HIPBLASLT_TENSILE_LIBPATH=$(arch_lib_path(base))` in run command |
 | CMake-based build fixture | add `gpu_arch: str \| None` to the conftest fixture signature | Session string from `--gpu-arch`; pass to `cmake_build(gpu_arch=gpu_arch)` and `arch_lib_path()` |
 
@@ -375,26 +372,17 @@ def test_<name>(dry_run_executor):
     assert result.ok
 ```
 
-### 6g. Optional: Allure reporting + parse_metric (add only when requested)
+### 6g. Optional: Allure reporting (add only when requested)
 
-
-No existing test uses these by default. Add only if the user explicitly asks for Allure output or performance baseline comparison.
+No existing test uses these by default. Add only if the user explicitly asks for Allure output.
 
 ```python
-# In function signature: add allure_reporter and optionally baseline_fixture
+# In function signature: add allure_reporter
 def test_<name>(target_executor, ld_path: dict, <binary>_binary: str, allure_reporter):
     ld = ld_path["LD_LIBRARY_PATH"]
     with allure_reporter.step("Run <binary_name>"):
         result = target_executor.run(f"env LD_LIBRARY_PATH={ld} {<binary>_binary}")
     assert result.ok, ...
-
-    # Parse a numeric metric emitted by the binary as "KEY=<float>"
-    # from framework.common.helpers import parse_metric
-    # value = parse_metric(result.stdout, "THROUGHPUT_GBPS")
-    # if value is not None:
-    #     allure_reporter.metric("THROUGHPUT_GBPS", value)
-    #     assert value > 0
-    #     # baseline_fixture.compare("THROUGHPUT_GBPS", value)  # for regression gating
 ```
 
 ---

@@ -269,13 +269,13 @@ def test_<name>_multi_gpu(
 
 ```python
 # After the result.ok assertion, add metric parsing:
-from framework.common.helpers import parse_metric
+import re
 
-value = parse_metric(result.stdout, "<METRIC_KEY>")
-if value is not None:
+match = re.search(r"<METRIC_KEY>=(\d+(?:\.\d+)?)", result.stdout)
+if match:
+    value = float(match.group(1))
     assert value > 0, f"<METRIC_KEY> must be positive, got {value}"
     # Optional: allure_reporter.metric("<METRIC_KEY>", value)
-    # Optional: baseline_fixture.compare("<METRIC_KEY>", value)
 ```
 
 ### 3c. conftest.py Extension (when new binary is needed)

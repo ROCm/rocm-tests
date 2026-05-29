@@ -7,9 +7,7 @@ test_config_loader.py -- Unit tests for the framework configuration loader.
 Validates:
     1. Code defaults are returned when no config file and no env vars are set.
     2. ENV vars (ROCM_TEST_*) override file-based defaults.
-    3. Explicit file path loading populates config correctly.
-    4. new_run_context() returns a unique RunContext per call.
-    5. Missing or malformed TOML files degrade gracefully (defaults returned).
+    3. new_run_context() returns a unique RunContext per call.
 
 Markers: ci.pr, layer.runtime, hw.cpu_only, runtime.fast, os.linux
 """
@@ -21,6 +19,11 @@ import pytest
 from framework.config.loader import FrameworkConfig, load_config
 
 
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.hw.cpu_only
+@pytest.mark.runtime.fast
+@pytest.mark.os.linux
 @pytest.mark.parametrize("_unused", [None])  # ensures pytest collects this as a test
 class TestConfigLoaderDefaults:
     """Group: default config values when no file and no env vars are set."""
@@ -37,19 +40,24 @@ class TestConfigLoaderDefaults:
         cfg = load_config()
         assert cfg.framework.log_level == "normal"
 
-    def test_default_baseline_dir(self, _unused, monkeypatch, tmp_path):
-        """Default baseline_dir should point to tests/performance/baselines/."""
+    def test_default_allure_results_dir(self, _unused, monkeypatch, tmp_path):
+        """Default allure_results_dir should be under output/artifacts/."""
         monkeypatch.chdir(tmp_path)
         cfg = load_config()
-        assert "baselines" in cfg.baselines.baseline_dir
+        assert "allure" in cfg.reporting.allure_results_dir
 
 
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.hw.cpu_only
+@pytest.mark.runtime.fast
+@pytest.mark.os.linux
 @pytest.mark.parametrize(
     ("env_key", "env_val", "attr_path"),
     [
         ("ROCM_TEST_FRAMEWORK_LOG_LEVEL", "verbose", ("framework", "log_level")),
         ("ROCM_TEST_GPU_MAX_TEMP_CELSIUS", "80", ("gpu", "max_temp_celsius")),
-        ("ROCM_TEST_BASELINES_REGRESSION_PCT", "10.0", ("baselines", "regression_pct")),
+        ("ROCM_TEST_REPORTING_HISTORY_DEPTH", "10", ("reporting", "history_depth")),
     ],
 )
 class TestEnvVarOverrides:
@@ -66,6 +74,11 @@ class TestEnvVarOverrides:
         assert str(actual) == env_val or actual == type(actual)(env_val)
 
 
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.hw.cpu_only
+@pytest.mark.runtime.fast
+@pytest.mark.os.linux
 class TestRunContext:
     """Group: new_run_context() generates unique, timestamped run IDs."""
 

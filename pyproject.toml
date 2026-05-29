@@ -33,11 +33,9 @@ log_date_format = "%H:%M:%S"
 
 # Directories that are NOT test files — pytest must never descend into them.
 # tests/common/   : Shared test data factories (factories.py) — not test files
-# tests/e2e/performance/baselines/ : YAML data files, no Python test code
 # framework/      : framework library — imported by tests but not a test root
 norecursedirs  = [
     "tests/common",
-    "tests/e2e/performance/baselines",
     "framework",
     "build",
     "output",
@@ -89,6 +87,8 @@ markers = [
     "gpu_count(n): minimum GPU count per node (e.g. @pytest.mark.gpu_count(2))",
     # Container routing
     "container_image(image): Docker/Podman image for container_executor fixture",
+    # Per-test retry (handled by retry_plugin, not a dimension)
+    "retry(count): number of attempts before marking a test as failed (e.g. @pytest.mark.retry(count=3))",
 ]
 
 # ---------------------------------------------------------------------------
