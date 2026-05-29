@@ -124,6 +124,8 @@ class MultiGpuSlots:
 
     slots: list[NodeSlot]
     node_spec: NodeSpec
+    _log_path: str | None = field(default=None, repr=False)
+    _session_log_path: str | None = field(default=None, repr=False)
 
     @property
     def gpu_indices(self) -> list[int]:

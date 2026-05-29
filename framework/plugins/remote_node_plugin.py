@@ -262,7 +262,6 @@ def _console_multi_released(
         _write_to_session_log(session_log, msg)
 
 
-
 # ---------------------------------------------------------------------------
 # Private helpers shared by target_executor / multi_gpu_fixture / multi_node_fixture
 # ---------------------------------------------------------------------------
@@ -1194,9 +1193,6 @@ def multi_gpu_fixture(request, framework_config, node_pool):
             result = multi_gpu_fixture.run("python3 rccl_allreduce.py")
             assert result.ok
     """
-    import time as _time
-
-    from framework.executors.executor_group import NodeExecutorGroup
 
     config = request.config
 
@@ -1212,10 +1208,6 @@ def multi_gpu_fixture(request, framework_config, node_pool):
         return
 
     ctx = _resolve_test_context(request, framework_config, config)
-    test_name = ctx["test_name"]
-    log_path = ctx["log_path"]
-    session_log = ctx["session_log"]
-    rock_dir = ctx["rock_dir"]
     gpu_count_marker = ctx["gpu_count_marker"]
     count = int(gpu_count_marker.args[0]) if gpu_count_marker and gpu_count_marker.args else 2
 
@@ -1266,9 +1258,6 @@ def multi_node_fixture(request, framework_config, node_pool):
                 result = exec_.run("torchrun --nproc_per_node=2 allreduce.py")
                 assert result.ok
     """
-    import time as _time
-
-    from framework.executors.executor_group import NodeExecutorGroup
 
     config = request.config
 
