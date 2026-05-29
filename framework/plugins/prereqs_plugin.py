@@ -32,11 +32,6 @@ logger = logging.getLogger(__name__)
 PrereqCheck = Callable[[], tuple[bool, str]]
 
 
-# ---------------------------------------------------------------------------
-# Built-in prerequisite checks
-# ---------------------------------------------------------------------------
-
-
 def _check_python_version() -> tuple[bool, str]:
     """Verify Python is at least 3.10."""
     major, minor = sys.version_info[:2]
@@ -59,11 +54,6 @@ _BUILTIN_CHECKS: list[PrereqCheck] = [
     _check_python_version,
     _check_rocm_available,
 ]
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

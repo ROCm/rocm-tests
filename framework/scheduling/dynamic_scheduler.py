@@ -2,47 +2,12 @@
 # SPDX-License-Identifier: MIT
 
 """
-dynamic_scheduler.py -- Resource-aware test scheduling for GPU test suites.
+dynamic_scheduler.py -- Resource-aware xdist test ordering and group assignment.
 
-Replaces ``TestScheduler`` (``framework/nodes/test_scheduler.py``) with a unified
-engine that:
-
-1. Assigns ``xdist_group`` markers so multi-GPU and multinode tests are routed to a
-   dedicated xdist worker that holds all required GPU file locks simultaneously.
-
-2. Sorts the collected test items by a resource-priority key so that the xdist work
-   queue produces the desired slot-filling behaviour at runtime.
-
-Scheduling policies
--------------------
-``resource-most`` (default):
-    Tests are ordered by descending GPU demand:
-    multinode (tier 0) → multi_gpu by count DESC (tier 1) → single_gpu (tier 2).
-
-    The workers that grab multi_gpu or multinode items may *block* inside their fixture
-    while waiting for enough GPU slots.  Other workers continue stealing single_gpu items
-    from the queue and run on whatever GPUs are free.  This means single_gpu tests fill
-    available slots *emergently* — no special interleaving is required in the static sort.
-
-``resource-least``:
-    single_gpu (tier 0) → multi_gpu by count ASC (tier 1) → multinode (tier 2).
-    Maximises time-to-first-result; heavy tests wait until lightweight ones clear.
-
-xdist_group assignment
-----------------------
-- ``@pytest.mark.e2e.multinode`` → ``xdist_group = "multinode_N"`` (unique per test).
-- ``@pytest.mark.gpu_count(N>1)`` or ``hw.multi_gpu`` → ``xdist_group = "multi_gpu_{count}_{N}"``.
-- All other tests → no group (xdist worksteal distributes across free workers).
-
-Each multi-GPU / multinode test gets its own unique group name, so separate xdist workers
-can run different multi-GPU tests in parallel (each worker holds its own set of GPU locks).
-
-Usage (via ``scheduling_plugin.pytest_collection_modifyitems`` — never called directly)::
-
-    pool = NodePool(...)
-    scheduler = DynamicScheduler(pool=pool, policy=SchedulePolicy.RESOURCE_MOST)
-    scheduler.schedule(items)       # modifies items in-place
-    print(scheduler.recommended_workers())
+Runs during pytest_collection_modifyitems. Assigns xdist_group to multinode and
+multi-GPU tests, then sorts by schedule policy (resource-most: multinode →
+multi-GPU DESC → single-GPU; resource-least: reversed). No-op when --no-gpu.
+VRAM headroom applied per --vram-headroom-gb flag.
 """
 
 from __future__ import annotations

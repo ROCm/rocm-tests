@@ -91,13 +91,13 @@ class ContainerExecutor(AbstractExecutor):
     Both are passed with ``--device`` flags and the container is added to the
     ``video`` group when ``use_amd_devices=True`` (the default).
 
-    ``HIP_VISIBLE_DEVICES`` is set inside the container to the value of
+    ``ROCR_VISIBLE_DEVICES`` is set inside the container to the value of
     *gpu_index* so ROCm sees the correct GPU even when multiple cards are
     present in the host.
 
     Args:
         image:           Full container image reference (e.g. ``"rocm/pytorch:6.3"``).
-        gpu_index:       AMD GPU ordinal injected as ``HIP_VISIBLE_DEVICES`` inside
+        gpu_index:       AMD GPU ordinal injected as ``ROCR_VISIBLE_DEVICES`` inside
                          the container (default 0).
         runtime:         ``"docker"`` or ``"podman"`` (default ``"docker"``).
         use_amd_devices: Pass AMD KFD/DRI devices through to the container
@@ -205,7 +205,7 @@ class ContainerExecutor(AbstractExecutor):
             docker run --rm \
                 --device=/dev/kfd --device=/dev/dri \
                 --group-add=video \
-                --env=HIP_VISIBLE_DEVICES=<gpu_index> \
+                --env=ROCR_VISIBLE_DEVICES=<gpu_index> \
                 <image> sh -c <command>
 
         The container is removed automatically after the command exits
@@ -285,7 +285,7 @@ class ContainerExecutor(AbstractExecutor):
                 ]
             # Windows: GPU access is managed by the ROCm Windows driver stack;
             # device passthrough flags are not applicable.
-            parts.append(f"--env=HIP_VISIBLE_DEVICES={self.gpu_index}")
+            parts.append(f"--env=ROCR_VISIBLE_DEVICES={self.gpu_index}")
 
         if self.extra_run_flags:
             parts.append(self.extra_run_flags)

@@ -7,10 +7,9 @@ health_plugin.py -- GPU health gate fixture.
 Provides the ``health_fixture`` which runs pre-execution and post-execution
 GPU health checks (temperature, ECC errors, VRAM headroom, clock state).
 
-Tests that use ``gpu_fixture`` implicitly benefit from health checks because
-``gpu_fixture`` calls health checks inside its setup/teardown. The
-``health_fixture`` is exposed separately for tests that need to assert on
-health state explicitly.
+``target_executor`` (via ``NodeSlot``) runs health checks during GPU slot
+acquisition and release. The ``health_fixture`` is exposed separately for
+tests that need to assert on health state explicitly.
 
 Health thresholds are loaded from the ``framework_config`` session fixture
 (GpuSection of rocm-test.toml / env vars) so they can be tuned per-environment.
@@ -257,11 +256,6 @@ class GpuHealthChecker:
             ecc_errors=ecc_errors,
             vram_free_mb=vram_free_mb,
         )
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

@@ -2,32 +2,11 @@
 # SPDX-License-Identifier: MIT
 
 """
-amd_smi.py -- Version-agnostic AMD SMI query helpers.
+amd_smi.py -- AMD GPU metrics via amd-smi JSON output.
 
-ROCm releases change the ``amd-smi`` JSON schema between versions.  This module
-abstracts those differences with a ``_get()`` cascade helper that tries each
-known key-path in priority order.  Adding support for a new schema variant is a
-single-line path addition — test code never changes.
-
-Known schema variants handled:
-
-    Temperature:
-        ROCm 6.x  ``temperature.hotspot_temperature``
-        ROCm 5.x  ``thermal.gfx.value``
-        Alt        ``temperature.edge_temperature``
-
-    VRAM total:
-        ROCm 6.x  ``vram.total.value``  (nested dict with "value"/"unit")
-        ROCm 5.x  ``vram_total_mb``     (flat integer, MB)
-        Alt        ``vram_info.vram_total_mb``
-
-    BDF address:
-        ROCm 6.x  ``bdf``              (top-level key)
-        ROCm 5.x  ``gpu.bdf``          (nested under "gpu")
-
-Usage::
-
-    from framework.rocm.libs.amd_smi import list_devices, query_gpu_temp, require_amd_smi_version
+AmdSmiMetrics: parses temperature, VRAM, utilization, ECC, and clock metrics.
+Handles schema variants across ROCm versions — see _get() for key-path fallbacks.
+Executor-agnostic: works with LocalExecutor, SshExecutor, and ContainerExecutor.
 """
 
 from __future__ import annotations

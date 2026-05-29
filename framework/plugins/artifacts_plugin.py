@@ -9,8 +9,6 @@ Responsibilities:
       and attaches it to Allure.
     - Provide the ``allure_reporter`` fixture: injects an AllureReporter instance
       for step-level reporting inside test functions.
-    - Attach GPU state dumps (amd-smi output) to Allure on FAIL automatically
-      via the autouse ``_auto_capture_artifacts`` fixture.
 
 The ``allure_reporter`` fixture gives tests a structured API for steps, metrics,
 and attachments without importing allure directly.
@@ -56,11 +54,6 @@ def _capture_gpu_state(gpu_index: int | None = None) -> str:
         return f"GPU state capture failed: {exc}"
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def allure_reporter(request):
     """Inject an AllureReporter for step-level Allure reporting in tests.
@@ -101,20 +94,6 @@ def artifacts_fixture(request, _framework_config):
         state_dump = _capture_gpu_state()
         attach_text(state_dump, name="gpu_state_on_failure.txt")
         logger.info("Attached GPU state dump for failed test: %s", request.node.nodeid)
-
-
-@pytest.fixture(autouse=True)
-def _store_test_outcome():
-    """Autouse: store the test call phase outcome on the node for artifacts_fixture.
-
-    pytest does not expose test outcomes in teardown by default. This fixture
-    hooks pytest_runtest_makereport to save the call phase result on the node.
-
-    Yields:
-        None
-    """
-    return
-    # rep_call is set by the hookimpl below
 
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)

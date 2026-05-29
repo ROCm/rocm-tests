@@ -21,13 +21,13 @@ Explicit single (``gpu_index=N``):
 Explicit multi (``gpu_index=[N, M, ...]``):
     ``ROCR_VISIBLE_DEVICES`` is set to ``"N,M,..."`` (comma-separated).
     This is the mode used for multi-GPU ``hw.multi_gpu`` tests on one node,
-    parallel to ``SshGpuExecutor(gpu_indices=[N, M, ...])``.
+    parallel to ``SshExecutor(gpu_indices=[N, M, ...])``.
 
 Ambient mode (``gpu_index=None``, the default):
     If ``ROCR_VISIBLE_DEVICES`` is already present in the process environment
     (e.g., set by a CI runner or an outer orchestrator), it is left untouched.
     If ``ROCR_VISIBLE_DEVICES`` is **not** set either, ``run()`` raises
-    ``RuntimeError`` with a message directing the caller to use ``gpu_fixture``.
+    ``RuntimeError`` with a message directing the caller to use ``target_executor``.
 
 Streaming modes
 ---------------
@@ -41,7 +41,7 @@ Verbose (``stream_stdout=True``, enabled by ``ROCM_TEST_FRAMEWORK_LOG_LEVEL=debu
     STDOUT is also written to ``sys.stdout`` in real time.
     Both channels still go to *log_path* (when set).
 
-Usage (via gpu_fixture / NodeSlot.make_executor() — not directly in tests):
+Usage (via NodeSlot.make_executor() — not directly in tests):
     executor = LocalExecutor(gpu_index=0)        # single explicit GPU
     executor = LocalExecutor(gpu_index=[0, 1])   # multi-GPU (ROCR_VISIBLE_DEVICES=0,1)
     executor = LocalExecutor()                   # ambient — reads ROCR_VISIBLE_DEVICES from env
@@ -66,6 +66,7 @@ from framework.executors.background_process import (
     _blocking_stream_run,
     _make_background_process,
 )
+from framework.executors.log_config import LogConfig, run_with_logging
 
 logger = logging.getLogger(__name__)
 
@@ -80,33 +81,10 @@ _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
 class LocalExecutor(AbstractExecutor):
-    """Execute commands locally with ``ROCR_VISIBLE_DEVICES`` set for the GPU.
+    """Execute commands locally with ROCR_VISIBLE_DEVICES set for the allocated GPU.
 
-    Supports three modes (see module docstring):
-        - **Explicit single**: ``LocalExecutor(gpu_index=N)`` — pins to one GPU.
-        - **Explicit multi**:  ``LocalExecutor(gpu_index=[N, M])`` — pins to
-          multiple GPUs; ``ROCR_VISIBLE_DEVICES`` is set to ``"N,M"``.
-        - **Ambient**: ``LocalExecutor()`` — respects ``ROCR_VISIBLE_DEVICES``
-          already present in the process environment; raises ``RuntimeError``
-          if neither source is set.
-
-    Supports two streaming modes (see module docstring):
-        - **Default** (``stream_stdout=False``): STDERR streamed to console;
-          STDOUT buffered only; both written to *log_path* when provided.
-        - **Verbose** (``stream_stdout=True``): STDOUT+STDERR streamed to console
-          and written to *log_path*.
-
-    Attributes:
-        gpu_index:     GPU ordinal(s) injected into the subprocess environment.
-                       ``int`` for single-GPU, ``list[int]`` for multi-GPU,
-                       or ``None`` when operating in ambient mode.
-        stream_stdout: When True, stream STDOUT to the live console in addition
-                       to returning it in ``ExecutionResult.stdout``.
-        stream_stderr: When True (default), stream STDERR to ``sys.stderr`` in
-                       real time.  Set to False when wrapped by ``LabeledExecutor``
-                       so that labeled output is emitted instead of raw STDERR.
-        log_path:      Path to a per-test append-mode log file, or ``None`` to
-                       skip disk logging.
+    Supports explicit single/multi-GPU and ambient modes — see module docstring.
+    Streaming behavior controlled by stream_stdout and stream_stderr flags.
     """
 
     def __init__(
@@ -115,6 +93,7 @@ class LocalExecutor(AbstractExecutor):
         stream_stdout: bool = False,
         stream_stderr: bool = True,
         log_path: str | None = None,
+        log_config: LogConfig | None = None,
     ) -> None:
         """Initialize for a specific GPU ordinal, multiple ordinals, or ambient mode.
 
@@ -127,15 +106,18 @@ class LocalExecutor(AbstractExecutor):
             stream_stdout: When True, subprocess STDOUT is written to
                            ``sys.stdout`` in real time.
             stream_stderr: When True (default), subprocess STDERR is written to
-                           ``sys.stderr`` in real time.  Pass False when this
-                           executor is wrapped by ``LabeledExecutor``.
+                           ``sys.stderr`` in real time.  Set to False when
+                           *log_config* is provided.
             log_path:      If given, all subprocess output (STDOUT+STDERR) is
                            appended to this file.
+            log_config:    When provided, the shared logging protocol is applied:
+                           prefixed output, command timestamps, session log writes.
         """
         self.gpu_index = gpu_index
         self.stream_stdout = stream_stdout
         self.stream_stderr = stream_stderr
         self.log_path = log_path
+        self.log_config = log_config
 
     def run(self, command: str, timeout: float | None = None) -> ExecutionResult:
         """Execute *command* in a subprocess with ROCR_VISIBLE_DEVICES configured.
@@ -166,7 +148,7 @@ class LocalExecutor(AbstractExecutor):
             if self.gpu_index is None:
                 raise RuntimeError(
                     "LocalExecutor: no gpu_index set and ROCR_VISIBLE_DEVICES is not in the "
-                    "environment. Use the gpu_fixture to allocate a GPU, or construct "
+                    "environment. Use target_executor (from remote_node_plugin) to allocate a GPU, or construct "
                     "LocalExecutor(gpu_index=N) explicitly."
                 )
             if isinstance(self.gpu_index, list):
@@ -178,15 +160,24 @@ class LocalExecutor(AbstractExecutor):
         gpu_label = env.get("ROCR_VISIBLE_DEVICES", "?")
         logger.debug("LocalExecutor[ROCR_VISIBLE_DEVICES=%s] running: %s", gpu_label, command)
 
-        return _blocking_stream_run(
-            command=command,
-            env=env,
-            cwd=None,
-            timeout=effective_timeout,
-            stream_stdout=self.stream_stdout,
-            stream_stderr=self.stream_stderr,
-            log_path=self.log_path,
-        )
+        # When log_config is provided, disable inner streaming so that
+        # LogConfig handles console/file output routing.
+        stream_stderr = self.stream_stderr if self.log_config is None else False
+
+        def _inner_run(cmd: str, t: float | None) -> ExecutionResult:
+            return _blocking_stream_run(
+                command=cmd,
+                env=env,
+                cwd=None,
+                timeout=effective_timeout if t is None else t,
+                stream_stdout=self.stream_stdout,
+                stream_stderr=stream_stderr,
+                log_path=self.log_path,
+            )
+
+        if self.log_config is not None:
+            return run_with_logging(self.log_config, command, timeout, _inner_run)
+        return _inner_run(command, timeout)
 
     def start_background(
         self,
@@ -229,7 +220,7 @@ class LocalExecutor(AbstractExecutor):
             if self.gpu_index is None:
                 raise RuntimeError(
                     "LocalExecutor: no gpu_index set and ROCR_VISIBLE_DEVICES is not in the "
-                    "environment. Use the gpu_fixture to allocate a GPU, or construct "
+                    "environment. Use target_executor (from remote_node_plugin) to allocate a GPU, or construct "
                     "LocalExecutor(gpu_index=N) explicitly."
                 )
             if isinstance(self.gpu_index, list):

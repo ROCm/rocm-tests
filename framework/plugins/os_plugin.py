@@ -44,11 +44,6 @@ logger = logging.getLogger(__name__)
 _PLATFORM: str = os_adapter_factory().get_platform_name()
 
 
-# ---------------------------------------------------------------------------
-# pytest hooks
-# ---------------------------------------------------------------------------
-
-
 def pytest_runtest_setup(item: pytest.Item) -> None:
     """Skip tests whose ``os.*`` marker does not match the current platform.
 
@@ -79,33 +74,21 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
             )
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(scope="session")
 def os_adapter():
     """Return the platform-appropriate OS adapter for this host.
 
     Returns ``LinuxOsAdapter`` on Linux or ``WindowsOsAdapter`` on Windows.
     The adapter exposes:
-        - ``list_gpu_device_paths()``  — ``/dev/dri/renderD*`` (Linux) or BDF
-                                          strings (Windows).
-        - ``load_kernel_module(mod)``  — ``modprobe`` (Linux) / no-op (Windows).
-        - ``unload_kernel_module(mod)``— ``modprobe -r`` (Linux) / no-op (Windows).
-        - ``get_platform_name()``      — ``"linux"`` or ``"windows"``.
-
-    Use this fixture when test logic needs platform-specific paths or operations
-    that differ between Linux and Windows.  Prefer ``@pytest.mark.os.linux`` /
-    ``@pytest.mark.os.windows`` markers for simple skip-on-wrong-OS cases.
-
-    The adapter exposes:
         - ``list_gpu_device_paths()``   — ``/dev/dri/renderD*`` (Linux) or BDF strings (Windows).
         - ``is_module_loaded(mod)``     — ``lsmod`` check (Linux, no sudo) / True (Windows).
         - ``load_kernel_module(mod)``   — ``modprobe`` (Linux) / no-op (Windows).
         - ``unload_kernel_module(mod)`` — ``modprobe -r`` (Linux) / no-op (Windows).
-        - ``get_platform_name()``       — ``"linux"``, ``"windows"``, or ``"wsl"``.
+        - ``get_platform_name()``       — ``"linux"`` or ``"windows"``.
+
+    Use this fixture when test logic needs platform-specific paths or operations
+    that differ between Linux and Windows. Prefer ``@pytest.mark.os.linux`` /
+    ``@pytest.mark.os.windows`` markers for simple skip-on-wrong-OS cases.
 
     Returns:
         ``AbstractOsAdapter`` concrete instance for the running host.

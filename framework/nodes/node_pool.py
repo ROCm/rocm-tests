@@ -4,35 +4,9 @@
 """
 node_pool.py -- Fleet manager: GPU topology discovery, slot acquisition, and release.
 
-NodePool is the central resource manager for the test framework.  It discovers
-GPUs on all nodes at session start (in parallel for remote nodes), maintains a
-per-node ``GpuAllocator``, and provides ``acquire_slot()`` / ``acquire_slots()``
-/ ``acquire_multi_node()`` methods that xdist-safe via ``GpuFileLock``.
-
-Topology:
-    LOCAL mode  (no ``--remote-node``):
-        NodePool holds a single ``NodeSpec(hostname="localhost")`` and one
-        ``GpuDetector(ssh_executor=None)``.  No SSH connection is opened.
-
-    REMOTE mode (``--remote-node=host.yaml``):
-        NodePool holds N ``NodeSpec`` objects parsed from the YAML.  One
-        ``SshExecutor`` is opened per node (lazy — on first GPU detect call).
-        ``GpuDetector(ssh_executor=<node_ssh>)`` runs detection on each node
-        in parallel threads.
-
-Returned resource: ``NodeSlot`` — an atomic (node, gpu) pair that holds the
-``NodeSpec``, ``GpuInfo``, and (for remote nodes) the ``SshExecutor``.
-Call ``slot.make_executor()`` to get a ready-to-use ``LabeledExecutor``.
-
-Usage (via ``target_executor`` fixture — not called directly in tests)::
-
-    pool = NodePool(node_specs=[NodeSpec(hostname="localhost", label="localhost")])
-    slot = pool.acquire_slot(wait_timeout_secs=30.0)
-    try:
-        executor = slot.make_executor(test_id="test_hip_runtime", stream_stdout=True)
-        result = executor.run("rocm-smi --showid")
-    finally:
-        pool.release([slot])
+NodePool discovers GPUs at session start, maintains per-node GpuAllocator instances,
+and provides file-locked slot acquisition (acquire_slot, acquire_slots,
+acquire_multi_node). Used exclusively via target_executor — not called from tests.
 """
 
 from __future__ import annotations
@@ -87,14 +61,15 @@ class NodeSlot:
         log_path: str | None = None,
         session_log_path: str | None = None,
     ):
-        """Return a ``LabeledExecutor`` backed by the correct inner executor.
+        """Return an executor with logging context attached.
 
-        LOCAL slot:  ``LabeledExecutor(LocalExecutor(gpu_index=N, no-stream), ...)``
-        REMOTE slot: ``LabeledExecutor(SshGpuExecutor(ssh, [N]), ...)``
+        LOCAL slot:  ``LocalExecutor(gpu_index=N, log_config=LogConfig(...))``
+        REMOTE slot: ``SshExecutor(gpu_indices=[N], log_config=LogConfig(...))``
 
-        The inner executor is always created with console streaming disabled —
-        ``LabeledExecutor`` owns all console output (via the ``rocm.output``
-        logger) and all log file writing.
+        ``LogConfig`` carries the test, node, and GPU labels together with the
+        log file paths.  ``run()`` on the returned executor applies the shared
+        7-step logging protocol (prefixed console output + timestamped log files)
+        without any additional wrapper class.
 
         Args:
             test_id:          Test function name for the label prefix.
@@ -102,35 +77,37 @@ class NodeSlot:
             session_log_path: Session-wide aggregate log file (append mode).
 
         Returns:
-            ``LabeledExecutor`` ready for ``.run()`` calls.
+            ``LocalExecutor`` or ``SshExecutor`` with ``log_config`` set.
         """
-        from framework.executors.labeled_executor import LabeledExecutor  # pylint: disable=import-outside-toplevel
+        from framework.executors.log_config import LogConfig  # pylint: disable=import-outside-toplevel
 
-        if self.node_spec.is_local:
-            from framework.executors.local_executor import LocalExecutor  # pylint: disable=import-outside-toplevel
-
-            inner = LocalExecutor(
-                gpu_index=self.gpu_info.index,
-                stream_stdout=True,
-                stream_stderr=False,
-                log_path=None,
-            )
-        else:
-            from framework.executors.ssh_gpu_executor import SshGpuExecutor  # pylint: disable=import-outside-toplevel
-
-            inner = SshGpuExecutor(  # type: ignore[assignment]
-                ssh=self._ssh,  # type: ignore[arg-type]
-                gpu_indices=[self.gpu_info.index],
-            )
-
-        return LabeledExecutor(
-            inner=inner,
+        log_cfg = LogConfig(
             test_id=test_id,
             node_label=self.node_spec.label,
             gpu_label=self.gpu_label,
             log_path=log_path,
             session_log_path=session_log_path,
         )
+
+        if self.node_spec.is_local:
+            from framework.executors.local_executor import LocalExecutor  # pylint: disable=import-outside-toplevel
+
+            return LocalExecutor(
+                gpu_index=self.gpu_info.index,
+                stream_stdout=True,
+                stream_stderr=False,
+                log_path=None,
+                log_config=log_cfg,
+            )
+
+        from framework.executors.ssh_executor import (  # pylint: disable=import-outside-toplevel
+            SshExecutor as _SshExecutor,
+        )
+
+        ssh: _SshExecutor = self._ssh  # type: ignore[assignment]
+        ssh.gpu_indices = [self.gpu_info.index]
+        ssh.log_config = log_cfg
+        return ssh
 
 
 @dataclass
@@ -164,13 +141,13 @@ class MultiGpuSlots:
         log_path: str | None = None,
         session_log_path: str | None = None,
     ):
-        """Return a ``LabeledExecutor`` with all GPUs visible.
+        """Return a ``LocalExecutor`` or ``SshExecutor`` with LogConfig attached and all GPUs visible.
 
-        LOCAL: ``LabeledExecutor(LocalExecutor(gpu_index=[0,1,...], stream_stdout=True), ...)``
-        REMOTE: ``LabeledExecutor(SshGpuExecutor(ssh, [0,1,...]), ...)``
+        LOCAL: ``LocalExecutor(gpu_index=[0,1,...], stream_stdout=True, log_config=...)``
+        REMOTE: ``SshExecutor(ssh, gpu_indices=[0,1,...], log_config=...)``
 
         The inner executor streams stdout live to the console. stderr is captured
-        by ``LabeledExecutor`` for post-call logging and Allure attachment.
+        via ``LogConfig`` for post-call logging and Allure attachment.
 
         Log paths are resolved in priority order: explicit argument → fixture-injected
         attribute (``_log_path`` / ``_session_log_path``) → default (``None``).
@@ -184,39 +161,41 @@ class MultiGpuSlots:
                               back to ``self._session_log_path`` when ``None``.
 
         Returns:
-            ``LabeledExecutor`` with all GPUs visible.
+            ``LocalExecutor`` or ``SshExecutor`` with ``log_config`` attached (all GPUs visible).
         """
-        from framework.executors.labeled_executor import LabeledExecutor  # pylint: disable=import-outside-toplevel
+        from framework.executors.log_config import LogConfig  # pylint: disable=import-outside-toplevel
 
         effective_log = log_path or getattr(self, "_log_path", None)
         effective_session_log = session_log_path or getattr(self, "_session_log_path", None)
 
         gpu_label = f"GPU-{','.join(str(i) for i in self.gpu_indices)}"
-        if self.node_spec.is_local:
-            from framework.executors.local_executor import LocalExecutor  # pylint: disable=import-outside-toplevel
-
-            inner = LocalExecutor(
-                gpu_index=self.gpu_indices,  # list[int] → ROCR_VISIBLE_DEVICES=N,M,...
-                stream_stdout=True,
-                stream_stderr=False,
-                log_path=None,
-            )
-        else:
-            from framework.executors.ssh_gpu_executor import SshGpuExecutor  # pylint: disable=import-outside-toplevel
-
-            inner = SshGpuExecutor(  # type: ignore[assignment]
-                ssh=self.slots[0]._ssh,  # type: ignore[arg-type]
-                gpu_indices=self.gpu_indices,
-            )
-
-        return LabeledExecutor(
-            inner=inner,
+        log_cfg = LogConfig(
             test_id=test_id,
             node_label=self.node_spec.label,
             gpu_label=gpu_label,
             log_path=effective_log,
             session_log_path=effective_session_log,
         )
+
+        if self.node_spec.is_local:
+            from framework.executors.local_executor import LocalExecutor  # pylint: disable=import-outside-toplevel
+
+            return LocalExecutor(
+                gpu_index=self.gpu_indices,  # list[int] → ROCR_VISIBLE_DEVICES=N,M,...
+                stream_stdout=True,
+                stream_stderr=False,
+                log_path=None,
+                log_config=log_cfg,
+            )
+
+        from framework.executors.ssh_executor import (  # pylint: disable=import-outside-toplevel
+            SshExecutor as _SshExecutorMulti,
+        )
+
+        ssh_multi: _SshExecutorMulti = self.slots[0]._ssh  # type: ignore[assignment]
+        ssh_multi.gpu_indices = self.gpu_indices
+        ssh_multi.log_config = log_cfg
+        return ssh_multi
 
 
 # ---------------------------------------------------------------------------

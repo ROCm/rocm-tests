@@ -2,34 +2,11 @@
 # SPDX-License-Identifier: MIT
 
 """
-detector.py -- AMD GPU detection via lspci (primary) + KFD sysfs (fallback) with amd-smi diagnostics.
+detector.py -- AMD GPU detection via lspci and amd-smi.
 
-Provides:
-    GpuInfo         -- Immutable descriptor for a single detected AMD GPU.
-    GpuDetector     -- Detects real AMD GPUs from the host system.
-    MockGpuDetector -- Returns synthetic GpuInfo list for unit tests (--mock-gpu).
-
-Detection strategy:
-    Primary: ``lspci -d 1002: -nn`` — kernel PCI bus enumeration; requires no AMD
-    driver and no ROCm installation; works locally and over SSH.  Returns
-    GpuInfo with ``arch="unknown"`` and ``vram_mb=0``.
-
-    Fallback: KFD sysfs (``/sys/class/kfd/kfd/topology/nodes``) — used when
-    ``lspci`` is absent (e.g. inside containers without pciutils).  Requires
-    no binary and no elevated permissions; also populates ``arch`` and ``vram_mb``.
-
-    amd-smi detection is currently disabled (commented out in ``detect()``).
-
-    Diagnostics: when GPUs are detected, ``amd-smi list`` is executed once
-    on the same node for human inspection.  Its output is written to the console
-    and to ``output/artifacts/gpu-info-<node>.log``.  The result is NEVER used
-    for scheduling or allocation decisions.
-
-Usage:
-    detector = GpuDetector()
-    gpus = detector.detect()
-    for gpu in gpus:
-        print(f"GPU {gpu.index}: {gpu.arch} — {gpu.vram_mb} MB VRAM")
+Primary detection: lspci -d 1002: -nn (no driver required, works over SSH).
+Diagnostics only: amd-smi list runs once when GPUs are found — output written
+to output/artifacts/gpu-info-<node>.log. Use MockGpuDetector for --mock-gpu.
 """
 
 from __future__ import annotations
