@@ -91,15 +91,15 @@ jobs:
 
       - name: Resolve rockrel run_id from workflow name
         id: get_runid
-        if: ${{ inputs.source_repo == 'ROCm/rockrel' }}
+        if: ${{ (inputs.source_repo || 'ROCm/rockrel') == 'ROCm/rockrel' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: python
         run: |
           import json, os
           from urllib.request import urlopen, Request
-          repo     = "${{ inputs.source_repo }}"
-          workflow = "${{ inputs.artifact_source }}"
+          repo     = "${{ inputs.source_repo || 'ROCm/rockrel' }}"
+          workflow = "${{ inputs.artifact_source || 'multi_arch_release.yml' }}"
           url = (
             f'https://api.github.com/repos/{repo}/actions/workflows/'
             f'{workflow}/runs?status=completed&per_page=1'
