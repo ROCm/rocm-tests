@@ -31,8 +31,8 @@ from __future__ import annotations
 
 import logging
 
-import pytest
 from _pytest.mark.structures import MarkDecorator
+import pytest
 
 
 def _mark_getattr(self: MarkDecorator, name: str) -> MarkDecorator:
@@ -58,11 +58,11 @@ MarkDecorator.__getattr__ = _mark_getattr  # type: ignore[assignment]
 # on category profiles are fully annotated before they are sorted or skipped.
 # Do not move markers_plugin below scheduling_plugin or gpu_plugin.
 pytest_plugins = [
-    "framework.plugins.markers_plugin",      # FIRST: category-profile marker injection (CATEGORY_PROFILES in taxonomy.py)
+    "framework.plugins.markers_plugin",      # FIRST: category-profile marker injection (CATEGORY_PROFILES in taxonomy.py)  # noqa: E501
     "framework.plugins.gpu_plugin",          # --no-gpu/--gpu-arch/--mock-gpu, gpu_arch/dry_run_executor
-    "framework.plugins.remote_node_plugin",  # --remote-node/--gpu-acquire-timeout, node_pool/target_executor/multi_gpu_fixture/multi_node_fixture
-    "framework.plugins.scheduling_plugin",   # --schedule-policy/--collect-runtimes, unified collection hook + runtime collector
-    "framework.plugins.executor_plugin",     # --container-mode/--container-image/--container-runtime, cpu_executor/container_executor
+    "framework.plugins.remote_node_plugin",  # --remote-node/--gpu-acquire-timeout, node_pool/target_executor  # noqa: E501
+    "framework.plugins.scheduling_plugin",   # --schedule-policy/--collect-runtimes, unified collection hook + runtime collector  # noqa: E501
+    "framework.plugins.executor_plugin",     # --container-mode/--container-image/--container-runtime, cpu_executor/container_executor  # noqa: E501
     "framework.plugins.os_plugin",           # os_adapter/platform_name fixtures, os.* marker skip hook
     "framework.plugins.health_plugin",       # health_fixture (temp/ECC/VRAM gates)
     "framework.plugins.artifacts_plugin",    # artifacts_fixture, allure_reporter fixture
@@ -119,28 +119,61 @@ def run_ctx(framework_config):
 
 
 @pytest.fixture(autouse=True)
-def _attach_test_log(caplog, request):
-    """Autouse: capture Python log output and attach it to Allure per test.
+def _attach_test_log(request, framework_config, caplog):
+    """Autouse: attach the per-test log file to Allure after each test.
 
-    Runs for every test automatically. The Allure attachment is a no-op when
-    allure-pytest is not installed (e.g. lightweight CI environments), so this
-    fixture degrades gracefully.
+    ``framework.logging.test_logger.TestLogger`` writes full verbatim output
+    (block headers, stdout, stderr) to a per-test log file and sets
+    ``_BASE_LOGGER.propagate = False`` to avoid double-stamping through
+    pytest's root handler.  Because propagation is off, ``caplog`` never
+    receives those records, so reading caplog would produce an empty attachment
+    for every GPU or CPU executor test.
+
+    This fixture reads directly from the per-test log file, which always
+    contains the complete output regardless of executor type.  Falls back to
+    ``caplog`` for tests that emit records through standard Python logging
+    without a ``TestLogger`` attached.
+
+    The Allure attachment is a no-op when allure-pytest is not installed.
 
     Args:
-        caplog: pytest built-in log capture fixture.
-        request: pytest request object (provides test metadata).
+        request:          pytest request object (provides test metadata).
+        framework_config: Session-scoped merged config (avoids per-test reload).
+        caplog:           pytest log capture fixture (fallback for non-executor tests).
 
     Yields:
         None: Runs setup before test, teardown after.
     """
     caplog.set_level(logging.DEBUG)
     yield
-    if caplog.text:
+
+    # Prefer per-test log file written by TestLogger — complete, verbatim output.
+    # Use _executor_log_file (pure, no truncation side-effect) so the teardown
+    # reader does not wipe the file it is trying to read.
+    log_content: str | None = None
+    try:
+        from framework.common.helpers import _executor_log_file
+
+        p = _executor_log_file(framework_config.framework.artifact_dir, request.node.name, request.node.nodeid)
+        try:
+            st = p.stat()
+            if st.st_size > 0:
+                log_content = p.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            pass
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    # Fallback: caplog records for tests that do not use a TestLogger.
+    if not log_content and caplog.text:
+        log_content = caplog.text
+
+    if log_content:
         try:
             import allure
 
             allure.attach(
-                caplog.text,
+                log_content,
                 name="test.log",
                 attachment_type=allure.attachment_type.TEXT,
             )

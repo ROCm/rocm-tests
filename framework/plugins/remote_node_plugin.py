@@ -268,12 +268,18 @@ def _console_multi_released(
 
 
 def _resolve_session_log(config: pytest.Config, framework_config) -> str:
-    """Return the session-wide log path, creating the directory if needed."""
+    """Return the session-wide log path as an absolute path, creating the directory if needed.
+
+    Priority: ``config._session_log_path`` (set by ``reports_plugin.pytest_configure``)
+    → ``framework_config.framework.session_log`` (from ``rocm-test.toml`` or code default).
+    Always returns an absolute path so xdist workers writing from a different CWD land
+    in the same file as the master process.
+    """
     session_log = getattr(config, "_session_log_path", None)
     if session_log is None:
         import pathlib as _pathlib
 
-        session_log = str(_pathlib.Path(framework_config.framework.artifact_dir) / "session.log")
+        session_log = str(_pathlib.Path(framework_config.framework.session_log).resolve())
         _pathlib.Path(session_log).parent.mkdir(parents=True, exist_ok=True)
     return session_log
 
@@ -481,6 +487,9 @@ class _XdistTopologyPlugin:
             "headroom_gb": pool._headroom_gb,
         }
         node.workerinput["_node_pool_topology"] = json.dumps(topology)
+        # Inject the absolute session log path so workers write to the same file
+        # as the master regardless of their working directory.
+        node.workerinput["_session_log_path"] = getattr(self._config, "_session_log_path", None) or ""
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -690,17 +699,52 @@ def _cleanup_gpu_lock_files(lock_dir: str = "output/.gpu-locks") -> None:
         )
 
 
-def pytest_sessionfinish(session: pytest.Session) -> None:
-    """Close SSH sessions and clean up GPU lock files at session end."""
+def _write_session_summary(session: pytest.Session) -> None:
+    """Append a SUMM line to session.log at the end of the master process.
+
+    Reads the pytest terminal summary counters and writes one structured line
+    so the session log is trivially grep-able for pass/fail totals.
+
+    Args:
+        session: The active pytest session (provides counts via terminalreporter).
+    """
+    try:
+        from framework.logging.test_logger import _ts
+
+        # _session_log_path is already resolved in pytest_configure — no load_config() needed.
+        session_log = getattr(session.config, "_session_log_path", None)
+        if not session_log:
+            return
+
+        tr = session.config.pluginmanager.getplugin("terminalreporter")
+        if tr is None:
+            return
+        passed = len(tr.stats.get("passed", []))
+        failed = len(tr.stats.get("failed", []))
+        error = len(tr.stats.get("error", []))
+        skipped = len(tr.stats.get("skipped", []))
+        total = passed + failed + error + skipped
+        line = f"SUMM  {_ts()} total={total} passed={passed} failed={failed}" f" error={error} skipped={skipped}\n"
+        import pathlib as _pathlib
+
+        with _pathlib.Path(session_log).open("a", encoding="utf-8") as _f:
+            _f.write(line)
+    except Exception:  # pylint: disable=broad-except
+        pass  # session summary is best-effort — never crash the process
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Close SSH sessions, write session summary, and clean up GPU lock files."""
     pool: NodePool | None = getattr(session.config, "_node_pool", None)
     if pool is not None:
         pool.close_ssh_sessions()
         logger.info("NodePool: SSH sessions closed at session end")
 
-    # Clean up lock files on the master process only (workers don't run this).
+    # Clean up lock files and write session summary on the master process only.
     if not hasattr(session.config, "workerinput"):
         _cleanup_gpu_lock_files()
         print("\n[rocm-test] GPU lock files cleaned up at session end.", flush=True)
+        _write_session_summary(session)
 
 
 # ---------------------------------------------------------------------------
@@ -951,6 +995,9 @@ def _acquire_and_yield(
     finally:
         elapsed = _time.monotonic() - _t
         _teardown_monitoring(ctx, multi_list, health_monitors, pre_health_maps, bg_monitors, elapsed)
+        for _exec in executors:
+            if getattr(_exec, "test_logger", None) is not None:
+                _exec.test_logger.close()
         _write_session_separator(session_log, test_name, "END", elapsed)
         all_indices = [s.gpu_info.index for m in multi_list for s in m.slots]
         _drain_gpu_slots(config, rock_dir, all_indices)
@@ -1146,14 +1193,15 @@ def target_executor(request, framework_config, node_pool):
     health_monitors, pre_health_maps, bg_monitors = _setup_monitoring(
         ctx, framework_config, [slot_as_multi], is_multi_node_shape=False
     )
+    _single_exec = slot.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log)
     _t = _time.monotonic()
     try:
-        yield NodeExecutorGroup(
-            [slot.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log)]
-        )
+        yield NodeExecutorGroup([_single_exec])
     finally:
         elapsed = _time.monotonic() - _t
         _teardown_monitoring(ctx, [slot_as_multi], health_monitors, pre_health_maps, bg_monitors, elapsed)
+        if getattr(_single_exec, "test_logger", None) is not None:
+            _single_exec.test_logger.close()
         _write_session_separator(session_log, test_name, "END", elapsed)
         _drain_gpu_slots(config, rock_dir, [slot.gpu_info.index])
         node_pool.release([slot])

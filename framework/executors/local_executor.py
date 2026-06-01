@@ -66,7 +66,7 @@ from framework.executors.background_process import (
     _blocking_stream_run,
     _make_background_process,
 )
-from framework.executors.log_config import LogConfig, run_with_logging
+from framework.logging.test_logger import TestLogger
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class LocalExecutor(AbstractExecutor):
         stream_stdout: bool = False,
         stream_stderr: bool = True,
         log_path: str | None = None,
-        log_config: LogConfig | None = None,
+        test_logger: TestLogger | None = None,
     ) -> None:
         """Initialize for a specific GPU ordinal, multiple ordinals, or ambient mode.
 
@@ -107,17 +107,18 @@ class LocalExecutor(AbstractExecutor):
                            ``sys.stdout`` in real time.
             stream_stderr: When True (default), subprocess STDERR is written to
                            ``sys.stderr`` in real time.  Set to False when
-                           *log_config* is provided.
+                           *test_logger* is provided.
             log_path:      If given, all subprocess output (STDOUT+STDERR) is
                            appended to this file.
-            log_config:    When provided, the shared logging protocol is applied:
-                           prefixed output, command timestamps, session log writes.
+            test_logger:   When provided, the block-header logging protocol is
+                           applied: one header per command, verbatim output, and
+                           session.log event lines.
         """
         self.gpu_index = gpu_index
         self.stream_stdout = stream_stdout
         self.stream_stderr = stream_stderr
         self.log_path = log_path
-        self.log_config = log_config
+        self.test_logger = test_logger
 
     def run(self, command: str, timeout: float | None = None) -> ExecutionResult:
         """Execute *command* in a subprocess with ROCR_VISIBLE_DEVICES configured.
@@ -160,9 +161,9 @@ class LocalExecutor(AbstractExecutor):
         gpu_label = env.get("ROCR_VISIBLE_DEVICES", "?")
         logger.debug("LocalExecutor[ROCR_VISIBLE_DEVICES=%s] running: %s", gpu_label, command)
 
-        # When log_config is provided, disable inner streaming so that
-        # LogConfig handles console/file output routing.
-        stream_stderr = self.stream_stderr if self.log_config is None else False
+        # When test_logger is provided, disable inner stderr streaming so that
+        # TestLogger handles console/file output routing after the command returns.
+        stream_stderr = self.stream_stderr if self.test_logger is None else False
 
         def _inner_run(cmd: str, t: float | None) -> ExecutionResult:
             return _blocking_stream_run(
@@ -175,8 +176,11 @@ class LocalExecutor(AbstractExecutor):
                 log_path=self.log_path,
             )
 
-        if self.log_config is not None:
-            return run_with_logging(self.log_config, command, timeout, _inner_run)
+        if self.test_logger is not None:
+            start = self.test_logger.cmd_start(command)
+            raw = _inner_run(command, timeout)
+            self.test_logger.cmd_end(raw.stdout, raw.stderr, raw.exit_code, start)
+            return raw
         return _inner_run(command, timeout)
 
     def start_background(

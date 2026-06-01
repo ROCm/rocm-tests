@@ -29,7 +29,7 @@ import time
 
 from framework.common.helpers import ExecutionResult
 from framework.executors.abstract_executor import AbstractExecutor
-from framework.executors.log_config import LogConfig, run_with_logging
+from framework.logging.test_logger import TestLogger
 
 try:
     import paramiko
@@ -74,7 +74,7 @@ class SshExecutor(AbstractExecutor):
         port: int = 22,
         connect_timeout: float = 30.0,
         gpu_indices: list[int] | None = None,
-        log_config: LogConfig | None = None,
+        test_logger: TestLogger | None = None,
     ) -> None:
         self.host = host
         self.user = user or os.getenv("USER", "root")
@@ -83,7 +83,7 @@ class SshExecutor(AbstractExecutor):
         self.port = port
         self.connect_timeout = connect_timeout
         self.gpu_indices: list[int] = list(gpu_indices) if gpu_indices else []
-        self.log_config = log_config
+        self.test_logger = test_logger
         self._client: paramiko.SSHClient | None = None
 
         # Silence INFO-level messages from paramiko.transport / paramiko.auth
@@ -235,6 +235,9 @@ class SshExecutor(AbstractExecutor):
                 duration=duration,
             )
 
-        if self.log_config is not None:
-            return run_with_logging(self.log_config, command, timeout, _inner_run)
+        if self.test_logger is not None:
+            start = self.test_logger.cmd_start(command)
+            raw = _inner_run(command, timeout)
+            self.test_logger.cmd_end(raw.stdout, raw.stderr, raw.exit_code, start)
+            return raw
         return _inner_run(command, timeout)

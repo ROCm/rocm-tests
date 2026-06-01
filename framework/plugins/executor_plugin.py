@@ -13,6 +13,7 @@ Loaded automatically via pytest_plugins in conftest.py.
 
 from __future__ import annotations
 
+from collections.abc import Generator
 import logging
 
 import pytest
@@ -20,6 +21,8 @@ import pytest
 from framework.common.helpers import executor_log_path
 from framework.executors.container_executor import ContainerExecutor
 from framework.executors.cpu_executor import CpuExecutor
+from framework.logging.test_logger import TestLogger
+from framework.plugins.remote_node_plugin import _resolve_session_log
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +58,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 @pytest.fixture
-def cpu_executor(framework_config, request) -> CpuExecutor:
+def cpu_executor(framework_config, request) -> Generator[CpuExecutor, None, None]:
     """Provide a ``CpuExecutor`` for ``hw.cpu_only`` tests.
 
     Runs real subprocess commands on the local host *without* setting
@@ -84,13 +87,18 @@ def cpu_executor(framework_config, request) -> CpuExecutor:
             assert "ROCm" in result.stdout
     """
     log_path = executor_log_path(framework_config.framework.artifact_dir, request.node.name, request.node.nodeid)
-    session_log = getattr(request.config, "_session_log_path", None)
-    if session_log is None:
-        import pathlib as _pathlib
-
-        session_log = str(_pathlib.Path(framework_config.framework.artifact_dir) / "session.log")
-        _pathlib.Path(session_log).parent.mkdir(parents=True, exist_ok=True)
-    return CpuExecutor(log_path=log_path, session_log_path=session_log)
+    session_log = _resolve_session_log(request.config, framework_config)
+    tl = TestLogger(
+        test_id=request.node.name,
+        node_label="localhost",
+        gpu_label="CPU",
+        log_path=log_path,
+        session_log_path=session_log,
+    )
+    try:
+        yield CpuExecutor(log_path=log_path, test_logger=tl)
+    finally:
+        tl.close()
 
 
 @pytest.fixture

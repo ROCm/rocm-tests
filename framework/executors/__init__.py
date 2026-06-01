@@ -18,7 +18,6 @@ from framework.executors.dry_run_executor import DryRunExecutor
 from framework.executors.executor_factory import ExecutorFactory
 from framework.executors.executor_group import NodeExecutorGroup
 from framework.executors.local_executor import LocalExecutor
-from framework.executors.log_config import LogConfig
 from framework.executors.ssh_executor import SshExecutor
 
 __all__ = [
@@ -30,7 +29,6 @@ __all__ = [
     "DryRunExecutor",
     "ExecutorFactory",
     "LocalExecutor",
-    "LogConfig",
     "NoOpBackgroundProcess",
     "NodeExecutorGroup",
     "SshExecutor",

@@ -61,27 +61,25 @@ class NodeSlot:
         log_path: str | None = None,
         session_log_path: str | None = None,
     ):
-        """Return an executor with logging context attached.
+        """Return an executor with a ``TestLogger`` attached.
 
-        LOCAL slot:  ``LocalExecutor(gpu_index=N, log_config=LogConfig(...))``
-        REMOTE slot: ``SshExecutor(gpu_indices=[N], log_config=LogConfig(...))``
+        LOCAL slot:  ``LocalExecutor(gpu_index=N, test_logger=TestLogger(...))``
+        REMOTE slot: ``SshExecutor(gpu_indices=[N], test_logger=TestLogger(...))``
 
-        ``LogConfig`` carries the test, node, and GPU labels together with the
-        log file paths.  ``run()`` on the returned executor applies the shared
-        7-step logging protocol (prefixed console output + timestamped log files)
-        without any additional wrapper class.
+        ``TestLogger`` is opened here (``FileHandler`` created) and must be
+        closed by the caller's ``finally`` block via ``executor.test_logger.close()``.
 
         Args:
-            test_id:          Test function name for the label prefix.
-            log_path:         Per-test log file (append mode).
-            session_log_path: Session-wide aggregate log file (append mode).
+            test_id:          Test function name.
+            log_path:         Per-test log file (written fresh, mode ``"w"``).
+            session_log_path: Session-wide aggregate log path (``open("a")`` per event).
 
         Returns:
-            ``LocalExecutor`` or ``SshExecutor`` with ``log_config`` set.
+            ``LocalExecutor`` or ``SshExecutor`` with ``test_logger`` set.
         """
-        from framework.executors.log_config import LogConfig  # pylint: disable=import-outside-toplevel
+        from framework.logging.test_logger import TestLogger  # pylint: disable=import-outside-toplevel
 
-        log_cfg = LogConfig(
+        tl = TestLogger(
             test_id=test_id,
             node_label=self.node_spec.label,
             gpu_label=self.gpu_label,
@@ -97,7 +95,7 @@ class NodeSlot:
                 stream_stdout=True,
                 stream_stderr=False,
                 log_path=None,
-                log_config=log_cfg,
+                test_logger=tl,
             )
 
         from framework.executors.ssh_executor import (  # pylint: disable=import-outside-toplevel
@@ -106,7 +104,7 @@ class NodeSlot:
 
         ssh: _SshExecutor = self._ssh  # type: ignore[assignment]
         ssh.gpu_indices = [self.gpu_info.index]
-        ssh.log_config = log_cfg
+        ssh.test_logger = tl
         return ssh
 
 
@@ -143,13 +141,13 @@ class MultiGpuSlots:
         log_path: str | None = None,
         session_log_path: str | None = None,
     ):
-        """Return a ``LocalExecutor`` or ``SshExecutor`` with LogConfig attached and all GPUs visible.
+        """Return a ``LocalExecutor`` or ``SshExecutor`` with ``TestLogger`` attached and all GPUs visible.
 
-        LOCAL: ``LocalExecutor(gpu_index=[0,1,...], stream_stdout=True, log_config=...)``
-        REMOTE: ``SshExecutor(ssh, gpu_indices=[0,1,...], log_config=...)``
+        LOCAL: ``LocalExecutor(gpu_index=[0,1,...], stream_stdout=True, test_logger=...)``
+        REMOTE: ``SshExecutor(ssh, gpu_indices=[0,1,...], test_logger=...)``
 
-        The inner executor streams stdout live to the console. stderr is captured
-        via ``LogConfig`` for post-call logging and Allure attachment.
+        The inner executor streams stdout live to the console. stderr is written
+        verbatim via ``TestLogger`` block-header format.
 
         Log paths are resolved in priority order: explicit argument → fixture-injected
         attribute (``_log_path`` / ``_session_log_path``) → default (``None``).
@@ -157,21 +155,21 @@ class MultiGpuSlots:
 
         Args:
             test_id:          Test function name for the label prefix.
-            log_path:         Per-test log file (append mode).  Falls back to
+            log_path:         Per-test log file (write mode, created fresh).  Falls back to
                               ``self._log_path`` when ``None``.
-            session_log_path: Session-wide aggregate log file (append mode).  Falls
+            session_log_path: Session-wide aggregate log file (append mode per event).  Falls
                               back to ``self._session_log_path`` when ``None``.
 
         Returns:
-            ``LocalExecutor`` or ``SshExecutor`` with ``log_config`` attached (all GPUs visible).
+            ``LocalExecutor`` or ``SshExecutor`` with ``test_logger`` attached (all GPUs visible).
         """
-        from framework.executors.log_config import LogConfig  # pylint: disable=import-outside-toplevel
+        from framework.logging.test_logger import TestLogger  # pylint: disable=import-outside-toplevel
 
         effective_log = log_path or getattr(self, "_log_path", None)
         effective_session_log = session_log_path or getattr(self, "_session_log_path", None)
 
         gpu_label = f"GPU-{','.join(str(i) for i in self.gpu_indices)}"
-        log_cfg = LogConfig(
+        tl = TestLogger(
             test_id=test_id,
             node_label=self.node_spec.label,
             gpu_label=gpu_label,
@@ -187,7 +185,7 @@ class MultiGpuSlots:
                 stream_stdout=True,
                 stream_stderr=False,
                 log_path=None,
-                log_config=log_cfg,
+                test_logger=tl,
             )
 
         from framework.executors.ssh_executor import (  # pylint: disable=import-outside-toplevel
@@ -196,7 +194,7 @@ class MultiGpuSlots:
 
         ssh_multi: _SshExecutorMulti = self.slots[0]._ssh  # type: ignore[assignment]
         ssh_multi.gpu_indices = self.gpu_indices
-        ssh_multi.log_config = log_cfg
+        ssh_multi.test_logger = tl
         return ssh_multi
 
 
