@@ -60,8 +60,33 @@ class ExecutionResult:
         return "\n".join(lines)
 
 
+def _executor_log_file(artifact_dir: str, test_name: str, nodeid: str | None = None) -> pathlib.Path:
+    """Return the ``pathlib.Path`` for a per-test executor log — pure, no I/O side-effects.
+
+    Shared by :func:`executor_log_path` (which creates + truncates) and by
+    read-only callers (e.g. the Allure attachment fixture in teardown) that must
+    locate the file without accidentally wiping it.
+
+    Args:
+        artifact_dir: Value of ``framework_config.framework.artifact_dir``.
+        test_name:    ``request.node.name`` from the calling fixture.
+        nodeid:       Full pytest node ID.  The immediate parent dir of the test
+                      file becomes the log sub-directory when provided.
+
+    Returns:
+        ``pathlib.Path`` object (parent dir is NOT created by this function).
+    """
+    if nodeid and "::" in nodeid:
+        test_file = nodeid.split("::")[0]
+        test_subdir = pathlib.Path(test_file).parent.name
+    else:
+        test_subdir = "executor-logs"
+    safe_func = test_name.replace("/", "_").replace("::", "__")
+    return pathlib.Path(artifact_dir) / test_subdir / f"{safe_func}.log"
+
+
 def executor_log_path(artifact_dir: str, test_name: str, nodeid: str | None = None) -> str:
-    """Return a per-test executor log path mirroring the test directory structure.
+    """Return a per-test executor log path, creating its directory and truncating the file.
 
     When *nodeid* is provided the immediate parent directory of the test file
     is used as the sub-directory under *artifact_dir*, so logs naturally group
@@ -69,33 +94,22 @@ def executor_log_path(artifact_dir: str, test_name: str, nodeid: str | None = No
     Falls back to a flat ``executor-logs/`` sub-directory when *nodeid* is absent.
 
     Creates the directory on demand and truncates the log file so each session
-    starts clean.
+    starts clean.  Use :func:`_executor_log_file` when you only need the path
+    without the truncation side-effect (e.g. reading the file in teardown).
 
     This is the single source of truth used by all executor-providing fixtures
-    (``target_executor``, ``multi_gpu_fixture``, ``cpu_executor``)
-    to avoid duplicating the path-construction logic.
+    (``target_executor``, ``multi_gpu_fixture``, ``cpu_executor``).
 
     Args:
         artifact_dir: Value of ``framework_config.framework.artifact_dir``.
         test_name:    ``request.node.name`` from the calling fixture.
-        nodeid:       Full pytest node ID (``request.node.nodeid``).  When
-                      provided the immediate parent dir of the test file is used
-                      as the log sub-directory.
+        nodeid:       Full pytest node ID (``request.node.nodeid``).
 
     Returns:
         Path string ending in ``<safe_name>.log``.
     """
-    if nodeid and "::" in nodeid:
-        # "tests/e2e/compiler/test_2_llvm.py::test_func" → "compiler"
-        test_file = nodeid.split("::")[0]
-        test_subdir = pathlib.Path(test_file).parent.name
-    else:
-        test_subdir = "executor-logs"
-
-    log_dir = pathlib.Path(artifact_dir) / test_subdir
-    log_dir.mkdir(parents=True, exist_ok=True)
-    safe_func = test_name.replace("/", "_").replace("::", "__")
-    log_file = log_dir / f"{safe_func}.log"
+    log_file = _executor_log_file(artifact_dir, test_name, nodeid)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
     # Truncate to start fresh — avoids accumulating content from prior sessions.
     log_file.write_text("", encoding="utf-8")
     return str(log_file)

@@ -70,32 +70,17 @@ def _append_session_log(msg: str) -> None:
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
-    """Create the session log file and wire its path to config for all executor fixtures.
+    """Wire the session log path into the module-level global for hook access.
 
-    Sets ``session.config._session_log_path`` so every executor-providing fixture
-    (``target_executor``, ``multi_gpu_fixture``, ``cpu_executor``, etc.) can write
-    to a single aggregate log that covers the full pytest session.
-
-    The log path is read from ``framework.session_log`` in ``rocm-test.toml``.
-    The master process (or non-xdist run) truncates it so each fresh execution
-    starts with an empty file.  xdist workers open it in append mode and write
-    concurrently — POSIX append-writes are atomic for small chunks.
+    The path and file setup (truncation on master, directory creation) are handled
+    earlier in ``pytest_configure`` so xdist workers cannot race with the master's
+    truncation.  Here we only copy the already-resolved absolute path into the
+    module-level ``_g_session_log_path`` used by ``pytest_runtest_logstart``.
     """
-    import pathlib
-
     global _g_session_log_path
-    from framework.config.loader import load_config
-
-    config_path = session.config.getoption("--rocm-config", default=None)
-    cfg = load_config(config_path=config_path)
-    session_log = pathlib.Path(cfg.framework.session_log)
-    session_log.parent.mkdir(parents=True, exist_ok=True)
-    # Truncate on master/single-process run only — workers append concurrently.
-    if not hasattr(session.config, "workerinput"):
-        session_log.write_text("", encoding="utf-8")
-    session.config._session_log_path = str(session_log)  # type: ignore[attr-defined]
-    _g_session_log_path = str(session_log)
-    logger.info("Session log: %s", session_log)
+    _g_session_log_path = getattr(session.config, "_session_log_path", None)
+    if _g_session_log_path:
+        logger.info("Session log: %s", _g_session_log_path)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -146,19 +131,52 @@ def pytest_runtest_logstart(nodeid: str, location) -> None:
 
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
-    """Apply ``reporting.allure_results_dir`` from ``rocm-test.toml`` as the Allure output dir.
+    """Set up session.log and apply ``reporting.allure_results_dir`` from ``rocm-test.toml``.
 
-    When ``--alluredir`` is not passed on the CLI, this hook sets the Allure results
-    directory to the value configured in ``rocm-test.toml`` under
-    ``[reporting] allure_results_dir``.  When ``--alluredir`` IS given by the caller,
-    that explicit path takes precedence (standard CLI > config cascade).
+    **Session log setup** (master / non-xdist only):
+    Resolves ``framework.session_log`` to an absolute path, creates its parent
+    directory, and truncates the file to empty.  Storing an absolute path on
+    ``config._session_log_path`` before xdist workers are spawned ensures every
+    worker receives the exact same path via ``workerinput`` (injected by
+    ``_XdistTopologyPlugin.pytest_configure_node``) and writes to the same file
+    regardless of their working directory.
 
-    The hook runs ``trylast`` so that allure-pytest has already registered the
-    ``--alluredir`` option before we touch it.
+    Workers receive ``_session_log_path`` via ``workerinput`` and skip independent
+    resolution entirely — see ``pytest_sessionstart``.
+
+    **Allure dir setup:**
+    When ``--alluredir`` is not passed on the CLI, sets the Allure results directory
+    to the value configured in ``rocm-test.toml`` under ``[reporting] allure_results_dir``.
+    The hook runs ``trylast`` so allure-pytest has already registered ``--alluredir``.
 
     Args:
         config: Active pytest config object.
     """
+    import pathlib
+
+    from framework.config.loader import load_config
+
+    cfg = load_config(config_path=config.getoption("--rocm-config", default=None))
+
+    # --- Session log: master truncates before any worker can write ---
+    if not hasattr(config, "workerinput"):
+        session_log = pathlib.Path(cfg.framework.session_log).resolve()
+        session_log.parent.mkdir(parents=True, exist_ok=True)
+        session_log.write_text("", encoding="utf-8")
+        config._session_log_path = str(session_log)  # type: ignore[attr-defined]
+        logger.info("Session log initialised: %s", session_log)
+    else:
+        # xdist worker: path is injected via workerinput by pytest_configure_node.
+        # Fall back to resolving independently only when the injection is absent
+        # (e.g., running without the remote_node_plugin).
+        injected = config.workerinput.get("_session_log_path", "")
+        if injected:
+            config._session_log_path = injected  # type: ignore[attr-defined]
+        else:
+            session_log = pathlib.Path(cfg.framework.session_log).resolve()
+            config._session_log_path = str(session_log)  # type: ignore[attr-defined]
+
+    # --- Allure results dir ---
     try:
         alluredir = config.getoption("--alluredir", default=None)
     except (ValueError, AttributeError):
@@ -168,9 +186,6 @@ def pytest_configure(config: pytest.Config) -> None:
     if alluredir:
         return
 
-    from framework.config.loader import load_config
-
-    cfg = load_config(config_path=config.getoption("--rocm-config", default=None))
     allure_dir = cfg.reporting.allure_results_dir
     for attr in ("allure_report_dir", "alluredir"):
         if hasattr(config.option, attr):

@@ -11,10 +11,8 @@ stream_stdout=True for live output (useful for long-running build steps).
 
 from __future__ import annotations
 
-from datetime import datetime
 import logging
 import os
-import pathlib
 
 from framework.common.helpers import ExecutionResult
 from framework.executors.abstract_executor import AbstractExecutor
@@ -23,6 +21,7 @@ from framework.executors.background_process import (
     _blocking_stream_run,
     _make_background_process,
 )
+from framework.logging.test_logger import TestLogger
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +46,7 @@ class CpuExecutor(AbstractExecutor):
         stream_stdout:  When True, subprocess STDOUT is written to ``sys.stdout``
                         in real time.
         stream_stderr:  When True (default), STDERR is written to ``sys.stderr``
-                        in real time.  Set to False when ``LogConfig`` handles
+                        in real time.  Set to False when ``test_logger`` handles
                         output routing.
         log_path:       If set, all subprocess output (STDOUT+STDERR) is appended
                         to this file.
@@ -60,8 +59,8 @@ class CpuExecutor(AbstractExecutor):
         stream_stdout: bool = False,
         stream_stderr: bool = True,
         log_path: str | None = None,
-        session_log_path: str | None = None,
         suppress_output_log: bool = False,
+        test_logger: TestLogger | None = None,
     ) -> None:
         """Initialise a CPU-only subprocess executor.
 
@@ -73,30 +72,32 @@ class CpuExecutor(AbstractExecutor):
                                   in real time.
             stream_stderr:        When True (default), subprocess STDERR is written to
                                   ``sys.stderr`` in real time.  Pass False when
-                                  ``LogConfig`` handles output routing.
+                                  ``test_logger`` handles output routing.
             log_path:             If given, all subprocess output (STDOUT+STDERR) is
                                   appended to this per-test file.
-            session_log_path:     If given, all subprocess output is also appended to
-                                  this session-wide aggregate log file.
             suppress_output_log:  When True, skip emitting command output through the
                                   ``rocm.output`` logger.  Use for background pollers
                                   (e.g. ``--monitor-gpu``) whose output goes to a
                                   dedicated log file and must not flood the console.
+            test_logger:          When provided, block-header logging protocol is applied:
+                                  one header per command, verbatim output, and session.log
+                                  event lines.
         """
         self.working_dir = working_dir
         self.env_overrides: dict = env_overrides or {}
         self.stream_stdout = stream_stdout
         self.stream_stderr = stream_stderr
         self.log_path = log_path
-        self.session_log_path = session_log_path
         self.suppress_output_log = suppress_output_log
+        self.test_logger = test_logger
 
     def run(self, command: str, timeout: float | None = None) -> ExecutionResult:
         """Execute *command* in a subprocess without modifying GPU-related variables.
 
         The full ``os.environ`` is inherited, then ``env_overrides`` are merged on top.
         Output is emitted through the ``rocm.output`` logger (console with timestamp)
-        and written to ``log_path`` and ``session_log_path`` when set.
+        and written to ``log_path`` when set.  When ``test_logger`` is attached,
+        block-header logging is used instead.
 
         Args:
             command: Shell command string to execute.
@@ -113,15 +114,29 @@ class CpuExecutor(AbstractExecutor):
         if self.env_overrides:
             proc_env.update(self.env_overrides)
         logger.debug("CpuExecutor running: %s", command)
-        raw = _blocking_stream_run(
-            command=command,
-            env=proc_env,
-            cwd=self.working_dir,
-            timeout=effective_timeout,
-            stream_stdout=self.stream_stdout,
-            stream_stderr=self.stream_stderr,
-            log_path=self.log_path,
-        )
+
+        # When test_logger is provided, disable inner stderr streaming so that
+        # TestLogger handles console/file output routing after the command returns.
+        stream_stderr = self.stream_stderr if self.test_logger is None else False
+
+        def _inner_run(cmd: str, t: float | None) -> ExecutionResult:
+            return _blocking_stream_run(
+                command=cmd,
+                env=proc_env,
+                cwd=self.working_dir,
+                timeout=effective_timeout if t is None else t,
+                stream_stdout=self.stream_stdout,
+                stream_stderr=stream_stderr,
+                log_path=self.log_path,
+            )
+
+        if self.test_logger is not None:
+            start = self.test_logger.cmd_start(command)
+            raw = _inner_run(command, timeout)
+            self.test_logger.cmd_end(raw.stdout, raw.stderr, raw.exit_code, start)
+            return raw
+
+        raw = _inner_run(command, timeout)
 
         # Emit output lines via rocm.output logger (console + caplog → Allure).
         # Skipped when suppress_output_log=True (e.g. background GPU monitor pollers).
@@ -131,23 +146,6 @@ class CpuExecutor(AbstractExecutor):
             for line in combined.splitlines():
                 if line.strip():
                     _output_logger.info("%s", line)
-
-        # Write to session log with timestamp prefix when configured.
-        if self.session_log_path:
-            ts = datetime.now().strftime("%H:%M:%S.%f")[:12]
-            all_lines = [
-                command,
-                *(raw.stdout or "").splitlines(),
-                *(raw.stderr or "").splitlines(),
-            ]
-            prefixed = [f"{ts} [cpu_executor | localhost | CPU] : {ln}" for ln in all_lines if ln.strip()]
-            if prefixed:
-                try:
-                    pathlib.Path(self.session_log_path).parent.mkdir(parents=True, exist_ok=True)
-                    with open(self.session_log_path, "a", encoding="utf-8") as fh:
-                        fh.write("\n".join(prefixed) + "\n")
-                except OSError as exc:
-                    logger.warning("CpuExecutor: cannot write session log %s: %s", self.session_log_path, exc)
 
         return raw
 
