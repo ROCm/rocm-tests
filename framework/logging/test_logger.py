@@ -307,7 +307,6 @@ class TestLogger:
             truncated = f"\n  [+{omitted} chars omitted]"
         indented = "\n".join(f"  {ln}" for ln in text.splitlines())
         block = (
-            f"{kind:<6}{_ts()} {self.test_id[: _SESSION_ID_WIDTH]:<{_SESSION_ID_WIDTH}}\n"
-            f"{indented}{truncated}\n"
+            f"{kind:<6}{_ts()} {self.test_id[: _SESSION_ID_WIDTH]:<{_SESSION_ID_WIDTH}}\n" f"{indented}{truncated}\n"
         )
         self._session_append(block)
