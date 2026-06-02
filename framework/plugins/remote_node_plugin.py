@@ -20,12 +20,14 @@ Priority order (target_executor):
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import logging
 import os
 
 import pytest
 
 from framework.common.helpers import executor_log_path, gpu_monitor_log_path
+from framework.executors.executor_group import NodeExecutorGroup
 from framework.nodes.node_pool import MultiGpuSlots, NodePool, NodeSlot
 from framework.nodes.node_spec import HostConfigLoader, NodeSpec
 
@@ -970,8 +972,6 @@ def _acquire_and_yield(
     """
     import time as _time  # pylint: disable=import-outside-toplevel
 
-    from framework.executors.executor_group import NodeExecutorGroup  # pylint: disable=import-outside-toplevel
-
     test_name = ctx["test_name"]
     log_path = ctx["log_path"]
     session_log = ctx["session_log"]
@@ -1007,6 +1007,188 @@ def _acquire_and_yield(
 
 
 # ---------------------------------------------------------------------------
+# Manual GPU allocator — explicit per-index acquisition from test code
+# ---------------------------------------------------------------------------
+
+
+class _ManualGpuAllocator:
+    """Test-controlled GPU allocator that acquires specific GPU indices on demand.
+
+    Unlike ``target_executor``, which acquires GPUs automatically based on
+    markers, ``_ManualGpuAllocator`` lets the test author choose exactly which
+    GPU to use and when to release it.  This is the backing object for the
+    ``manual_gpu_allocator`` fixture.
+
+    Intended use cases:
+        - Benchmark pinning (always run on the same GPU index for reproducibility).
+        - Per-GPU diagnostics alongside a collective that already holds a GPU set.
+        - External / ISV workflows that manage GPU assignment themselves.
+
+    The fixture detects leaked acquisitions in teardown and calls ``pytest.fail``
+    so CI surfaces them as test failures rather than silent resource leaks.
+
+    Attributes:
+        _pool:    Session-scoped ``NodePool``, or ``None`` when ``--no-gpu``.
+        _no_gpu:  When ``True``, all operations return ``DryRunExecutor`` stubs.
+        _config:  Active pytest config (for option reads).
+        _fc:      ``FrameworkConfig`` (for log-path helpers).
+        _request: pytest ``FixtureRequest`` (for test node ID).
+        _held:    Live acquisitions not yet released by the test.
+    """
+
+    def __init__(self, node_pool, no_gpu: bool, config, framework_config, request) -> None:
+        self._pool = node_pool
+        self._no_gpu = no_gpu
+        self._config = config
+        self._fc = framework_config
+        self._request = request
+        self._held: list[tuple[NodeSlot, NodeExecutorGroup, float]] = []
+        self._session_log = _resolve_session_log(config, framework_config)
+
+    # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
+
+    @property
+    def available_gpus(self):
+        """All ``GpuInfo`` objects in the detected pool (read-only snapshot).
+
+        In ``--no-gpu`` mode returns two synthetic GPUs (index 0 and 1,
+        arch ``gfx942``, 32 GB) so test logic can be exercised without hardware.
+        """
+        if self._no_gpu:
+            from framework.gpu.detector import GpuInfo  # pylint: disable=import-outside-toplevel
+
+            return [GpuInfo(0, "gfx942", 32768, 0), GpuInfo(1, "gfx942", 32768, 0)]
+        return [gpu for alloc in self._pool._allocators.values() for gpu in alloc._pool]
+
+    # ------------------------------------------------------------------
+    # Explicit acquire / release
+    # ------------------------------------------------------------------
+
+    def acquire(self, gpu_index: int, test_id: str = "") -> NodeExecutorGroup:
+        """Acquire a specific GPU and return an executor group for it.
+
+        Blocks up to ``--gpu-acquire-timeout`` seconds (default 180 s) waiting
+        for the GPU to become free.  In ``--no-gpu`` mode, returns a
+        ``NodeExecutorGroup`` backed by a ``DryRunExecutor`` immediately.
+
+        Args:
+            gpu_index: Exact GPU index to acquire.
+            test_id:   Optional label for the GPU lock metadata file.
+                       Defaults to the current test node name.
+
+        Returns:
+            ``NodeExecutorGroup`` ready for ``.run()`` calls on the pinned GPU.
+
+        Raises:
+            pytest.skip: If the GPU is unavailable within the timeout.
+        """
+        if self._no_gpu:
+            from framework.executors.dry_run_executor import DryRunExecutor  # pylint: disable=import-outside-toplevel
+
+            group = NodeExecutorGroup([DryRunExecutor()])
+            return group
+
+        effective_id = test_id or self._request.node.name
+        timeout = self._config.getoption("--gpu-acquire-timeout", default=180.0)
+        try:
+            slot = self._pool.acquire_specific_slot(
+                gpu_index=gpu_index,
+                wait_timeout_secs=timeout,
+                test_id=effective_id,
+            )
+        except (RuntimeError, ValueError) as exc:
+            pytest.skip(f"manual_gpu_allocator: GPU index {gpu_index} unavailable: {exc}")
+
+        import time as _time  # pylint: disable=import-outside-toplevel
+
+        log_path = executor_log_path(self._fc.framework.artifact_dir, effective_id, self._request.node.nodeid)
+        executor = slot.make_executor(test_id=effective_id, log_path=log_path, session_log_path=self._session_log)
+        group = NodeExecutorGroup([executor])
+        self._held.append((slot, group, _time.monotonic()))
+        _console_slot_acquired(self._pool, slot, effective_id, self._session_log)
+        return group
+
+    def release(self, group: NodeExecutorGroup) -> None:
+        """Release a GPU previously acquired via ``acquire()``.
+
+        A no-op in ``--no-gpu`` mode.  Silently ignores ``group`` objects that
+        are not currently held (e.g., double-release).
+
+        Args:
+            group: ``NodeExecutorGroup`` returned by a previous ``acquire()`` call.
+        """
+        if self._no_gpu:
+            return
+        import time as _time  # pylint: disable=import-outside-toplevel
+
+        for slot, held_group, start_time in list(self._held):
+            if held_group is group:
+                elapsed = _time.monotonic() - start_time
+                _console_slot_released(self._pool, slot, self._request.node.name, elapsed, self._session_log)
+                _exec = next(iter(group))
+                if getattr(_exec, "test_logger", None) is not None:
+                    _exec.test_logger.close()  # type: ignore[attr-defined]
+                self._pool.release([slot])
+                self._held.remove((slot, held_group, start_time))
+                return
+
+    # ------------------------------------------------------------------
+    # Context manager
+    # ------------------------------------------------------------------
+
+    @contextmanager
+    def pin(self, gpu_index: int, test_id: str = ""):
+        """Context manager that acquires *gpu_index* on enter and releases on exit.
+
+        Usage::
+
+            with manual_gpu_allocator.pin(0) as executor:
+                result = executor.run("rocm-smi --showmeminfo vram")
+                assert result.ok
+
+        Args:
+            gpu_index: Exact GPU index to acquire.
+            test_id:   Optional label for the GPU lock metadata file.
+
+        Yields:
+            ``NodeExecutorGroup`` for the pinned GPU.
+        """
+        group = self.acquire(gpu_index, test_id)
+        try:
+            yield group
+        finally:
+            self.release(group)
+
+    # ------------------------------------------------------------------
+    # Teardown
+    # ------------------------------------------------------------------
+
+    def _cleanup(self) -> None:
+        """Fixture teardown: release leaked slots and fail the test.
+
+        Called by the ``manual_gpu_allocator`` fixture after the test body.
+        If the test acquired GPUs and did not release them, this method
+        releases them and calls ``pytest.fail`` so the leak surfaces as a
+        test failure in CI rather than silently blocking the next test.
+        """
+        if not self._held:
+            return
+        leaked = [slot.gpu_label for slot, _, _st in self._held]
+        for slot, group, _st in self._held:
+            _exec = next(iter(group))
+            if getattr(_exec, "test_logger", None) is not None:
+                _exec.test_logger.close()  # type: ignore[attr-defined]
+            self._pool.release([slot])
+        self._held.clear()
+        pytest.fail(
+            f"manual_gpu_allocator: test finished without releasing GPU slot(s): {leaked}. "
+            "Call .release(group) or use .pin() as a context manager."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
@@ -1025,7 +1207,70 @@ def node_pool(request) -> NodePool | None:
 
 
 @pytest.fixture
-def target_executor(request, framework_config, node_pool):
+def manual_gpu_allocator(request, framework_config, node_pool):
+    """Explicit per-index GPU allocator fixture for benchmark and diagnostic tests.
+
+    Returns a ``_ManualGpuAllocator`` that lets the test author acquire specific
+    GPU indices by number, run commands on them, and release them explicitly.
+    This is an alternative to ``target_executor``'s automatic NUMA best-fit
+    selection — use it when the test's correctness depends on which exact GPU
+    is used (e.g., benchmark pinning, per-GPU diagnostics, ISV workflows).
+
+    The fixture integrates with the same ``NodePool`` and ``GpuFileLock``
+    infrastructure as ``target_executor`` — cross-process exclusivity is fully
+    maintained.  Tests using both fixtures in the same function are safe as long
+    as they request different GPU indices from each fixture.
+
+    In ``--no-gpu`` mode all ``acquire()`` calls return a ``DryRunExecutor``
+    group (no hardware, no skip) so test logic can be validated in CI.
+
+    Teardown detects leaked acquisitions: if the test finishes without calling
+    ``.release()`` on every acquired group, the fixture calls ``pytest.fail``
+    and releases the slots on behalf of the test.
+
+    Usage — context manager (recommended)::
+
+        @pytest.mark.hw.gpu
+        @pytest.mark.ci.nightly
+        @pytest.mark.layer.runtime
+        @pytest.mark.runtime.fast
+        def test_benchmark_gpu0(manual_gpu_allocator):
+            with manual_gpu_allocator.pin(gpu_index=0) as executor:
+                result = executor.run("./benchmark --warmup 3 --iterations 10")
+                assert result.ok
+
+    Usage — explicit acquire / release::
+
+        def test_two_gpus_explicit(manual_gpu_allocator):
+            ex0 = manual_gpu_allocator.acquire(0)
+            ex1 = manual_gpu_allocator.acquire(1)
+            try:
+                r0 = ex0.run("rocm-smi --showmeminfo vram")
+                r1 = ex1.run("rocm-smi --showmeminfo vram")
+                assert r0.ok and r1.ok
+            finally:
+                manual_gpu_allocator.release(ex0)
+                manual_gpu_allocator.release(ex1)
+
+    Yields:
+        ``_ManualGpuAllocator`` with ``.acquire(N)``, ``.release(group)``,
+        ``.pin(N)`` (context manager), and ``.available_gpus`` (read-only list).
+    """
+    config = request.config
+    no_gpu = config.getoption("--no-gpu", default=False)
+    alloc = _ManualGpuAllocator(
+        node_pool=node_pool,
+        no_gpu=no_gpu,
+        config=config,
+        framework_config=framework_config,
+        request=request,
+    )
+    yield alloc
+    alloc._cleanup()
+
+
+@pytest.fixture
+def target_executor(request, framework_config, node_pool):  # noqa: C901
     """Unified GPU test fixture: location- and topology-transparent executor.
 
     Reads the test's ``hw.*`` and ``e2e.*`` markers to dispatch automatically:
@@ -1095,8 +1340,6 @@ def target_executor(request, framework_config, node_pool):
     """
     import time as _time
 
-    from framework.executors.executor_group import NodeExecutorGroup
-
     config = request.config
 
     # --no-gpu: synthetic executor, no hardware needed
@@ -1128,6 +1371,53 @@ def target_executor(request, framework_config, node_pool):
     session_log = ctx["session_log"]
     rock_dir = ctx["rock_dir"]
     gpu_count_marker = ctx["gpu_count_marker"]
+
+    # -------------------------------------------------------------------------
+    # gpu_indices path: acquire exactly the listed GPU indices
+    # -------------------------------------------------------------------------
+    gpu_idx_marker = request.node.get_closest_marker("gpu_indices")
+    if gpu_idx_marker and gpu_idx_marker.args:
+        raw_arg = gpu_idx_marker.args[0]
+        if isinstance(raw_arg, int):
+            pytest.fail(
+                f"gpu_indices marker takes a list, not a bare int. Use @pytest.mark.gpu_indices([{raw_arg}]).",
+                pytrace=False,
+            )
+        indices: list[int] = list(raw_arg)
+        if ctx.get("vram_required_gb", 0) > 0:
+            logger.warning(
+                "gpu_vram(%s) is ignored when gpu_indices is set — VRAM is not checked for pinned indices.",
+                ctx["vram_required_gb"],
+            )
+        try:
+            if len(indices) == 1:
+                slot = node_pool.acquire_specific_slot(
+                    gpu_index=indices[0],
+                    wait_timeout_secs=ctx["acquire_timeout"],
+                    test_id=test_name,
+                )
+                multi = MultiGpuSlots(slots=[slot], node_spec=slot.node_spec)
+            else:
+                multi = node_pool.acquire_specific_slots(
+                    gpu_indices=indices,
+                    wait_timeout_secs=ctx["acquire_timeout"],
+                    test_id=test_name,
+                )
+        except ValueError as exc:
+            pytest.skip(f"TEST PLATFORM: GPU indices {indices} not available on a single node: {exc}")
+            return
+        except RuntimeError as exc:
+            pytest.skip(f"TEST PLATFORM: GPU indices {indices} timed out waiting for acquisition: {exc}")
+            return
+        yield from _acquire_and_yield(
+            multi_list=[multi],
+            ctx=ctx,
+            framework_config=framework_config,
+            config=config,
+            node_pool=node_pool,
+            is_multi_node=False,
+        )
+        return
 
     # -------------------------------------------------------------------------
     # Multi-node path: acquire GPUs from every node in the fleet

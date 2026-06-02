@@ -260,6 +260,9 @@ class NodePool:
         self._allocators: dict[str, GpuAllocator] = {}
         self._ssh_sessions: dict[str, object] = {}  # label → SshExecutor
         self._pool_lock = threading.Lock()
+        # Signalled by release()/release_multi() so acquire_specific_slot/slots
+        # can wake immediately instead of sleeping the full 0.5 s poll interval.
+        self._slot_released = threading.Event()
         self._rock_dir = rock_dir
         self._headroom_gb = headroom_gb
         if artifact_dir is None:
@@ -657,6 +660,189 @@ class NodePool:
             for lbl, req_id in tracker_regs.items():
                 PendingAcquisitionTracker(lbl).deregister(req_id)
 
+    def acquire_specific_slot(
+        self,
+        gpu_index: int,
+        wait_timeout_secs: float = 300.0,
+        test_id: str = "",
+    ) -> NodeSlot:
+        """Acquire a specific GPU index from whichever node owns it.
+
+        Scans all nodes to find the one that owns *gpu_index*, then acquires
+        that GPU by index (bypassing NUMA best-fit selection).  Used by
+        ``@pytest.mark.gpu_indices([N])`` and ``manual_gpu_allocator.acquire(N)``.
+
+        Args:
+            gpu_index:         Exact GPU index to acquire.
+            wait_timeout_secs: Seconds to wait if the GPU is held (default 300 s).
+            test_id:           Test function name for the GPU lock metadata file.
+
+        Returns:
+            ``NodeSlot`` with an active ``GpuFileLock``.
+
+        Raises:
+            ValueError:   If *gpu_index* is not found on any node.
+            RuntimeError: If the GPU cannot be acquired within *wait_timeout_secs*.
+        """
+        # Find which node owns this GPU index.
+        target_spec = target_alloc = None
+        for spec in self.node_specs:
+            alloc = self._allocators.get(spec.label)
+            if alloc and any(g.index == gpu_index for g in alloc._pool):
+                target_spec, target_alloc = spec, alloc
+                break
+        if target_alloc is None:
+            all_indices = [g.index for a in self._allocators.values() for g in a._pool]
+            raise ValueError(
+                f"GPU index {gpu_index} not found on any node. " f"Available indices: {sorted(all_indices)}"
+            )
+        assert target_spec is not None  # set together with target_alloc above
+
+        deadline = time.monotonic() + wait_timeout_secs
+        # Register intent so acquire_slot() callers yield rather than consuming
+        # the specific GPU we are waiting for (mirrors acquire_slots() priority).
+        tracker = PendingAcquisitionTracker(target_spec.label)
+        req_id = tracker.register(count=1, timeout_at=deadline)
+        try:
+            while True:
+                with self._pool_lock:
+                    try:
+                        gpu_info = target_alloc.allocate_specific(gpu_index, wait_timeout_secs=0.0)
+                    except RuntimeError:
+                        pass
+                    else:
+                        file_lock = GpuFileLock(node_label=target_spec.label, gpu_index=gpu_index)
+                        try:
+                            file_lock.acquire(timeout=0.0, test_id=test_id)
+                            ssh = self._ssh_sessions.get(target_spec.label)
+                            return NodeSlot(node_spec=target_spec, gpu_info=gpu_info, _file_lock=file_lock, _ssh=ssh)
+                        except RuntimeError:
+                            target_alloc.release(gpu_info)  # file lock failed — restore in-memory slot
+                            # If the holder process is no longer alive, the kernel has
+                            # already released the flock — retry immediately instead of
+                            # sleeping.  This recovers stuck slots from crashed workers.
+                            if not file_lock.holder_is_alive():
+                                logger.warning(
+                                    "NodePool: GPU %d lock held by dead process — retrying immediately",
+                                    gpu_index,
+                                )
+                                time.sleep(0.05)
+                                continue
+
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"NodePool: GPU index {gpu_index} not acquired within {wait_timeout_secs}s. "
+                        f"Topology: {self.topology_summary()}"
+                    )
+                logger.debug(
+                    "NodePool: GPU %d unavailable, retrying (%.1fs remaining)",
+                    gpu_index,
+                    deadline - time.monotonic(),
+                )
+                self._slot_released.clear()
+                self._slot_released.wait(timeout=0.5)
+        finally:
+            tracker.deregister(req_id)
+
+    def _try_acquire_index_set(self, target_spec, target_alloc, gpu_indices: list[int], test_id: str):
+        """Attempt to acquire all *gpu_indices* atomically; return list of slots or None.
+
+        Must be called under ``self._pool_lock``.  Rolls back any partially
+        acquired slots on failure and returns ``None`` so the caller can retry.
+        """
+        acquired: list[NodeSlot] = []
+        for idx in gpu_indices:
+            try:
+                gpu_info = target_alloc.allocate_specific(idx, wait_timeout_secs=0.0)
+            except RuntimeError:
+                break
+            file_lock = GpuFileLock(node_label=target_spec.label, gpu_index=idx)
+            try:
+                file_lock.acquire(timeout=0.0, test_id=test_id)
+            except RuntimeError:
+                target_alloc.release(gpu_info)
+                if not file_lock.holder_is_alive():
+                    logger.warning(
+                        "NodePool: GPU %d lock held by dead process — retrying immediately",
+                        idx,
+                    )
+                break
+            ssh = self._ssh_sessions.get(target_spec.label)
+            acquired.append(NodeSlot(node_spec=target_spec, gpu_info=gpu_info, _file_lock=file_lock, _ssh=ssh))
+        else:
+            return acquired  # all indices acquired successfully
+
+        # Partial acquisition — roll back everything collected so far.
+        for slot in acquired:
+            slot._file_lock.release()
+            target_alloc.release(slot.gpu_info)
+        return None
+
+    def acquire_specific_slots(
+        self,
+        gpu_indices: list[int],
+        wait_timeout_secs: float = 300.0,
+        test_id: str = "",
+    ) -> MultiGpuSlots:
+        """Acquire all listed GPU indices from the node that owns them all.
+
+        All-or-nothing: every index must reside on the same node and be
+        acquirable simultaneously.  Used by ``@pytest.mark.gpu_indices([0, 2])``.
+
+        Args:
+            gpu_indices:       Exact GPU indices to acquire (must all be on one node).
+            wait_timeout_secs: Seconds to wait when GPUs are transiently unavailable.
+            test_id:           Test function name for GPU lock metadata files.
+
+        Returns:
+            ``MultiGpuSlots`` holding all requested slots.
+
+        Raises:
+            ValueError:   If no single node owns all requested indices.
+            RuntimeError: If the slots cannot be acquired within *wait_timeout_secs*.
+        """
+        # Find the node that owns every requested index.
+        target_spec = target_alloc = None
+        for spec in self.node_specs:
+            alloc = self._allocators.get(spec.label)
+            if alloc:
+                pool_set = {g.index for g in alloc._pool}
+                if all(idx in pool_set for idx in gpu_indices):
+                    target_spec, target_alloc = spec, alloc
+                    break
+        if target_alloc is None:
+            raise ValueError(
+                f"No single node owns all GPU indices {gpu_indices}. " f"Topology: {self.topology_summary()}"
+            )
+        assert target_spec is not None  # set together with target_alloc above
+
+        deadline = time.monotonic() + wait_timeout_secs
+        # Register intent so acquire_slot() callers yield rather than consuming
+        # slots we need (mirrors acquire_slots() priority protocol).
+        tracker = PendingAcquisitionTracker(target_spec.label)
+        req_id = tracker.register(count=len(gpu_indices), timeout_at=deadline)
+        try:
+            while True:
+                with self._pool_lock:
+                    slots = self._try_acquire_index_set(target_spec, target_alloc, gpu_indices, test_id)
+                    if slots is not None:
+                        return MultiGpuSlots(slots=slots, node_spec=target_spec)
+
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"NodePool: GPU indices {gpu_indices} not all acquired within {wait_timeout_secs}s. "
+                        f"Topology: {self.topology_summary()}"
+                    )
+                logger.debug(
+                    "NodePool: indices %s unavailable, retrying (%.1fs remaining)",
+                    gpu_indices,
+                    deadline - time.monotonic(),
+                )
+                self._slot_released.clear()
+                self._slot_released.wait(timeout=0.5)
+        finally:
+            tracker.deregister(req_id)
+
     def acquire_multi_node(  # pylint: disable=too-many-positional-arguments
         self,
         gpu_count_per_node: int = 1,
@@ -715,6 +901,9 @@ class NodePool:
                 slot.node_spec.label,
                 slot.gpu_info.index,
             )
+        # Wake any intra-process waiters in acquire_specific_slot/slots so they
+        # retry immediately instead of sleeping the remainder of their 0.5 s poll.
+        self._slot_released.set()
 
     def release_multi(self, multi: MultiGpuSlots) -> None:
         """Release all slots in a ``MultiGpuSlots`` group.

@@ -195,6 +195,32 @@ class GpuFileLock:
             pass
         return holders
 
+    def holder_is_alive(self) -> bool:
+        """Return ``False`` if the lock's holder process no longer exists.
+
+        Reads the ``.info`` sidecar written by ``acquire()`` to extract the
+        holder PID, then probes it with ``os.kill(pid, 0)`` (signal 0 checks
+        existence without sending a signal).
+
+        Used by ``NodePool.acquire_specific_slot/slots`` to detect dead-process
+        lock remnants: if the holder is gone, the kernel has already released
+        the ``flock()`` and the slot can be retried immediately rather than
+        sleeping the full 0.5 s poll interval.
+
+        Returns:
+            ``True``  if the holder PID exists (lock legitimately held).
+            ``False`` if the PID is gone, the info file is absent, or parsing
+                      fails — in all cases the caller should retry immediately.
+        """
+        try:
+            with open(self.info_path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            pid = int(data["pid"])
+            os.kill(pid, 0)  # signal 0 = existence probe; raises OSError if gone
+            return True
+        except (OSError, KeyError, ValueError, json.JSONDecodeError):
+            return False  # PID gone, file absent, or unreadable → treat as free
+
     def __enter__(self) -> GpuFileLock:
         self.acquire()
         return self

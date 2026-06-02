@@ -80,6 +80,8 @@ Apply this transformation table to every external pattern found:
 | `assert "ERROR" not in output` | `assert "ERROR" not in result.stdout` | Direct — stdout is a plain string |
 | Hardcoded `/dev/renderD128` | Let executor handle — never hardcode device paths | |
 | Hardcoded GPU index `device_id = 0` | Let executor manage allocation | |
+| `ROCR_VISIBLE_DEVICES=0 ./binary` (pinned single index) | `@pytest.mark.gpu_indices([0])` + `target_executor.run(binary)` | Executor injects the device env automatically |
+| Loop over explicit GPU indices (`for idx in [0, 2]: run_on(idx)`) | `manual_gpu_allocator.pin(gpu_index=idx)` context manager | Acquires/releases one index at a time within the test body |
 | `logging.info("step X")` | Optional `allure_reporter.step("step X")` | Not required; add only if user requests Allure |
 | Shell `${VAR:-default}` | `framework_config.section.field or "default"` | Only if the value is a framework config option |
 | C++ `EXPECT_EQ(a, b)` | `assert a == b, f"Expected {b}, got {a}"` | In Python test post-processing |

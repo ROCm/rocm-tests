@@ -76,11 +76,22 @@ def _multi_gpu_count(item) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _gpu_indices_count(item) -> int:
+    """Return the number of pinned GPU indices, or 0 if no gpu_indices marker."""
+    m = item.get_closest_marker("gpu_indices")
+    if m and m.args:
+        raw = m.args[0]
+        if isinstance(raw, int):
+            return 1
+        return len(list(raw))
+    return 0
+
+
 def resource_sort_key_most(item) -> tuple:
     """Sort key for ``resource-most``: lower tuple = runs first.
 
     Tier 0: multinode (cross-node, highest total demand).
-    Tier 1: multi_gpu sorted by gpu_count DESC (higher count = earlier).
+    Tier 1: gpu_indices / multi_gpu sorted by GPU count DESC (higher = earlier).
     Tier 2: single_gpu (fills free slots via xdist worksteal).
 
     Args:
@@ -91,6 +102,9 @@ def resource_sort_key_most(item) -> tuple:
     """
     if _is_multinode(item):
         return (0, 0)
+    k = _gpu_indices_count(item)
+    if k > 0:
+        return (1, -k)
     n = _multi_gpu_count(item)
     if n > 0:
         return (1, -n)  # negate so higher count → smaller sub_key → runs earlier
@@ -101,7 +115,7 @@ def resource_sort_key_least(item) -> tuple:
     """Sort key for ``resource-least``: lower tuple = runs first.
 
     Tier 0: single_gpu (lowest demand, immediate results).
-    Tier 1: multi_gpu sorted by gpu_count ASC (lower count = earlier).
+    Tier 1: gpu_indices / multi_gpu sorted by GPU count ASC (lower = earlier).
     Tier 2: multinode (highest demand; starts last).
 
     Args:
@@ -112,6 +126,9 @@ def resource_sort_key_least(item) -> tuple:
     """
     if _is_multinode(item):
         return (2, 0)
+    k = _gpu_indices_count(item)
+    if k > 0:
+        return (1, k)
     n = _multi_gpu_count(item)
     if n > 0:
         return (1, n)  # lower count → smaller sub_key → runs earlier
@@ -206,10 +223,47 @@ class DynamicScheduler:
         Args:
             items: Pytest ``Item`` list to annotate in-place.
         """
+        gpu_indices_idx = 0
         multi_gpu_idx = 0
         multi_node_idx = 0
 
         for item in items:
+            # gpu_indices path: must be checked before multinode/multi_gpu so that
+            # tests using gpu_indices get their own deterministic group and are not
+            # accidentally treated as plain multi-GPU tests.
+            gpu_idx_marker = item.get_closest_marker("gpu_indices")
+            if gpu_idx_marker and gpu_idx_marker.args:
+                if item.get_closest_marker("gpu_count"):
+                    pytest.fail(
+                        f"{item.nodeid}: @pytest.mark.gpu_indices and @pytest.mark.gpu_count "
+                        "are mutually exclusive — remove gpu_count when using gpu_indices.",
+                        pytrace=False,
+                    )
+                if item.get_closest_marker("multi_gpu"):
+                    pytest.fail(
+                        f"{item.nodeid}: @pytest.mark.gpu_indices and @pytest.mark.hw.multi_gpu "
+                        "are mutually exclusive — use gpu_indices alone to pin specific indices.",
+                        pytrace=False,
+                    )
+                if isinstance(gpu_idx_marker.args[0], int):
+                    pytest.fail(
+                        f"{item.nodeid}: @pytest.mark.gpu_indices takes a list, not a bare int. "
+                        f"Use @pytest.mark.gpu_indices([{gpu_idx_marker.args[0]}]) instead.",
+                        pytrace=False,
+                    )
+                raw: list[int] = list(gpu_idx_marker.args[0])
+                if not raw:
+                    pytest.fail(
+                        f"{item.nodeid}: @pytest.mark.gpu_indices requires at least one index — got empty list.",
+                        pytrace=False,
+                    )
+                # Normalize order so [2,0] and [0,2] get the same group name.
+                group_name = "gpu_indices_" + "_".join(str(i) for i in sorted(raw)) + f"_{gpu_indices_idx}"
+                gpu_indices_idx += 1
+                item.add_marker(pytest.mark.xdist_group(group_name))
+                logger.debug("xdist_group assigned (gpu_indices): %s → %s", item.nodeid, group_name)
+                continue
+
             if _is_multinode(item):
                 group_name = f"multinode_{multi_node_idx}"
                 multi_node_idx += 1
