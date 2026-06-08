@@ -131,6 +131,57 @@ class GpuAllocator:
                 )
                 self._condition.wait(timeout=min(remaining, 1.0))
 
+    def allocate_specific(
+        self,
+        gpu_index: int,
+        wait_timeout_secs: float = 0.0,
+    ) -> GpuInfo:
+        """Allocate a specific GPU index from the pool.
+
+        Unlike ``allocate()``, which picks the best available GPU by NUMA
+        locality, this method acquires *exactly* ``gpu_index``.  Useful for
+        ``@pytest.mark.gpu_indices`` tests and ``manual_gpu_allocator`` where
+        the test author needs deterministic hardware assignment.
+
+        Args:
+            gpu_index:         Exact GPU index to acquire.
+            wait_timeout_secs: Seconds to wait if the GPU is currently held
+                               by another test (default 0.0 = fail immediately).
+
+        Returns:
+            ``GpuInfo`` for the requested GPU.
+
+        Raises:
+            ValueError:   If *gpu_index* is not in this node's pool.
+            RuntimeError: If the GPU is not available within *wait_timeout_secs*.
+        """
+        gpu = next((g for g in self._pool if g.index == gpu_index), None)
+        if gpu is None:
+            raise ValueError(f"GPU index {gpu_index} not found in pool {[g.index for g in self._pool]}")
+        deadline = time.monotonic() + wait_timeout_secs if wait_timeout_secs > 0 else None
+
+        with self._condition:
+            while True:
+                if gpu_index in self._available:
+                    self._available.discard(gpu_index)
+                    logger.debug(
+                        "Allocated specific GPU %d (%s, NUMA %d, VRAM %d MB)",
+                        gpu.index,
+                        gpu.arch,
+                        gpu.numa_node,
+                        gpu.vram_mb,
+                    )
+                    return gpu
+
+                if deadline is None or time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"GPU index {gpu_index} unavailable after {wait_timeout_secs}s. "
+                        f"Available: {sorted(self._available)}"
+                    )
+
+                remaining = max(0.01, deadline - time.monotonic())
+                self._condition.wait(timeout=min(remaining, 1.0))
+
     def release(self, gpu: GpuInfo) -> None:
         """Return *gpu* to the allocation pool and wake any waiting allocators.
 

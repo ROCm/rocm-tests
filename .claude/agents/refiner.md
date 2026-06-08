@@ -71,6 +71,9 @@ Example: tests/e2e/hwq_heuristic/ → auto-injects hw.gpu, layer.runtime, ci.nig
 | `layer.*` missing AND directory has no profile | ERROR | Declare required dimension |
 | `hw.*`/`ci.*`/`layer.*` missing BUT auto-injected by profile | INFO only | Not a violation |
 | `hw.multi_gpu` auto-injected (e.g. `concurrent_collectives/`) but `gpu_count(N)` absent | ERROR | `@pytest.mark.gpu_count(N)` is a **parametric** marker — never auto-injected by any profile; always declare explicitly on every multi-GPU test function |
+| `gpu_indices` marker argument is a bare int (e.g. `gpu_indices(0)`) | ERROR | Must be a list: `@pytest.mark.gpu_indices([0])` — bare int crashes collection |
+| `gpu_indices` + `gpu_count` on the same function | ERROR | Mutually exclusive — remove `gpu_count` when using `gpu_indices` |
+| `gpu_indices` + `hw.multi_gpu` on the same function | ERROR | Mutually exclusive — use `gpu_indices` alone to pin specific indices |
 | `hw.multi_gpu` test with `gpu_count(N)` but target_executor not iterating | INFO | For `e2e.multinode` (multi-node) use `for exec_ in target_executor`; for single-node multi-GPU `target_executor.run()` suffices |
 | Marker dimension declared explicitly that is already in the profile | INFO | Redundant; clean up for clarity but not a blocker |
 | `ci.pr` + `runtime.medium` on same function | CONFLICT — ERROR | Medium tests must not be in PR gate |
@@ -94,6 +97,7 @@ Example: tests/e2e/hwq_heuristic/ → auto-injects hw.gpu, layer.runtime, ci.nig
 | `os.environ["ROCM_PATH"] = ...` in test body | ERROR | Pass as `env ROCM_PATH={rock_dir} ...` in the run command string |
 | Binary fixture asserts `os.path.isfile(path)` when binary is conditionally built (optional OS dep) | WARNING | Fixture should return path unconditionally; put `if not os.path.isfile(binary): pytest.skip(...)` guard in the test body |
 | `pytest.importorskip("torch")` absent from test file that requires PyTorch | WARNING | Add at module level or use in-test pre-flight: `if not target_executor.run(f"{sys.executable} -c 'import torch'").ok: pytest.skip(...)` |
+| Hardcoded GPU index in test body (e.g. `device_id = 0`) when `manual_gpu_allocator` is used | WARNING | Use `alloc.pin(gpu_index=N)` and let the allocator manage device assignment |
 
 ### 2d. Assertion Quality Ladder
 

@@ -74,6 +74,8 @@ If a requirements document or C++ source is provided, read it completely and ide
 | Optional Allure reporting | add `allure_reporter` | Not required; no existing test uses it |
 | hipBLASLt / Tensile binary | `target_executor`, `ld_path`, `rock_dir`, `arch_lib_path`, binary fixture | `arch_lib_path` resolves `lib/hipblaslt/library/<arch>`; set `HIPBLASLT_TENSILE_LIBPATH=$(arch_lib_path(base))` in run command |
 | CMake-based build fixture | add `gpu_arch: str \| None` to the conftest fixture signature | Session string from `--gpu-arch`; pass to `cmake_build(gpu_arch=gpu_arch)` and `arch_lib_path()` |
+| Pinned GPU indices | `target_executor` + `@pytest.mark.gpu_indices([i, j])` | Bypasses NUMA selection; all indices must be on one node; mutually exclusive with `gpu_count` and `hw.multi_gpu`; argument must be a list |
+| Manual GPU control in test body | `manual_gpu_allocator` fixture | Use `alloc.pin(gpu_index=0)` context manager or `alloc.acquire(0)` / `alloc.release(group)` explicitly; fixture teardown auto-detects leaked acquisitions |
 
 **Never request fixtures you do not use. Never use deprecated `gpu_fixture`, `local_executor`, or `session_executor`.**
 
@@ -517,6 +519,7 @@ def test_name(target_executor):
 | Soak or weekly regression? | `ci.weekly` |
 | Linux-specific paths/APIs? | `os.linux` |
 | GPU workload needs minimum VRAM? | `@pytest.mark.gpu_vram(N)` |
+| Need to pin specific GPU index(es)? | `@pytest.mark.gpu_indices([i, j])` — bypasses NUMA; argument must be a list; mutually exclusive with `gpu_count`/`hw.multi_gpu` |
 | Test already in a profiled directory? | Do NOT redeclare the profile markers |
 
 **`runtime.*` is NEVER in any profile. Always declare it explicitly on every test function.**
@@ -565,6 +568,8 @@ pytest tests/e2e/<domain>/test_<name>.py -v --rock-dir=/path/to/rocm
 - Use `python3 -c` to run GPU logic — compile the code to a binary with `hipcc` via `compile_binary`
 - Define an inline `_cmake_build()` helper in conftest.py — always import `cmake_build` and `find_rocm_clangpp` from `tests.common._cmake_build`
 - Produce a `hw.cpu_only` DryRun companion for every GPU test — `tests/dry_run/` is for framework unit tests only
+- Pass a bare int to `gpu_indices` — use a list: `@pytest.mark.gpu_indices([0])` not `@pytest.mark.gpu_indices(0)`
+- Combine `gpu_indices` with `gpu_count` or `hw.multi_gpu` — they are mutually exclusive
 
 **ALWAYS:**
 - Generate `conftest.py` first, then `test_<name>.py`
