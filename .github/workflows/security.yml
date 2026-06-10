@@ -1,0 +1,55 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# Per-PR security scanners: runs gitleaks, zizmor, bandit, and trivy
+# against the changes in each pull request. Every scanner uploads a
+# human-readable (non-SARIF) artifact for in-review browsing and prints
+# its findings to the job log / step summary. SARIF is intentionally NOT
+# produced here: pushing to the Security -> Code scanning tab needs
+# `security-events: write` (which fork PRs can't be granted), so that is
+# left to the post-merge `*_main.yml` workflows. These jobs only need
+# `contents: read`, so they run on fork PRs too.
+name: Security
+
+on:
+  pull_request:
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+    with:
+      scan_mode: changed
+      report_formats: json
+    permissions:
+      contents: read
+
+  zizmor:
+    uses: ./.github/workflows/zizmor.yml
+    with:
+      scan_mode: changed
+      report_formats: plain
+    permissions:
+      contents: read
+
+  bandit:
+    uses: ./.github/workflows/bandit.yml
+    with:
+      scan_mode: changed
+      report_formats: txt
+    permissions:
+      contents: read
+
+  trivy:
+    uses: ./.github/workflows/trivy.yml
+    with:
+      scan_mode: changed
+      report_formats: table
+    permissions:
+      contents: read
