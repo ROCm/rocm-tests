@@ -1,0 +1,39 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# Post-merge trivy scan: runs after every push to main (typically the
+# squash/rebase/merge of a PR) and pushes SARIF findings to the
+# repository's code-scanning Security tab. Complements the PR-only
+# trivy job in `ci.yml`, which short-circuits when no audited
+# manifest/IaC file changed and otherwise scans the working tree for
+# vulnerabilities + misconfigurations, uploading a table artifact for
+# in-review browsing.
+name: Trivy_main
+
+on:
+  push:
+    branches: [main]
+  # Allow re-running the post-merge scan on demand, e.g. after tweaking
+  # `trivy.yaml`, rotating the trivy version pin, or refreshing the
+  # vulnerability DB, so the Security tab can be refreshed without an
+  # unrelated commit.
+  workflow_dispatch:
+
+jobs:
+  trivy:
+    uses: ./.github/workflows/trivy.yml
+    with:
+      scan_mode: all
+      report_formats: sarif
+      # Match the PR job's scanner selection: gitleaks already covers
+      # secret detection so we don't double up. The post-merge scan
+      # still benefits from the broader file coverage 'all' gives over
+      # the curated PR allowlist for vulns + misconfigs.
+      scanners: misconfig,vuln
+    permissions:
+      contents: read
+      # Required so the reusable workflow can call
+      # github/codeql-action/upload-sarif and have the findings
+      # appear under Security -> Code scanning, filterable by
+      # `Tool: trivy` separately from any other scanner.
+      security-events: write
