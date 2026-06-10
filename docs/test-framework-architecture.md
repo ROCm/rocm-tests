@@ -46,7 +46,7 @@ This document is a deep-dive companion to the root README. It covers every frame
 
 ### Layer Stack
 
-The framework is layered: the modular plugin stack sits between pytest and test files, so test code stays focused on the workload under test. 
+The framework is layered: the modular plugin stack sits between pytest and test files, so test code stays focused on the workload under test.
 Test files call `Requisite Executor` and receive an `Execution Result` — they never know whether the command ran locally, over SSH, in a container, or in DryRun mode.
 
 ```
@@ -82,11 +82,16 @@ framework/
   rocm/libs/    hip.py; rccl.py; amd_smi.py; stack.py
 
 tests/
-  common/                        factories.py (fake_gpu_info, fake_execution_result) -- NOT test files
+  common/                        factories.py (fake_gpu_info, fake_execution_result); _cmake_build.py -- NOT test files
   dry_run/                       ci.pr DryRun / cpu_only tests (no GPU required)
   e2e/
     compiler/                    hipcc compilation tests; CompileSpec conftest registry
+    concurrent_collectives/      RCCL concurrent collective stress tests; CMake build
+    hip_runtime/                 HIP driver API and multi-stream kernel tests; CMake build
+    hipblaslt/                   hipBLASLt GEMM heuristic and shape-boundary tests; CMake build
     hwq_heuristic/               hardware queue heuristic tests; CMake build
+    rocm_libs/                   rocsolver, rocblas, and other ROCm library tests; CMake build
+    rocprim/                     rocPRIM primitives and multi-GPU HMM tests; CMake build
 ```
 
 ### Plugin Load Order
@@ -119,7 +124,7 @@ Every plugin is listed in `conftest.py -> pytest_plugins`. Pytest loads them lef
 
 ### Multi-Environment Execution
 
-The framework abstracts the execution environment through a family of interchangeable executors. 
+The framework abstracts the execution environment through a family of interchangeable executors.
 Test code always calls `executor.run(command)` and receives an `ExecutionResult(exit_code, stdout, stderr, duration)` — it never knows which executor is active.
 
 #### Executor Hierarchy
@@ -139,12 +144,14 @@ All concrete executors share `AbstractExecutor` with a single required method `r
 
 Use `target_executor` for **all** GPU tests. It dispatches internally based on markers, CLI flags, and the node topology — test code always receives a `NodeExecutorGroup` with the same `.run()` API.
 
-| Markers on test | `target_executor` yields | Test code pattern |
+| Markers / flags on test | `target_executor` yields | Test code pattern |
 |---|---|---|
 | `hw.gpu` | `NodeExecutorGroup(1 executor)` | `target_executor.run(cmd)` |
 | `hw.multi_gpu` + `gpu_count(N)` | `NodeExecutorGroup(1 exec, ROCR=0,1,...,N-1)` | `target_executor.run(cmd)` |
-| `e2e.multinode` + `gpu_count(N)` | `NodeExecutorGroup(N execs, 1 per node)` | `for e in target_executor: e.run(cmd)` |
+| `e2e.multinode` + `gpu_count(N)` | `NodeExecutorGroup(N execs, 1 per node)` — requires `--remote-node` with 2+ nodes | `for e in target_executor: e.run(cmd)` |
+| `gpu_indices([i, j, ...])` | `NodeExecutorGroup(1 exec, exact indices pinned)` | `target_executor.run(cmd)` |
 | any + `--no-gpu` | `NodeExecutorGroup(DryRunExecutor)` | `target_executor.run(cmd)` |
+| any + `--container-mode` | `NodeExecutorGroup(ContainerExecutor)` — no NodePool slot | `target_executor.run(cmd)` |
 
 **GPU isolation:** `ROCR_VISIBLE_DEVICES` is always set by `LocalExecutor` / `SshExecutor`. Never set it in test code.
 
@@ -168,6 +175,37 @@ def test_kernel_with_monitoring(target_executor, cpu_executor):
 ```
 
 `DryRunExecutor.start_background()` returns a `NoOpBackgroundProcess` with the same API (`.is_alive` is always `False`). SSH executors do not yet support background processes.
+
+#### `manual_gpu_allocator` — Explicit Per-Index Acquisition
+
+`manual_gpu_allocator` is an alternative to `target_executor` for tests that must pin to a specific GPU index rather than accepting the pool's NUMA best-fit selection. Intended for benchmark pinning, per-GPU diagnostics, and external workflows that manage GPU assignment themselves.
+
+```python
+@pytest.mark.hw.gpu
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_benchmark_pinned(manual_gpu_allocator):
+    # Context manager (recommended) — acquires GPU 0, releases on exit
+    with manual_gpu_allocator.pin(gpu_index=0) as executor:
+        result = executor.run("./benchmark --warmup 3 --iterations 10")
+        assert result.ok
+
+    # Explicit acquire/release — useful when two GPUs must be held together
+    ex0 = manual_gpu_allocator.acquire(0)
+    ex1 = manual_gpu_allocator.acquire(1)
+    try:
+        r0 = ex0.run("rocm-smi --showmeminfo vram")
+        r1 = ex1.run("rocm-smi --showmeminfo vram")
+        assert r0.ok and r1.ok
+    finally:
+        manual_gpu_allocator.release(ex0)
+        manual_gpu_allocator.release(ex1)
+```
+
+The fixture uses the same `NodePool` and `GpuFileLock` infrastructure as `target_executor` — cross-process exclusivity is maintained. In `--no-gpu` mode all `acquire()` calls return a `DryRunExecutor` group so test logic can be validated in CI. If a test finishes without releasing all acquired slots, the fixture calls `pytest.fail` and releases them on behalf of the test.
+
+Available API: `.acquire(gpu_index)`, `.release(group)`, `.pin(gpu_index)` (context manager), `.available_gpus` (read-only snapshot of all detected GPUs in the pool).
 
 #### `ExecutionResult`
 
@@ -286,8 +324,7 @@ Without `--remote-node`, `NodePool` enumerates GPUs on the local machine. Each G
 HOST_IDX_1:
   HOSTNAME: gpu-node-01.example.com
   USERNAME: ci
-  SSH_KEY:  ~/.ssh/ci_rsa
-  # GPU_ARCH: gfx942   # optional: filter GPUs by arch on this node
+  SSH_KEY:  ~/.ssh/ci_rsa         # preferred; ~ is expanded at connection time
 
 HOST_IDX_2:
   HOSTNAME: gpu-node-02.example.com
@@ -295,18 +332,17 @@ HOST_IDX_2:
   SSH_KEY:  ~/.ssh/ci_rsa
 ```
 
-> **Security:** Passwords must not be stored statically. Obtain credentials from a secrets vault or `~/.env` at runtime. SSH key paths support `~` expansion.
+All keys: `HOSTNAME` (required), `USERNAME`, `SSH_KEY`, `PASSWORD`, `GPU_ARCH` (all optional). Nodes are identified in logs and lock files by their `HOST_IDX_N` label.
 
-Nodes are processed in `HOST_IDX_N` ascending order. At session start, `NodePool` prints the full GPU topology and the recommended `-n` worker count:
+> **Security:** Passwords must not be stored statically. Obtain credentials from a secrets vault or `~/.env` at runtime. Prefer `SSH_KEY` over `PASSWORD` for automated pipelines.
+
+Nodes are processed in `HOST_IDX_N` ascending order. At session start, `NodePool` prints the GPU topology and the recommended `-n` count:
 
 ```
-=== NodePool: 2 nodes, 6 GPU slots ===
-  Node gpu-node-01 (gfx942): GPU 0, GPU 1, GPU 2
-  Node gpu-node-02 (gfx942): GPU 0, GPU 1, GPU 2
-Recommended: pytest -n 6
+[rocm-test] GPU topology: localhost: 2 × gfx942 (32768 MB). Total slots: 2. Add -n 2 for parallel execution.
 ```
 
-If 0 GPU slots are found, the session exits with rc=3.
+If 0 GPU slots are found across all nodes, the session exits with `rc=3` and prints a diagnostic checklist (container `--device` flags, driver load status, `--gpu-arch` filter mismatch, `--rock-dir` validity).
 
 #### Acquire Timeout
 
@@ -318,9 +354,11 @@ If 0 GPU slots are found, the session exits with rc=3.
 |---|---|
 | Run a command on one GPU | `target_executor` with `hw.gpu` |
 | Run on N GPUs on one node | `target_executor` with `hw.multi_gpu` + `@pytest.mark.gpu_count(N)` |
-| Run on one GPU per node (N nodes) | `target_executor` with `e2e.multinode` + `@pytest.mark.gpu_count(N)` |
+| Run on one GPU per node (N nodes) | `target_executor` with `e2e.multinode` + `@pytest.mark.gpu_count(N)` (requires `--remote-node` with 2+ nodes) |
+| Pin to exact GPU indices | `target_executor` with `@pytest.mark.gpu_indices([0, 2])` |
+| Benchmark pinning / explicit per-index control | `manual_gpu_allocator` fixture |
 | Low-level: explicit N-GPU from one node | `multi_gpu_fixture` (prefer `target_executor`) |
-| Low-level: explicit per-node | `multi_node_fixture` (prefer `target_executor`) |
+| Low-level: explicit per-node | `multi_node_fixture` (prefer `target_executor`; requires 2+ nodes) |
 | No GPU needed | `dry_run_executor` or `cpu_executor` |
 
 ---
@@ -348,6 +386,7 @@ Every test function **must** carry at least one marker from each required dimens
 |---|---|
 | `@pytest.mark.gpu_vram(16)` | Require >= 16 GB free VRAM; GPU allocation skips GPUs below threshold |
 | `@pytest.mark.gpu_count(4)` | Acquire 4 GPUs (read by `target_executor` and `multi_gpu_fixture`) |
+| `@pytest.mark.gpu_indices([0, 2])` | Acquire exact GPU indices (bypasses NUMA best-fit selection); ignored when `gpu_vram` is also set |
 | `@pytest.mark.container_image("rocm/pytorch:6.3")` | Override container image for this test (beats `--container-image`) |
 | `@pytest.mark.retry(count=2)` | Retry up to 2 times before marking FAIL (3 total attempts) |
 
@@ -357,8 +396,12 @@ Every test function **must** carry at least one marker from each required dimens
 
 | Directory | Auto-injected markers |
 |---|---|
-| `tests/e2e/compiler` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `os.linux` |
-| `tests/e2e/rocm_libs` | `hw.gpu`, `layer.math_lib`, `ci.weekly`, `os.linux` |
+| `tests/e2e/compiler` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` |
+| `tests/e2e/hip_runtime` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` |
+| `tests/e2e/hipblaslt` | `hw.gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
+| `tests/e2e/hwq_heuristic` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` |
+| `tests/e2e/rocm_libs` | `hw.gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
+| `tests/e2e/rocprim` | `hw.gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` |
 
 `runtime.*` is intentionally absent from all profiles — duration varies per test and must always be declared explicitly on each function.
 
@@ -369,9 +412,6 @@ Every test function **must** carry at least one marker from each required dimens
 #### Selecting Tests by Marker Expression
 
 ```bash
-# All PR-gate tests (any hardware, DryRun-safe)
-pytest tests/ -m "ci.pr" --no-gpu
-
 # Nightly GPU tests on a specific architecture
 pytest tests/e2e/ -m "hw.gpu and ci.nightly" --gpu-arch gfx942
 
@@ -587,31 +627,6 @@ If the test passes on attempt > 1, it is tagged **flaky** in the Allure report.
 #### Artifact Capture
 
 `artifacts_plugin` captures GPU state via `amd-smi metric --gpu N --json` on test failure and attaches the JSON to the Allure step. The autouse fixture `_attach_test_log` captures all Python `logging` output (`caplog`) and attaches it to Allure as `test.log` for every test.
-
----
-
-### Prerequisite Contract
-
-`prereqs_plugin` gates session start with built-in checks:
-
-| Check | Behaviour on failure |
-|---|---|
-| Python >= 3.10 | Logs error; aborts if `--strict-prereqs` active |
-| `hipconfig` on PATH | Logs warning; aborts if `--strict-prereqs` active |
-| `rocm-smi` on PATH | Logs warning; aborts if `--strict-prereqs` active |
-| `amd-smi` on PATH | Logs warning; aborts if `--strict-prereqs` active |
-
-Without `--strict-prereqs`, missing prerequisites are warnings only — the session continues and hardware tests will fail naturally if tools are absent.
-
-```bash
-# Strict mode: abort session (rc=3) on any missing prerequisite
-pytest tests/e2e/ --strict-prereqs -v
-
-# Permissive mode (default): log warnings, continue
-pytest tests/e2e/ -v
-```
-
-`prereqs_fixture` is session-scoped and runs automatically. Tests can declare it explicitly to ensure prerequisites are verified before any test-specific setup.
 
 ---
 
@@ -1098,7 +1113,6 @@ pytest tests/e2e/ -m "ci.nightly" -n 4 --collect-runtimes build/runtimes.json
 ```
 
 ### Remote Fleet Run
-> WIP
 
 ```bash
 # Discover topology (dry-run, no tests execute)
@@ -1112,7 +1126,6 @@ pytest tests/e2e/ --remote-node host.yaml -n 6 --gpu-acquire-timeout 300 -v
 ```
 
 ### Pre-Installing ROCm on Fleet Nodes
-> WIP
 
 ```bash
 # Install ROCm 6.4.0 (skips nodes already at that version)

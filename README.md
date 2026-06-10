@@ -67,9 +67,6 @@ uv pip install -r requirements-dev.txt
 ### Step 2 — Run against real GPU hardware
 
 ```bash
-# Smoke suite — fast PR-gate tests on real GPU
-pytest tests/e2e/ -m "hw.gpu and ci.pr" -v
-
 # Full nightly matrix for a specific architecture
 pytest tests/e2e/ -m "hw.gpu and ci.nightly" --gpu-arch gfx942 \
   --html=nightly_report.html --self-contained-html -v
@@ -112,7 +109,7 @@ def test_rccl_allreduce_2gpu(target_executor):
 ```
 
 That is the full surface area a contributor touches.
-Use `@pytest.mark.gpu_count(N)` to declare how many GPUs the test needs and `@pytest.mark.gpu_vram(N)` to set a minimum VRAM threshold (in GB). 
+Use `@pytest.mark.gpu_count(N)` to declare how many GPUs the test needs and `@pytest.mark.gpu_vram(N)` to set a minimum VRAM threshold (in GB).
 The framework's nodepool filters eligible devices automatically — the test never sets `ROCR_VISIBLE_DEVICES` directly.
 
 **Validate before opening a PR:**
@@ -181,10 +178,10 @@ rocm-tests/
 ├── tests/                              # All test files
 │   ├── conftest.py                     # Test-level fixtures: mock_gpu_info, mock_ok/fail_result
 │   ├── common/                         # Shared test utilities — NOT test files (excluded via norecursedirs)
+│   │   └── _cmake_build.py             # cmake_build() + find_rocm_clangpp() shared by CMake-based conftests
 │   ├── dry_run/                        # Config and framework tests — no GPU required (ci.pr)
 │   └── e2e/                            # End-to-end tests against the full ROCm stack
-│       ├── compiler/                   # hipcc compilation, LLVM codegen, kernel execution
-│       └── hwq_heuristic/              # GPU hardware queue heuristics and scheduling behavior
+│       └── rocprim/                    # Example: rocPRIM primitives and multi-GPU HMM tests
 │
 ├── docs/                               # MkDocs source — auto-deployed to GitHub Pages on merge
 │
@@ -253,4 +250,3 @@ flowchart TD
 ## Contribution Guidelines
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide — quickstart,
 marker system, two-step test registration, fixture discovery, and porting guide.
-Run `pytest tests/ --collect-only -q --no-gpu` to validate any change without GPU hardware.
