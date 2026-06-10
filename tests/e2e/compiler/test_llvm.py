@@ -27,7 +27,6 @@ Explicit markers (not in profile):
 
 import pytest
 
-
 # Scenarios covered by each parametrized id:
 #   multi_thread           -- scenario 2: --multi-thread-enable
 #   multi_thread_512t      -- scenario 3: --multi-thread-enable --threads-per-kernel=512
@@ -49,7 +48,8 @@ _VARIANT_ARGS = [
 
 # Scenarios requiring two HIP devices (--streams=2 --devices=2):
 #   multi_gpu_interleave      -- scenario 5: --streams=2 --devices=2 --interleave-stream-launches --multi-thread-enable
-#   multi_gpu_interleave_seed -- scenario 9: --streams=2 --devices=2 --interleave-stream-launches --multi-thread-enable --seed=0
+#   multi_gpu_interleave_seed -- scenario 9: --streams=2 --devices=2 --interleave-stream-launches
+#                                             --multi-thread-enable --seed=0
 _MULTI_GPU_ARGS = [
     pytest.param(
         "--streams=2 --devices=2 --interleave-stream-launches --multi-thread-enable",
@@ -85,9 +85,9 @@ def test_llvm_mem_intrinsic_stress(
         f"stdout: {result.stdout[:2000]}\n"
         f"stderr: {result.stderr[:500]}"
     )
-    assert "[PASS]" in result.stdout, (
-        f"llvm_mem_intrinsic_stress exited 0 but '[PASS]' not found in stdout:\n{result.stdout[:2000]}"
-    )
+    assert (
+        "[PASS]" in result.stdout
+    ), f"llvm_mem_intrinsic_stress exited 0 but '[PASS]' not found in stdout:\n{result.stdout[:2000]}"
 
 
 @pytest.mark.runtime.medium
@@ -156,4 +156,3 @@ def test_llvm_mem_intrinsic_stress_multi_gpu(
         f"llvm_mem_intrinsic_stress_multi_gpu [{extra_args}] exited 0 but '[PASS]' not found in stdout:\n"
         f"{result.stdout[:2000]}"
     )
-
