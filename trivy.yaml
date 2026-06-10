@@ -1,0 +1,8 @@
+# trivy configuration for Quartz-Tester
+# Reference: https://trivy.dev/latest/docs/references/configuration/config-file/
+
+scan:
+  skip-dirs:
+    - .git
+    - .venv
+    - venv
