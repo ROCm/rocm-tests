@@ -56,7 +56,8 @@ def test_rocprim_concurrent(
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
-        f"env LD_LIBRARY_PATH={ld} " f"{rocprim_tests_binary} --gtest_filter=SystemMultiStreamTests.*"
+        f"env LD_LIBRARY_PATH={ld} " f"{rocprim_tests_binary} --gtest_filter=SystemMultiStreamTests.*",
+        timeout=1800.0,  # runtime.medium cap: 30 min
     )
     # Detect GPU memory faults before the generic result.ok check — they produce a
     # more actionable error pointing at the rocRAND/rocPRIM kernel issue rather than
@@ -107,7 +108,8 @@ def test_rocprim_multigpu_hmm(
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
-        f"env LD_LIBRARY_PATH={ld} " f"{rocprim_tests_binary} --gtest_filter=MultiGPUHMMTests.*"
+        f"env LD_LIBRARY_PATH={ld} " f"{rocprim_tests_binary} --gtest_filter=MultiGPUHMMTests.*",
+        timeout=1800.0,  # runtime.medium cap: 30 min
     )
     assert result.ok, (
         f"rocprim_multigpu_hmm failed (exit={result.exit_code}):\n"

@@ -114,9 +114,6 @@ def ld_path(rock_dir: str) -> dict:  # pylint: disable=redefined-outer-name
     the TheRock-built ``libamdhip64.so`` and related libraries are found at
     runtime without requiring a system-level install.
 
-    Generic — any e2e component that runs TheRock-linked binaries needs this,
-    not just compiler tests.
-
     Args:
         rock_dir: Resolved path to the TheRock/ROCm installation.
 
@@ -133,35 +130,15 @@ def ld_path(rock_dir: str) -> dict:  # pylint: disable=redefined-outer-name
 def arch_lib_path(gpu_arch: str | None):
     """Return a callable that resolves an arch-specific library sub-directory path.
 
-    Many ROCm libraries (hipBLASLt/Tensile, etc.) store arch-specific loadable
-    files — ``.dat``, ``.hsaco``, ``.co`` — under a per-arch subdirectory:
-
-    .. code-block:: text
-
-        <base>/<arch>/TensileLibrary_lazy_<arch>.dat
-        <base>/<arch>/Kernels.so-000-<arch>.hsaco
-
-    When ``--gpu-arch`` is supplied the callable appends ``/<arch>`` to *base*
-    so the runtime finds its files without relying on internal auto-detection.
-    When ``--gpu-arch`` is absent the base path is returned unchanged (runtime
-    fallback; may fail if files only exist under an arch subdir).
-
-    Usage in a test::
-
-        def test_foo(target_executor, arch_lib_path, rock_dir):
-            tensile_base = pathlib.Path(rock_dir) / "lib" / "hipblaslt" / "library"
-            tensile_lib = arch_lib_path(tensile_base)
-            result = target_executor.run(
-                f"env HIPBLASLT_TENSILE_LIBPATH={tensile_lib} ./my_binary"
-            )
+    Appends ``/<gpu_arch>`` to the base path when ``--gpu-arch`` is set so that
+    ROCm library runtimes (e.g. hipBLASLt/Tensile) locate their arch-specific files.
+    Returns ``str(base)`` unchanged when ``gpu_arch`` is ``None``.
 
     Args:
-        gpu_arch: Architecture string from the session-scoped ``gpu_arch`` fixture
-                  (e.g. ``"gfx90a"``), or ``None``.
+        gpu_arch: Architecture string from the ``gpu_arch`` fixture, or ``None``.
 
     Returns:
-        Callable ``(base: str | pathlib.Path) -> str`` that appends ``/<arch>``
-        when *gpu_arch* is set, or returns ``str(base)`` otherwise.
+        Callable ``(base: str | pathlib.Path) -> str``.
     """
     import pathlib as _pathlib
 
@@ -174,55 +151,22 @@ def arch_lib_path(gpu_arch: str | None):
 
 @pytest.fixture(scope="session")
 def compile_binary(
-    rock_dir: str, compiler_build_dir: str, framework_config, gpu_arch: str | None
+    rock_dir: str, compiler_build_dir: str, framework_config, gpu_arch: str | None, cmake_executor
 ):  # pylint: disable=redefined-outer-name
     """Return a compile factory pre-bound to rock_dir and compiler_build_dir.
 
-    The returned callable wraps ``BinaryBuilder`` so that any e2e test can
-    compile a HIP/C++ binary without importing ``BinaryBuilder`` directly or
-    wiring up path-resolution boilerplate.
+    The returned callable wraps ``BinaryBuilder`` so that e2e tests can compile
+    a HIP/C++ binary without importing ``BinaryBuilder`` or wiring up path
+    resolution directly.  See ``BinaryBuilder.compile()`` for parameter details.
 
-    Factory signature::
-
-        compile_binary(
-            src,
-            output_name,
-            *,
-            include_dirs=None,
-            extra_flags=None,
-            std="c++17",
-            opt="-O2",
-            arch=None,
-            subdir=None,
-        ) -> str
-
-    Args (of the returned factory):
-        src:          Path to the C++ source file (relative to repo root or
-                      absolute).
-        output_name:  Base filename for the compiled binary.
-        include_dirs: Extra ``-I`` paths forwarded to hipcc.
-        extra_flags:  Verbatim extra compiler flags forwarded to hipcc.
-        std:          C++ standard (default ``"c++17"``).
-        opt:          Optimisation flag (default ``"-O2"``).
-        arch:         GPU arch target, e.g. ``"gfx942"`` → ``--offload-arch=gfx942``.
-                      ``None`` falls back to ``--gpu-arch`` CLI option; if that is
-                      also absent hipcc auto-detects from the ROCm device list.
-        subdir:       Sub-directory under ``compiler_build_dir`` for this
-                      component's binaries (e.g. ``"compiler"``, ``"multi_gpu"``).
-                      Creates ``output/test-binaries/<subdir>/`` on first call.
-
-    Returns (factory):
-        Path to the compiled binary.
-
-    Example usage in an e2e conftest::
+    Example::
 
         @pytest.fixture(scope="session")
         def allreduce_binary(compile_binary):
             return compile_binary(
                 src="tests/e2e/multi_gpu/src/allreduce.cpp",
                 output_name="allreduce",
-                include_dirs=["tests/common/include"],
-                subdir="multi_gpu",   # → output/test-binaries/multi_gpu/allreduce
+                subdir="multi_gpu",
             )
     """
 
@@ -253,6 +197,7 @@ def compile_binary(
             timeout=framework_config.therock.build_timeout_secs,
             inactivity_timeout=framework_config.therock.build_inactivity_timeout_secs,
             log_path=log_path,
+            remote_executor=cmake_executor,
         )
 
     return _compile

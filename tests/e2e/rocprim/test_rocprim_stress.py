@@ -65,7 +65,8 @@ def test_rocprim_stress(
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
-        f"env LD_LIBRARY_PATH={ld} " f"{rocprim_tests_binary} --gtest_filter=SystemStressTests.*"
+        f"env LD_LIBRARY_PATH={ld} " f"{rocprim_tests_binary} --gtest_filter=SystemStressTests.*",
+        timeout=14400.0,  # runtime.soak cap: 4 hours
     )
     for pat in _GPU_FAULT_PATTERNS:
         assert pat not in result.stderr, (

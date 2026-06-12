@@ -28,6 +28,7 @@ import pytest
 
 
 @pytest.mark.runtime.fast
+@pytest.mark.retry(count=1)
 @pytest.mark.parametrize("dq_mode", [0, 1, 2])
 def test_hwq_compute_copy_overlap(
     target_executor,

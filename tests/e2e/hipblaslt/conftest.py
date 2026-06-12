@@ -57,6 +57,7 @@ import logging
 import os
 import pathlib
 import shlex
+import shutil
 
 import pytest
 
@@ -231,16 +232,18 @@ def _check_hipblaslt_headers(rock_dir: str) -> None:
 
 
 @pytest.fixture(scope="session")
-def mini_residual_app_binary(compile_binary, rock_dir: str) -> str:
+def mini_residual_app_binary(compile_binary, rock_dir: str, cmake_executor) -> str:
     """Compile mini_residual_app.cpp → binary path.  Used by test_mini_residual_app.py."""
-    _check_hipblaslt_headers(rock_dir)
+    if cmake_executor is None:
+        _check_hipblaslt_headers(rock_dir)
     return _build(compile_binary, "mini_residual_app", rock_dir)
 
 
 @pytest.fixture(scope="session")
-def gemm_heuristic_workspace_budget_binary(compile_binary, rock_dir: str) -> str:
+def gemm_heuristic_workspace_budget_binary(compile_binary, rock_dir: str, cmake_executor) -> str:
     """Compile gemm_heuristic_workspace_budget.cpp → binary path.  Used by test_gemm_heuristic_workspace.py."""
-    _check_hipblaslt_headers(rock_dir)
+    if cmake_executor is None:
+        _check_hipblaslt_headers(rock_dir)
     return _build(compile_binary, "gemm_heuristic_workspace_budget", rock_dir)
 
 
@@ -250,7 +253,7 @@ def gemm_heuristic_workspace_budget_binary(compile_binary, rock_dir: str) -> str
 
 
 @pytest.fixture(scope="session")
-def _hip_heuristic_cmake_build_dir(gpu_arch: str | None, rock_dir: str, compiler_build_dir: str) -> str:
+def _hip_heuristic_cmake_build_dir(gpu_arch: str | None, rock_dir: str, compiler_build_dir: str, cmake_executor) -> str:
     """Build hipblaslt-heuristic-test via CMake; return build directory path.
 
     Runs ``cmake -S <src> -B <build> -DROCM_PATH=<rock_dir> [-DGPU_ARCH=<arch>]``
@@ -258,16 +261,24 @@ def _hip_heuristic_cmake_build_dir(gpu_arch: str | None, rock_dir: str, compiler
     ``AssertionError`` on failure so pytest reports them as ``ERROR`` on every
     test that depends on this fixture.
 
+    In ``--remote-node`` mode, cmake runs on the remote host via ``cmake_executor``
+    (an ``SshExecutor``).  In local mode, cmake must be present in ``PATH``; the
+    fixture skips when it is absent rather than raising ``FileNotFoundError``.
+
     Args:
         gpu_arch:            Target GPU architecture from the ``gpu_arch`` fixture (``--gpu-arch``).
         rock_dir:            Path to the ROCm/TheRock install (``--rock-dir`` / ``ROCK_DIR``).
         compiler_build_dir:  Session-scoped output root (``output/test-binaries/`` by default).
+        cmake_executor:      Session-scoped ``SshExecutor`` for remote cmake; ``None`` for local builds.
 
     Returns:
         Absolute path to the CMake build directory containing the binary.
     """
+    if cmake_executor is None and not shutil.which("cmake"):
+        pytest.skip("cmake not found in PATH — install cmake to run this test locally")
+
     rocm_path = os.path.realpath(rock_dir)
-    build_dir = os.path.join(compiler_build_dir, "hipblaslt_heuristic_workspace", "build")
+    build_dir = os.path.abspath(os.path.join(compiler_build_dir, "hipblaslt_heuristic_workspace", "build"))
 
     # clang++ is used as the host CXX compiler; the CMakeLists.txt handles HIP compiler
     # detection (find_program amdclang++) independently. Both may arrive as -D flags.
@@ -281,20 +292,73 @@ def _hip_heuristic_cmake_build_dir(gpu_arch: str | None, rock_dir: str, compiler
         gpu_arch=gpu_arch,
         compiler_args=compiler_args,
         label="hipblaslt_heuristic_workspace",
+        remote_executor=cmake_executor,
+        sync_dirs=[os.path.abspath(_CMAKE_SRC_DIR)],
     )
     return build_dir
 
 
 @pytest.fixture(scope="session")
-def hipblaslt_heuristic_workspace_binary(_hip_heuristic_cmake_build_dir: str) -> str:
+def tensile_lib_path(rock_dir: str, gpu_arch: str | None, arch_lib_path, cmake_executor) -> str:
+    """Resolve and validate the hipBLASLt Tensile library directory path.
+
+    Constructs the per-arch Tensile kernel directory path and validates that
+    ``TensileLibrary_lazy_<arch>.dat`` is present before any test runs.
+
+    - **Local mode** (``cmake_executor is None``): uses ``pathlib.Path.exists()``
+      — fast and requires no subprocess.
+    - **Remote-node mode**: runs ``test -f <path>`` via ``cmake_executor`` so the
+      check executes on the host where the ROCm stack is actually installed,
+      not on the pytest coordinator.
+
+    When ``gpu_arch`` is ``None`` the base library directory is returned without
+    validation (runtime auto-detection fallback — may fail if files only exist
+    under an arch sub-directory).
+
+    Args:
+        rock_dir:       Resolved ROCm/TheRock install path.
+        gpu_arch:       Target GPU architecture string (e.g. ``"gfx90a"``), or ``None``.
+        arch_lib_path:  Session callable that appends ``/<arch>`` to a base path.
+        cmake_executor: Session-scoped ``SshExecutor`` when ``--remote-node`` is
+                        active; ``None`` in local mode.
+
+    Returns:
+        Absolute path string to the resolved Tensile library directory.
+    """
+    library_base = pathlib.Path(rock_dir) / "lib" / "hipblaslt" / "library"
+    tensile_lib = arch_lib_path(library_base)
+
+    if gpu_arch:
+        tensile_dat = f"{tensile_lib}/TensileLibrary_lazy_{gpu_arch}.dat"
+        fail_msg = (
+            f"hipBLASLt Tensile kernels missing for arch {gpu_arch!r}: {tensile_dat}\n"
+            "Install the BLAS artifact package (pass --blas to install_rocm_from_artifacts.py)."
+        )
+        if cmake_executor is None:
+            if not pathlib.Path(tensile_dat).exists():
+                pytest.fail(fail_msg)
+        else:
+            result = cmake_executor.run(f"test -f {shlex.quote(tensile_dat)}")
+            if not result.ok:
+                pytest.fail(fail_msg)
+
+    return tensile_lib
+
+
+@pytest.fixture(scope="session")
+def hipblaslt_heuristic_workspace_binary(_hip_heuristic_cmake_build_dir: str, cmake_executor) -> str:
     """Return absolute path to the compiled hipblaslt-heuristic-test binary.
 
     Args:
         _hip_heuristic_cmake_build_dir: Build directory from the shared CMake fixture.
+        cmake_executor:                 ``SshExecutor`` when running remotely, ``None`` for local.
 
     Returns:
         Absolute path to the ``hipblaslt-heuristic-test`` binary.
     """
     binary = os.path.join(_hip_heuristic_cmake_build_dir, _CMAKE_BINARY_NAME)
-    assert os.path.isfile(binary), f"hipblaslt_heuristic_workspace: binary not found at {binary} after successful build"
+    if cmake_executor is None:
+        assert os.path.isfile(
+            binary
+        ), f"hipblaslt_heuristic_workspace: binary not found at {binary} after successful build"
     return binary

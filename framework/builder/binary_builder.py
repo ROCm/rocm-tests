@@ -4,77 +4,25 @@
 """
 binary_builder.py -- Process-safe, incremental C++ binary compilation for test suites.
 
-Design principles
------------------
-CPU/GPU environment separation
-    Compilation is a CPU-only operation.  ``BinaryBuilder`` strips all GPU
-    device-selection environment variables (``HIP_VISIBLE_DEVICES``,
-    ``ROCR_VISIBLE_DEVICES``, etc.) from the subprocess environment so that
-    the compiler is never inadvertently bound to a specific GPU ordinal by
-    whatever the pytest GPU allocation machinery has set.
+Design
+------
+- **CPU/GPU env separation**: all GPU device-selection env vars are stripped from the
+  compiler subprocess; GPU execution is handled by the caller's executor fixture.
+- **xdist parallel safety**: compilation is serialised via ``fcntl`` file lock; later
+  workers skip if the binary is already current (mtime check).
+- **Live streaming + dual-log**: stdout/stderr stream to the console and to
+  ``<output>.build.log`` simultaneously; the log path appears in ``AssertionError``.
+- **Two timeouts**: wall-clock ``timeout`` (default 7200 s) and ``inactivity_timeout``
+  (default 600 s); SIGTERM then SIGKILL on expiry.
 
-    GPU execution (running the compiled binary) is the sole responsibility of
-    the caller — typically via ``target_executor`` or ``gpu_fixture``.
-    ``ROCR_VISIBLE_DEVICES`` is injected automatically by the executor fixture.
+Usage::
 
-pytest-xdist parallel safety
-    When pytest distributes tests across multiple workers (``-n 4``), each
-    worker has its own session and may try to compile the same binary
-    simultaneously.  ``BinaryBuilder`` serialises compilation via an
-    exclusive ``fcntl`` file lock on ``<output>.lock``.  The first worker
-    that acquires the lock compiles; the others block (with a timeout), then
-    see the binary is already up-to-date and return immediately.
-
-Incremental builds
-    If the binary already exists and its mtime is newer than the source file,
-    compilation is skipped entirely — useful when the same test session is
-    re-run after a partial failure.
-
-Live streaming and dual-log
-    The hipcc subprocess streams stdout+stderr to the pytest console in real
-    time **and** writes the same bytes to ``<output>.build.log`` simultaneously.
-    On failure, the ``AssertionError`` message includes the log path so CI
-    runners can archive and inspect it without grepping test output.
-
-Timeout handling
-    Two independent timeout thresholds protect against hung builds:
-
-    * ``timeout`` (wall-clock): hard upper bound on total compilation time.
-      Default 7200 s (2 h), configurable via ``ROCM_TEST_THEROCK_BUILD_TIMEOUT_SECS``.
-    * ``inactivity_timeout``: if the compiler emits no output for this many
-      seconds the build is considered stalled (typically a linker OOM).
-      Default 600 s (10 min).
-
-    On either timeout: SIGTERM is sent first, then after a grace period
-    SIGKILL is issued if the process has not exited.
-
-Error reporting
-    Compilation failure raises ``AssertionError``, which pytest records as
-    ``ERROR`` on every test that depends on the fixture.  This correctly
-    signals a broken test environment rather than a test logic failure.
-
-Usage (from a session-scoped conftest fixture)::
-
-    from framework.builder.binary_builder import BinaryBuilder
-
-    # Option A — explicit hipcc path
     @pytest.fixture(scope="session")
-    def my_binary(rock_dir, compiler_build_dir, include_dirs):
-        return BinaryBuilder().compile(
-            hipcc=os.path.join(rock_dir, "bin", "hipcc"),
-            src="tests/e2e/myarea/src/my_kernel.cpp",
-            output=os.path.join(compiler_build_dir, "my_kernel"),
-            include_dirs=[include_dirs],
-        )
-
-    # Option B — pass rocm_dir and let BinaryBuilder derive hipcc
-    @pytest.fixture(scope="session")
-    def my_binary(rock_dir, compiler_build_dir, include_dirs):
+    def my_binary(rock_dir, compiler_build_dir):
         return BinaryBuilder().compile(
             rocm_dir=rock_dir,
             src="tests/e2e/myarea/src/my_kernel.cpp",
             output=os.path.join(compiler_build_dir, "my_kernel"),
-            include_dirs=[include_dirs],
             arch="gfx942",
         )
 """
@@ -90,6 +38,7 @@ import os
 import pathlib
 import re
 import select
+import shlex
 import signal
 import subprocess
 import sys
@@ -184,45 +133,27 @@ class BinaryBuilder:
         timeout: float = 7200.0,
         inactivity_timeout: float = 600.0,
         log_path: str | None = None,
+        remote_executor=None,
     ) -> str:
-        """Compile *src* to *output* using hipcc (CPU-only operation).
+        """Compile *src* to *output* using hipcc (CPU-only, xdist-safe).
 
-        Exactly one of *hipcc* or *rocm_dir* must be supplied:
-            - *hipcc*: Absolute path to the hipcc binary.
-            - *rocm_dir*: Path to the ROCm/TheRock install tree; hipcc is
-              derived as ``{rocm_dir}/bin/hipcc``.
+        Supply exactly one of *hipcc* (absolute path) or *rocm_dir* (install root;
+        hipcc derived as ``{rocm_dir}/bin/hipcc``).
 
         Args:
-            src:                  Path to the C++ source file (relative to repo
-                                  root or absolute).
+            src:                  Path to the C++ source file.
             output:               Destination path for the compiled binary.
-            hipcc:                Absolute path to the hipcc compiler binary.
-                                  Mutually exclusive with *rocm_dir*.
-            rocm_dir:             Path to a ROCm/TheRock installation that
-                                  contains ``bin/hipcc``.  Mutually exclusive
-                                  with *hipcc*.
-            std:                  C++ standard passed as ``-std=<std>``
-                                  (default ``"c++17"``).
+            hipcc:                Absolute path to the hipcc binary (mutually exclusive with *rocm_dir*).
+            rocm_dir:             ROCm/TheRock install root (mutually exclusive with *hipcc*).
+            std:                  C++ standard (default ``"c++17"``).
             opt:                  Optimisation flag (default ``"-O2"``).
-            arch:                 GPU architecture target passed as
-                                  ``--offload-arch=<arch>`` (e.g. ``"gfx942"``).
-                                  When ``None``, no arch flag is added and hipcc
-                                  auto-detects from the installed ROCm device list.
-            include_dirs:         Additional include paths; each becomes a ``-I``
-                                  flag.
-            extra_flags:          Any extra compiler flags appended verbatim
-                                  before ``-o``.
-            timeout:              Wall-clock seconds before the compiler is killed
-                                  (default 7200 s / 2 h).  ``None`` disables the
-                                  wall-clock limit (inactivity limit still applies).
-            inactivity_timeout:   Seconds of silence (no compiler output) before
-                                  the process is considered stalled and killed
-                                  (default 600 s / 10 min).
-            log_path:             File path for the build log.  If given, the
-                                  merged stdout+stderr stream is written here
-                                  simultaneously with the console.  Created (or
-                                  overwritten) on each compile run; persists after
-                                  the session so CI runners can archive it.
+            arch:                 ``--offload-arch`` target; ``None`` lets hipcc auto-detect.
+            include_dirs:         Additional ``-I`` paths.
+            extra_flags:          Extra compiler flags appended verbatim before ``-o``.
+            timeout:              Wall-clock seconds before the compiler is killed (default 7200).
+            inactivity_timeout:   Seconds of silence before the process is killed (default 600).
+            log_path:             Build log path; merged stdout+stderr written here and to console.
+            remote_executor:      ``SshExecutor`` to run hipcc remotely; ``None`` for local.
 
         Returns:
             Path to the compiled binary (same as *output*).
@@ -230,17 +161,30 @@ class BinaryBuilder:
         Raises:
             ValueError:     Neither or both of *hipcc* / *rocm_dir* supplied.
             TimeoutError:   Compilation exceeded *timeout* or *inactivity_timeout*.
-            AssertionError: Compilation exited non-zero.  Propagates through
-                            pytest fixture machinery as test ``ERROR`` status.
+            AssertionError: Compilation exited non-zero (pytest reports ``ERROR`` status).
+            RuntimeError:   Remote compilation failed.
         """
+        if remote_executor is not None:
+            return self._remote_compile(
+                src=src,
+                output=output,
+                hipcc=hipcc,
+                rocm_dir=rocm_dir,
+                std=std,
+                opt=opt,
+                arch=arch,
+                include_dirs=include_dirs,
+                extra_flags=extra_flags,
+                timeout=timeout,
+                remote_executor=remote_executor,
+            )
+
         os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
         lock_path = output + ".lock"
 
         with open(lock_path, "w", encoding="utf-8") as lock_fh:
-            # Acquire exclusive lock with timeout — blocks other xdist workers
-            # until this worker either compiles the binary or confirms it is
-            # current.  A non-blocking poll loop avoids hanging indefinitely if
-            # the lock holder is killed by the OS while still running.
+            # Exclusive lock with non-blocking poll; blocks other xdist workers
+            # until this worker compiles or confirms the binary is current.
             lock_timeout = timeout if timeout is not None else 7200.0
             deadline = time.monotonic() + lock_timeout
             while True:
@@ -288,6 +232,68 @@ class BinaryBuilder:
     # ---------------------------------------------------------------------------
     # Internal helpers
     # ---------------------------------------------------------------------------
+
+    def _remote_compile(
+        self,
+        src: str,
+        output: str,
+        hipcc: str | None,
+        rocm_dir: str | None,
+        std: str,
+        opt: str,
+        arch: str | None,
+        include_dirs: list[str] | None,
+        extra_flags: list[str] | None,
+        timeout: float,
+        remote_executor,
+    ) -> str:
+        """Compile *src* on a remote host via *remote_executor*.
+
+        Uploads *src* and all *include_dirs* to the remote at the same absolute
+        path, creates the output directory on the remote, then runs hipcc via SSH.
+
+        Args:
+            src:             Source file path (relative or absolute).
+            output:          Destination binary path (same on remote).
+            hipcc:           Absolute hipcc path (mutually exclusive with *rocm_dir*).
+            rocm_dir:        ROCm install root; hipcc derived as ``{rocm_dir}/bin/hipcc``.
+            std:             C++ standard flag value.
+            opt:             Optimisation flag.
+            arch:            GPU architecture for ``--offload-arch``, or ``None``.
+            include_dirs:    Extra ``-I`` directories to upload and forward.
+            extra_flags:     Additional compiler flags.
+            timeout:         SSH command timeout in seconds.
+            remote_executor: ``SshExecutor`` instance for SSH/SFTP operations.
+
+        Returns:
+            *output* path (binary lives on the remote at that path).
+
+        Raises:
+            RuntimeError: If any remote SSH command fails.
+        """
+        src_abs = os.path.abspath(src)
+        output_abs = os.path.abspath(output)
+        out_dir = os.path.dirname(output_abs)
+        abs_include_dirs = [os.path.abspath(d) for d in (include_dirs or [])]
+
+        remote_executor.upload_tree(os.path.dirname(src_abs))
+        for inc in abs_include_dirs:
+            # Absolute paths so the remote sees them at the same location.
+            remote_executor.upload_tree(inc)
+
+        mk = remote_executor.run(f"mkdir -p {shlex.quote(out_dir)}")
+        if not mk.ok:
+            raise RuntimeError(f"BinaryBuilder remote mkdir failed (exit={mk.exit_code}):\n{mk.stderr}")
+
+        cmd = self._build_cmd(hipcc, rocm_dir, src_abs, output_abs, std, opt, arch, abs_include_dirs, extra_flags)
+        result = remote_executor.run(shlex.join(cmd), timeout=timeout)
+        if not result.ok:
+            raise AssertionError(
+                f"Compilation of '{src}' failed on remote host (exit={result.exit_code}).\n"
+                f"stdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+        logger.info("BinaryBuilder : remote compiled → %s", output_abs)
+        return output_abs
 
     @staticmethod
     def _stream_compile(

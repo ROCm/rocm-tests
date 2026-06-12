@@ -37,7 +37,8 @@ def test_precond_conjugate_gradient_single_gpu(
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
-        f"env LD_LIBRARY_PATH={ld}" f" {precond_conjugate_gradient_binary} --size 128 --ngpus 1"
+        f"env LD_LIBRARY_PATH={ld}" f" {precond_conjugate_gradient_binary} --size 128 --ngpus 1",
+        timeout=300.0,
     )
     assert result.ok, (
         f"precond_conjugate_gradient failed (exit={result.exit_code}):\n"
@@ -59,7 +60,8 @@ def test_precond_conjugate_gradient_multi_gpu(
     """Validate ILU(0) preconditioned CG with 2-GPU P2P transfers."""
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
-        f"env LD_LIBRARY_PATH={ld}" f" {precond_conjugate_gradient_binary} --size 128 --ngpus 2"
+        f"env LD_LIBRARY_PATH={ld}" f" {precond_conjugate_gradient_binary} --size 128 --ngpus 2",
+        timeout=600.0,
     )
     assert result.ok, (
         f"precond_conjugate_gradient multi-GPU failed (exit={result.exit_code}):\n"

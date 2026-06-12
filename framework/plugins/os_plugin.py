@@ -62,7 +62,7 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
         if os_val == "both":
             return  # explicitly cross-platform — never skip
 
-        if os_val == "linux" and _PLATFORM != "linux":
+        if os_val == "linux" and _PLATFORM not in ("linux", "wsl"):
             pytest.skip(
                 f"os.linux test skipped on platform={_PLATFORM!r}. " "Run on a Linux host to execute this test."
             )
@@ -76,55 +76,18 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 
 @pytest.fixture(scope="session")
 def os_adapter():
-    """Return the platform-appropriate OS adapter for this host.
+    """Return the platform-appropriate OS adapter (``LinuxOsAdapter`` or ``WindowsOsAdapter``).
 
-    Returns ``LinuxOsAdapter`` on Linux or ``WindowsOsAdapter`` on Windows.
-    The adapter exposes:
-        - ``list_gpu_device_paths()``   — ``/dev/dri/renderD*`` (Linux) or BDF strings (Windows).
-        - ``is_module_loaded(mod)``     — ``lsmod`` check (Linux, no sudo) / True (Windows).
-        - ``load_kernel_module(mod)``   — ``modprobe`` (Linux) / no-op (Windows).
-        - ``unload_kernel_module(mod)`` — ``modprobe -r`` (Linux) / no-op (Windows).
-        - ``get_platform_name()``       — ``"linux"`` or ``"windows"``.
-
-    Use this fixture when test logic needs platform-specific paths or operations
-    that differ between Linux and Windows. Prefer ``@pytest.mark.os.linux`` /
-    ``@pytest.mark.os.windows`` markers for simple skip-on-wrong-OS cases.
+    Use for platform-specific GPU device paths or kernel module operations.
+    For simple OS-skip logic prefer ``@pytest.mark.os.linux`` markers instead.
 
     Returns:
         ``AbstractOsAdapter`` concrete instance for the running host.
-
-    Example::
-
-        @pytest.mark.hw.cpu_only
-        @pytest.mark.ci.pr
-        @pytest.mark.layer.driver
-        @pytest.mark.runtime.fast
-        @pytest.mark.os.linux
-        def test_amdgpu_driver_loaded(os_adapter):
-            assert os_adapter.is_module_loaded("amdgpu"), \
-                "amdgpu not loaded — run: sudo modprobe amdgpu"
-
-        @pytest.mark.hw.cpu_only
-        @pytest.mark.ci.pr
-        @pytest.mark.layer.driver
-        @pytest.mark.runtime.fast
-        def test_gpu_device_paths(os_adapter, platform_name):
-            paths = os_adapter.list_gpu_device_paths()
-            assert paths, f"No GPU device paths found on {platform_name}"
     """
     return os_adapter_factory()
 
 
 @pytest.fixture(scope="session")
 def platform_name(os_adapter) -> str:
-    """Return a string identifying the current host platform.
-
-    Returns:
-        ``"linux"`` or ``"windows"``.
-
-    Example::
-
-        def test_platform_detected(platform_name):
-            assert platform_name in ("linux", "windows")
-    """
+    """Return a string identifying the current host platform (``"linux"`` or ``"windows"``)."""
     return os_adapter.get_platform_name()  # type: ignore[no-any-return]

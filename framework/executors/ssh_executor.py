@@ -23,8 +23,11 @@ Usage (via ``NodePool`` / ``target_executor`` — not instantiated directly in t
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import pathlib
+import shlex
 import time
 
 from framework.common.helpers import ExecutionResult
@@ -128,9 +131,12 @@ class SshExecutor(AbstractExecutor):
         ):
             return self._client
 
-        logger.info("SshExecutor: opening connection to %s", self.session_key)
+        logger.info("SshExecutor: opening connection host=%s", self.session_key)
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.load_system_host_keys()  # /etc/ssh/ssh_known_hosts
+        with contextlib.suppress(FileNotFoundError):
+            client.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
         connect_kwargs: dict = {
             "hostname": self.host,
@@ -159,6 +165,36 @@ class SshExecutor(AbstractExecutor):
             self._client.close()
             self._client = None
             logger.debug("SshExecutor: closed connection to %s", self.session_key)
+
+    def upload_tree(self, local_dir: str) -> None:
+        """Upload a local directory tree to the remote host at the same absolute path.
+
+        Creates parent directories on the remote via SSH ``mkdir -p``, then
+        transfers files via SFTP.
+
+        Args:
+            local_dir: Absolute local path to upload (mirrored at same path on remote).
+
+        Raises:
+            RuntimeError: If the SFTP transfer fails.
+        """
+        local_root = pathlib.Path(local_dir).resolve()
+        files = [f for f in local_root.rglob("*") if f.is_file()]
+        if not files:
+            return
+
+        dirs = sorted({str(f.parent) for f in files})
+        self.run(shlex.join(["mkdir", "-p", *dirs]))
+
+        sftp = self._connect().open_sftp()
+        try:
+            for f in files:
+                sftp.put(str(f), str(f))
+                logger.debug("SshExecutor.upload_tree: %s → %s:%s", f, self.host, f)
+        except Exception as exc:
+            raise RuntimeError(f"SshExecutor.upload_tree: SFTP upload to {self.host} failed: {exc}") from exc
+        finally:
+            sftp.close()
 
     def __enter__(self) -> SshExecutor:
         return self
@@ -202,6 +238,17 @@ class SshExecutor(AbstractExecutor):
         """
         effective_timeout = timeout if timeout is not None else 300.0
 
+        def _kill_remote(client: paramiko.SSHClient, pid: int) -> None:
+            """Send SIGTERM then SIGKILL to *pid* on the remote host."""
+            kill_cmd = f"kill -TERM {pid} 2>/dev/null; sleep 1; kill -KILL {pid} 2>/dev/null || true"
+            with contextlib.suppress(Exception):
+                client.exec_command(kill_cmd, timeout=5.0)  # nosec B601 — intentional SSH kill command
+            logger.warning(
+                "SshExecutor[%s] killed orphaned remote PID %d after timeout",
+                self.session_key,
+                pid,
+            )
+
         def _inner_run(cmd: str, t: float | None) -> ExecutionResult:
             t_eff = t if t is not None else effective_timeout
             effective_env: dict = {}
@@ -212,19 +259,52 @@ class SshExecutor(AbstractExecutor):
 
             full_cmd = cmd
             if effective_env:
-                assignments = " ".join(f"{k}={v}" for k, v in effective_env.items())
-                full_cmd = f"export {assignments}; {cmd}"
+                env_pairs = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in effective_env.items())
+                full_cmd = f"env {env_pairs} {cmd}"
+
+            # Wrap in a subshell that emits its PID on stderr before exec-ing the
+            # real command.  The PID is captured immediately so we can kill the
+            # remote process on timeout instead of leaving it as an orphan.
+            pid_marker = "__SSH_PID__"
+            wrapped_cmd = f"bash -c 'echo {pid_marker}$$ >&2; exec {full_cmd}'"
 
             client = self._connect()
             logger.debug("SshExecutor[%s] running: %s", self.session_key, full_cmd)
 
+            remote_pid: int | None = None
             t0 = time.monotonic()
-            _, stdout_ch, stderr_ch = client.exec_command(full_cmd, timeout=t_eff)
+            _, stdout_ch, stderr_ch = client.exec_command(  # nosec B601 — SSH executor by design
+                wrapped_cmd, timeout=t_eff
+            )
             stdout_ch.channel.settimeout(t_eff)
 
-            raw_stdout = stdout_ch.read().decode("utf-8", errors="replace")
-            raw_stderr = stderr_ch.read().decode("utf-8", errors="replace")
-            exit_code = stdout_ch.channel.recv_exit_status()
+            # Read the PID line from stderr first (short timeout; fast in practice).
+            stderr_ch.channel.settimeout(5.0)
+            pid_line_buf: list[str] = []
+            with contextlib.suppress(Exception):
+                for raw_line in stderr_ch:
+                    line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, bytes) else raw_line
+                    if line.startswith(pid_marker):
+                        with contextlib.suppress(ValueError):
+                            remote_pid = int(line[len(pid_marker) :].strip())
+                        break
+                    pid_line_buf.append(line)
+            stderr_ch.channel.settimeout(t_eff)
+
+            try:
+                raw_stdout = stdout_ch.read().decode("utf-8", errors="replace")
+                raw_stderr = "".join(pid_line_buf) + stderr_ch.read().decode("utf-8", errors="replace")
+                exit_code = stdout_ch.channel.recv_exit_status()
+            except Exception:
+                # Kill the remote process so it cannot hold the GPU after the
+                # NodeSlot is released back to the pool (cascading timeouts).
+                if remote_pid is not None:
+                    _kill_remote(client, remote_pid)
+                else:
+                    logger.debug("SshExecutor[%s] timeout with unknown remote PID", self.session_key)
+                stdout_ch.channel.close()
+                raise
+
             duration = time.monotonic() - t0
 
             logger.debug("SshExecutor[%s] rc=%d duration=%.3fs", self.session_key, exit_code, duration)

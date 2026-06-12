@@ -8,3 +8,8 @@ exclude_dirs:
   - build
   - dist
   - node_modules
+
+# B101 (assert_used) is the standard assertion style in pytest test functions.
+# Suppressing it globally for the tests/ subtree avoids noise on every test file.
+skips:
+  - B101

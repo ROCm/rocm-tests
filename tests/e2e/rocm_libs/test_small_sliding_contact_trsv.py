@@ -2,25 +2,14 @@
 # SPDX-License-Identifier: MIT
 
 """
-test_small_sliding_contact_trsv.py -- rocBLAS strided-batched TRSV big-batch path.
+test_small_sliding_contact_trsv.py -- rocBLAS strided-batched TRSV big-batch smoke.
 
-Validates the rocBLAS strided-batched triangular solve (STRSV) for a contact
-mechanics workload: 100,000 independent 3x3 triangular systems solved in parallel.
-Exercises the rocBLAS big-batch TRSV kernel path (N < 128, batch_count > 16*N).
-Validates against CPU reference solution with tolerance 1e-4. Also verifies a
-physics identity check (K^-1 * K * gap = gap).
-
-Binary compiled via CMake from:
-    tests/e2e/rocm_libs/src/small_sliding_contact.cpp
-
-Smoke args: N=3, BATCH_COUNT=100000 (< 30 s)
-
-runtime.fast is declared explicitly.
+Validates 100,000 independent 3x3 triangular systems via rocBLAS STRSV (smoke: N=3, batch=100K).
+Binary: tests/e2e/rocm_libs/src/small_sliding_contact.cpp
+Checks: "PASSED" in stdout.
 """
 
 import pytest
-
-from tests.e2e.rocm_libs.conftest import check_rocblas_library
 
 
 @pytest.mark.runtime.fast
@@ -28,12 +17,11 @@ def test_small_sliding_contact_trsv(
     target_executor,
     ld_path: dict,
     small_sliding_contact_binary: str,
-    rock_dir: str,
+    rocblas_library_guard,
 ):
     """Validate rocBLAS big-batch STRSV for contact mechanics (N=3, batch=100K)."""
-    check_rocblas_library(rock_dir)
     ld = ld_path["LD_LIBRARY_PATH"]
-    result = target_executor.run(f"env LD_LIBRARY_PATH={ld} {small_sliding_contact_binary} 3 100000")
+    result = target_executor.run(f"env LD_LIBRARY_PATH={ld} {small_sliding_contact_binary} 3 100000", timeout=300.0)
     assert result.ok, (
         f"small_sliding_contact_trsv failed (exit={result.exit_code}):\n"
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"

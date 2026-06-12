@@ -731,8 +731,8 @@ def _write_session_summary(session: pytest.Session) -> None:
 
         with _pathlib.Path(session_log).open("a", encoding="utf-8") as _f:
             _f.write(line)
-    except Exception:  # pylint: disable=broad-except
-        pass  # session summary is best-effort — never crash the process
+    except Exception:  # pylint: disable=broad-except  # nosec B110
+        pass  # session summary is best-effort — never crash the test process
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -1014,26 +1014,12 @@ def _acquire_and_yield(
 class _ManualGpuAllocator:
     """Test-controlled GPU allocator that acquires specific GPU indices on demand.
 
-    Unlike ``target_executor``, which acquires GPUs automatically based on
-    markers, ``_ManualGpuAllocator`` lets the test author choose exactly which
-    GPU to use and when to release it.  This is the backing object for the
-    ``manual_gpu_allocator`` fixture.
+    Unlike ``target_executor`` (automatic NUMA best-fit), this lets the test author
+    choose which GPU to use and when to release it.  Backed by the same ``NodePool``
+    and ``GpuFileLock`` infrastructure — cross-process exclusivity is maintained.
+    Leaked acquisitions are detected in teardown and surfaced as ``pytest.fail``.
 
-    Intended use cases:
-        - Benchmark pinning (always run on the same GPU index for reproducibility).
-        - Per-GPU diagnostics alongside a collective that already holds a GPU set.
-        - External / ISV workflows that manage GPU assignment themselves.
-
-    The fixture detects leaked acquisitions in teardown and calls ``pytest.fail``
-    so CI surfaces them as test failures rather than silent resource leaks.
-
-    Attributes:
-        _pool:    Session-scoped ``NodePool``, or ``None`` when ``--no-gpu``.
-        _no_gpu:  When ``True``, all operations return ``DryRunExecutor`` stubs.
-        _config:  Active pytest config (for option reads).
-        _fc:      ``FrameworkConfig`` (for log-path helpers).
-        _request: pytest ``FixtureRequest`` (for test node ID).
-        _held:    Live acquisitions not yet released by the test.
+    Intended use cases: benchmark pinning, per-GPU diagnostics, ISV workflows.
     """
 
     def __init__(self, node_pool, no_gpu: bool, config, framework_config, request) -> None:
@@ -1206,51 +1192,40 @@ def node_pool(request) -> NodePool | None:
     return getattr(request.config, "_node_pool", None)
 
 
+@pytest.fixture(scope="session")
+def cmake_executor(node_pool: NodePool | None):
+    """Session-scoped ``SshExecutor`` for the first remote node, or ``None`` in local mode.
+
+    Build fixtures pass this to ``cmake_build()`` so cmake runs on the remote host.
+    Falls back to ``None`` (local ``subprocess.run()``) when ``--remote-node`` is absent.
+    """
+    if node_pool is None:
+        return None
+    if not node_pool._ssh_sessions:
+        return None
+    for spec in node_pool.node_specs:
+        ssh = node_pool._ssh_sessions.get(spec.label)
+        if ssh is not None:
+            return ssh
+    return None
+
+
 @pytest.fixture
 def manual_gpu_allocator(request, framework_config, node_pool):
     """Explicit per-index GPU allocator fixture for benchmark and diagnostic tests.
 
-    Returns a ``_ManualGpuAllocator`` that lets the test author acquire specific
-    GPU indices by number, run commands on them, and release them explicitly.
-    This is an alternative to ``target_executor``'s automatic NUMA best-fit
-    selection — use it when the test's correctness depends on which exact GPU
-    is used (e.g., benchmark pinning, per-GPU diagnostics, ISV workflows).
+    Use instead of ``target_executor`` when the test must control which exact GPU
+    index is used (benchmark pinning, per-GPU diagnostics, ISV workflows).
 
-    The fixture integrates with the same ``NodePool`` and ``GpuFileLock``
-    infrastructure as ``target_executor`` — cross-process exclusivity is fully
-    maintained.  Tests using both fixtures in the same function are safe as long
-    as they request different GPU indices from each fixture.
+    In ``--no-gpu`` mode all ``acquire()`` calls return a ``DryRunExecutor`` group.
+    Teardown detects leaked acquisitions and surfaces them as ``pytest.fail``.
 
-    In ``--no-gpu`` mode all ``acquire()`` calls return a ``DryRunExecutor``
-    group (no hardware, no skip) so test logic can be validated in CI.
+    Usage (context manager)::
 
-    Teardown detects leaked acquisitions: if the test finishes without calling
-    ``.release()`` on every acquired group, the fixture calls ``pytest.fail``
-    and releases the slots on behalf of the test.
-
-    Usage — context manager (recommended)::
-
-        @pytest.mark.hw.gpu
-        @pytest.mark.ci.nightly
-        @pytest.mark.layer.runtime
-        @pytest.mark.runtime.fast
         def test_benchmark_gpu0(manual_gpu_allocator):
             with manual_gpu_allocator.pin(gpu_index=0) as executor:
                 result = executor.run("./benchmark --warmup 3 --iterations 10")
                 assert result.ok
-
-    Usage — explicit acquire / release::
-
-        def test_two_gpus_explicit(manual_gpu_allocator):
-            ex0 = manual_gpu_allocator.acquire(0)
-            ex1 = manual_gpu_allocator.acquire(1)
-            try:
-                r0 = ex0.run("rocm-smi --showmeminfo vram")
-                r1 = ex1.run("rocm-smi --showmeminfo vram")
-                assert r0.ok and r1.ok
-            finally:
-                manual_gpu_allocator.release(ex0)
-                manual_gpu_allocator.release(ex1)
 
     Yields:
         ``_ManualGpuAllocator`` with ``.acquire(N)``, ``.release(group)``,

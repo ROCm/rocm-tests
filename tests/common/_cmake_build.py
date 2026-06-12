@@ -3,39 +3,17 @@
 
 """Shared cmake configure+build helper for all e2e test areas.
 
-Usage
------
-Import ``cmake_build`` and ``find_rocm_clangpp`` in a conftest.py::
-
-    from tests.e2e._cmake_build import cmake_build, find_rocm_clangpp
-
-Design
-------
-Compiler enforcement is **not** centralised here — each conftest owns its
-policy (``pytest.fail``, ``RuntimeError``, or optional guard) because the
-required vs. optional distinction varies per area:
-
-- ``rocprim`` — compiler is mandatory
-  (``pytest.fail`` before cmake runs).
-- ``hwq_heuristic``, ``hip_runtime`` core — compiler is optional
-  (CMakeLists.txt falls back to hipcc if clang++ is absent).
-- ``hipblaslt`` cmake — compiler is mandatory at cmake configure time
-  (``find_program`` fails silently, then cmake errors on HIP language init).
-
-This helper guarantees only what must be universal:
-
-- ``-DROCM_PATH`` and ``-DCMAKE_PREFIX_PATH`` are **always** passed.
-- ``ROCM_PATH`` is **always** set in the subprocess environment.
-- ``cmake --build --parallel`` is run after configure.
-
-All per-area compiler decisions (which flag to pass, whether to fail) stay in
-the conftest that calls this helper.
+Compiler enforcement is **not** centralised here — each conftest owns its policy
+because the required vs. optional distinction varies per area.  This helper only
+guarantees that ``-DROCM_PATH``, ``-DCMAKE_PREFIX_PATH``, and ``ROCM_PATH`` (env)
+are always passed, and that ``cmake --build --parallel`` follows configure.
 """
 
 from __future__ import annotations
 
 import os
 import pathlib
+import shlex
 import subprocess
 
 
@@ -73,51 +51,35 @@ def cmake_build(
     compiler_args: list[str] | None = None,
     extra_cmake_args: list[str] | None = None,
     label: str | None = None,
+    remote_executor=None,
+    sync_dirs: list[str] | None = None,
 ) -> pathlib.Path:
     """Configure and build a cmake project against a TheRock / ROCm install.
 
-    Always passes ``-DROCM_PATH`` and ``-DCMAKE_PREFIX_PATH`` so that
-    ``find_package(hip CONFIG REQUIRED)`` can locate ``hipConfig.cmake``
-    under the ROCm install root (``lib/cmake/hip/``).
-
-    The caller is responsible for:
-
-    - Resolving and validating the compiler via :func:`find_rocm_clangpp`
-      before calling this function.
-    - Deciding whether a missing compiler is a ``pytest.fail``,
-      ``RuntimeError``, or a no-op (optional).
-    - Passing the resolved compiler via ``compiler_args``, e.g.
-      ``["-DCMAKE_CXX_COMPILER=/path/to/clang++"]``.
+    Always passes ``-DROCM_PATH`` and ``-DCMAKE_PREFIX_PATH``; the caller is
+    responsible for resolving the compiler and deciding its enforcement policy.
 
     Args:
-        src:               Path to the directory containing ``CMakeLists.txt``
-                           (relative to repo root or absolute).
+        src:               Path to the directory containing ``CMakeLists.txt``.
         build_dir:         Path where cmake should write build artefacts.
-        rocm_path:         Resolved TheRock / ROCm install root
-                           (value of ``rock_dir`` fixture, already ``realpath``-ed).
-        gpu_arch:          GPU architecture string (e.g. ``"gfx942"``).
-                           Passed as ``-D{gpu_arch_var}={gpu_arch}`` when set.
-        gpu_arch_var:      CMake variable name for the architecture (default
-                           ``"GPU_ARCH"``; use ``"AMDGPU_TARGETS"`` for rocprim
-                           until its CMakeLists.txt is standardised).
-        compiler_args:     Extra ``-DCMAKE_*_COMPILER=…`` flags to inject.
-                           The caller determines which compilers to pass and
-                           whether they are required.
-        extra_cmake_args:  Any additional ``-D`` or other cmake flags.
-        label:             Short name used in assertion messages (defaults to
-                           the basename of *src*).
+        rocm_path:         Resolved TheRock / ROCm install root.
+        gpu_arch:          Architecture string passed as ``-D{gpu_arch_var}={gpu_arch}`` when set.
+        gpu_arch_var:      CMake variable for the architecture (default ``"GPU_ARCH"``).
+        compiler_args:     ``-DCMAKE_*_COMPILER=…`` flags; caller determines policy.
+        extra_cmake_args:  Additional cmake ``-D`` flags.
+        label:             Short name for assertion messages (defaults to basename of *src*).
+        remote_executor:   ``SshExecutor`` to run cmake on a remote host; ``None`` for local.
+        sync_dirs:         Local directories to SFTP to the remote host before cmake runs.
 
     Returns:
         ``pathlib.Path`` pointing to the cmake build directory.
 
     Raises:
-        AssertionError: If cmake configure or build exits non-zero.
+        AssertionError: If cmake exits non-zero in local mode.
+        RuntimeError:   If cmake fails on the remote host.
     """
     _label = label or pathlib.Path(src).name
-    build_path = pathlib.Path(build_dir)
-    build_path.mkdir(parents=True, exist_ok=True)
-
-    cmake_env = {**os.environ, "ROCM_PATH": rocm_path}
+    build_path = pathlib.Path(os.path.abspath(build_dir))
 
     configure_cmd: list[str] = [
         "cmake",
@@ -135,11 +97,41 @@ def cmake_build(
     if extra_cmake_args:
         configure_cmd.extend(extra_cmake_args)
 
-    r = subprocess.run(configure_cmd, capture_output=True, text=True, env=cmake_env)
-    assert r.returncode == 0, f"{_label} cmake configure failed:\n{r.stdout}\n{r.stderr}"
-
     build_cmd = ["cmake", "--build", str(build_path), "--parallel"]
-    r = subprocess.run(build_cmd, capture_output=True, text=True, env=cmake_env)
-    assert r.returncode == 0, f"{_label} cmake build failed:\n{r.stdout}\n{r.stderr}"
+
+    if remote_executor is not None:
+        # Remote path: SFTP source dirs to remote, then run cmake via SSH.
+        for d in sync_dirs or []:
+            remote_executor.upload_tree(d)
+
+        mk = remote_executor.run(f"mkdir -p {shlex.quote(str(build_path))}")
+        if not mk.ok:
+            raise RuntimeError(f"{_label} remote mkdir failed (exit={mk.exit_code}):\n{mk.stderr}")
+
+        cfg = remote_executor.run(
+            shlex.join(configure_cmd),
+            timeout=600.0,
+            env_overrides={"ROCM_PATH": rocm_path},
+        )
+        if not cfg.ok:
+            raise RuntimeError(
+                f"{_label} cmake configure failed on remote host (exit={cfg.exit_code}):\n"
+                f"stdout: {cfg.stdout}\nstderr: {cfg.stderr}"
+            )
+
+        bld = remote_executor.run(shlex.join(build_cmd), timeout=900.0)
+        if not bld.ok:
+            raise RuntimeError(
+                f"{_label} cmake build failed on remote host (exit={bld.exit_code}):\n"
+                f"stdout: {bld.stdout}\nstderr: {bld.stderr}"
+            )
+    else:
+        # Local path.
+        build_path.mkdir(parents=True, exist_ok=True)
+        cmake_env = {**os.environ, "ROCM_PATH": rocm_path}
+        r = subprocess.run(configure_cmd, capture_output=True, text=True, env=cmake_env)
+        assert r.returncode == 0, f"{_label} cmake configure failed:\n{r.stdout}\n{r.stderr}"
+        r = subprocess.run(build_cmd, capture_output=True, text=True, env=cmake_env)
+        assert r.returncode == 0, f"{_label} cmake build failed:\n{r.stdout}\n{r.stderr}"
 
     return build_path

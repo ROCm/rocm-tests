@@ -1,27 +1,15 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 """
-test_hipblaslt_heuristic_workspace.py -- hipBLASLt workspace constraint heuristic validation.
+test_hipblaslt_heuristic_workspace.py -- hipBLASLt heuristic workspace constraint.
 
-Verifies that hipblasLtMatmulAlgoGetHeuristic respects the workspace size limit
-passed by the caller. Queries 128 algorithm candidates for M=2304, N=4096, K=768
-with a 4 MB workspace budget and validates no candidate returns a workspace
-requirement exceeding that budget. Catches the class of defect where the heuristic
-over-allocates workspace.
-
-Binary compiled via CMake from:
-    tests/e2e/hipblaslt/src/hipblaslt_heuristic_workspace/hipblaslt_heuristic_workspace.hip
-
-This test exercises the hipBLASLt heuristic API integration path (not a full
-GEMM workload), so e2e.stack is inherited from the directory profile — the
-auto-injected profile is retained; override only if reclassifying this test.
-
-runtime.fast is declared explicitly.
+Verifies hipblasLtMatmulAlgoGetHeuristic respects a 4 MB workspace budget
+(M=2304, N=4096, K=768, 128 candidates).
+Binary: tests/e2e/hipblaslt/src/hipblaslt_heuristic_workspace/hipblaslt_heuristic_workspace.hip
+Checks: no "FAIL" in stdout, no fatal library errors in stderr.
 """
 
 from __future__ import annotations
-
-import pathlib
 
 import pytest
 
@@ -40,35 +28,14 @@ _FATAL_STDERR_PATTERNS = [
 def test_hipblaslt_heuristic_workspace_constraint(
     target_executor,
     ld_path: dict,
-    arch_lib_path,
+    tensile_lib_path: str,
     hipblaslt_heuristic_workspace_binary: str,
-    rock_dir: str,
-    gpu_arch: str | None,
 ):
     """Validate hipBLASLt heuristic workspace constraint is respected."""
     ld = ld_path["LD_LIBRARY_PATH"]
-    library_base = pathlib.Path(rock_dir) / "lib" / "hipblaslt" / "library"
-    # hipBLASLt lays out its tensile library files under a per-arch subdirectory:
-    #   <rock_dir>/lib/hipblaslt/library/<arch>/TensileLibrary_lazy_<arch>.dat
-    #   <rock_dir>/lib/hipblaslt/library/<arch>/Kernels.so-000-<arch>.hsaco
-    # arch_lib_path() appends /<arch> when --gpu-arch is supplied, or returns
-    # the base path unchanged when the option is absent.
-    tensile_lib = arch_lib_path(library_base)
-
-    # Assertive preflight: Tensile kernel blobs must be present before running.
-    # A missing file is a prerequisite failure — fail loudly so CI surfaces the
-    # environment defect rather than an opaque error from inside the binary.
-    if gpu_arch:
-        tensile_dat = pathlib.Path(tensile_lib) / f"TensileLibrary_lazy_{gpu_arch}.dat"
-        if not tensile_dat.exists():
-            pytest.fail(
-                f"hipBLASLt Tensile kernels missing for arch {gpu_arch!r}: {tensile_dat}\n"
-                "Install the BLAS artifact package (pass --blas to install_rocm_from_artifacts.py)."
-            )
-
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld}"
-        f" HIPBLASLT_TENSILE_LIBPATH={tensile_lib}"
+        f" HIPBLASLT_TENSILE_LIBPATH={tensile_lib_path}"
         f" {hipblaslt_heuristic_workspace_binary}"
     )
     assert result.ok, (
