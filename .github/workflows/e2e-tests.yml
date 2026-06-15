@@ -225,10 +225,11 @@ jobs:
               # or not a "skipped" column is present in the report.
               header_idx = None
               col_names = []
+              _result_cols = {"passed", "failed", "skipped", "error"}
               for i, line in enumerate(lines):
                   if "|" in line:
                       parts = [c.strip().lower() for c in line.split("|")]
-                      if "passed" in parts and "failed" in parts:
+                      if _result_cols & set(parts):
                           header_idx = i
                           col_names = parts
                           break
