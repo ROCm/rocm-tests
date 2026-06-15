@@ -1,0 +1,11 @@
+# Global owners — all root-level files
+* @ROCm/rocm-tests-admin
+
+# Test and framework source 
+/tests/      @ROCm/rocm-tests-write
+/framework/  @mparamas-amd @madkasul
+
+# CI workflows, build, and scan tooling
+/.github/     @ROCm/rocm-tests-write
+/build_tools/ @ROCm/rocm-tests-write
+/scan_tools/  @ROCm/rocm-tests-write

@@ -1,0 +1,55 @@
+# Python bytecode
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Mypy / type-checker caches
+.mypy_cache/
+.ruff_cache/
+
+# Build outputs and runtime data
+build/
+output/
+dist/
+*.egg-info/
+*.whl
+
+# Legacy per-component build dirs (if any still exist from old layout)
+tests/e2e/*/build/
+
+# Compiled native files
+*.o
+*.so
+*.a
+*.dylib
+*.dll
+*.exe
+*.out
+
+# Fleet configuration (real host.yaml files must not be committed)
+host.yaml
+*.host.yaml
+
+# Allure local run outputs
+allure-results/
+.allure/
+
+# IDE / local tooling
+.claude/settings.local.json
+.idea/
+.vscode/
+*.swp
+*.swo

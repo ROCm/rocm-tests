@@ -1,0 +1,15 @@
+# bandit configuration for TheRock
+# Reference: https://bandit.readthedocs.io/en/latest/config.html
+
+exclude_dirs:
+  - .git
+  - .venv
+  - venv
+  - build
+  - dist
+  - node_modules
+
+# B101 (assert_used) is the standard assertion style in pytest test functions.
+# Suppressing it globally for the tests/ subtree avoids noise on every test file.
+skips:
+  - B101

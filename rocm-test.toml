@@ -1,0 +1,76 @@
+# rocm-test.toml — Framework runtime configuration.
+#
+# Priority cascade (lowest → highest):
+#   1. Code defaults (hardcoded in framework/config/loader.py)
+#   2. This file (rocm-test.toml in CWD, or path from --rocm-config)
+#   3. Environment variables: ROCM_TEST_<SECTION>_<KEY> (e.g. ROCM_TEST_GPU_MAX_TEMP)
+#   4. pytest CLI flags passed via --rocm-config or --rocm-<key>
+#
+# CI usage: set ROCM_TEST_* env vars / GitHub Secrets — this file is ignored
+#           for keys that have a corresponding env var set.
+# Standalone: edit values here, or export env vars before running pytest.
+# Secrets (webhook URLs, API tokens): use env vars ONLY — never commit here.
+
+[framework]
+# Verbosity: "quiet", "normal", "verbose"
+log_level    = "normal"
+# Unique run ID prefix (appended with UTC timestamp at runtime)
+run_id_prefix = "rocm-test"
+# Directory for per-test artifact capture (relative to repo root)
+artifact_dir  = "output/artifacts/"
+# Aggregate session log — overwritten at the start of each pytest session
+session_log   = "output/artifacts/session.log"
+
+[gpu]
+# GPU detection strategy: "auto", "kfd" (Linux KFD), "amd-smi" (Windows/fallback)
+detection     = "auto"
+# Health check thresholds
+max_temp_celsius  = 90
+max_ecc_errors    = 0
+min_vram_free_mb  = 512
+
+# --gpu-health-metrics: point-in-time amd-smi snapshot BEFORE and AFTER each test.
+# Enabled by passing --gpu-health-metrics [METRICS] on the CLI.
+# Valid metric names: temp, vram, util, ecc, clock
+# Override metric list via CLI: --gpu-health-metrics temp,vram,ecc
+# Override via env:             ROCM_TEST_GPU_HEALTH_METRICS=temp,vram
+health_metrics = ["temp", "vram", "util", "ecc", "clock"]
+
+# --monitor-gpu: continuous background GPU poller while the test runs.
+# Samples are written to output/artifacts/executor-logs/<test>_gpu_monitor.log.
+# Override via env: ROCM_TEST_GPU_MONITOR_METRICS / _INTERVAL_SECS / _DURATION_SECS
+monitor_metrics       = ["temp", "vram", "util", "ecc", "clock"]
+monitor_interval_secs = 15.0   # seconds between amd-smi polls
+monitor_duration_secs = 0.0    # 0 = stop when test ends; >0 = additional time cap
+
+[results]
+# Results upload strategy: "auto", "local", "disabled"
+# AUTO: tries local write first, then disabled — never blocks offline runs.
+upload_mode = "auto"
+# Local results directory
+local_dir   = "output/results/"
+# SQLite index file for cross-run search
+sqlite_db   = "output/rocm_test.db"
+
+[baselines]
+# Global regression threshold in % (overridden per-benchmark in baselines/*.yaml)
+regression_pct = 5.0
+# Directory containing per-arch YAML baseline files
+baseline_dir   = "tests/e2e/performance/baselines/"
+
+[reporting]
+# Allure results directory — set via rocm-test.toml or ROCM_TEST_REPORTING_ALLURE_RESULTS_DIR
+allure_results_dir = "output/artifacts/allure-results/"
+# Number of historical runs to keep for trend reports
+history_depth = 5
+
+[therock]
+# Path to a TheRock/ROCm installation (provides bin/hipcc, lib/libamdhip64, etc.).
+# Override priority (highest → lowest):
+#   CLI flag:  --rock-dir=/path/to/therock_build
+#   Env vars:  ROCK_DIR=/path/to/therock_build
+#              ROCM_TEST_THEROCK_ROCK_DIR=/path/to/therock_build
+#   This file: rock_dir = "/path/to/therock_build"
+# Leave empty here; set at runtime via CLI or env.
+rock_dir  = ""
+build_dir = "output/test-binaries/"

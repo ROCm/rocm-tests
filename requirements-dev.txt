@@ -1,0 +1,25 @@
+# requirements-dev.txt — rocm-test-v2 development and CI dependencies.
+#
+# Extends runtime deps. Install with:
+#   pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+# Test infrastructure
+pytest-cov       # Coverage reporting
+
+# Code quality
+ruff>=0.4        # Fast linter + isort
+black>=24        # Code formatter
+mypy>=1.9        # Type checker
+pylint>=3        # Deep static analysis
+pre-commit>=3    # Git hook manager
+
+# Security
+bandit[toml]     # SAST scanning
+pip-audit        # CVE scanning
+
+# Documentation (docstring-based via mkdocstrings)
+mkdocs>=1.5
+mkdocstrings[python]>=0.24
+mkdocs-material>=9

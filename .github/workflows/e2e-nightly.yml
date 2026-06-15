@@ -1,0 +1,252 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# e2e-nightly workflow — top-level trigger for ROCm end-to-end nightly tests.
+#
+# Layer structure (2-layer):
+#   [Setup test matrix]
+#        └── [E2E Nightly — <run_id>]            (matrix — one cell per platform)
+#                ├─ e2e: linux-gfx94x             (green — target_available=true)
+#                └─ e2e: linux-gfx110X            (grey/skipped — target_available=false)
+#        └── [Nightly Results — <run_id> — All Platforms]
+#
+# Each matrix cell calls e2e-tests.yml which contains a single job named
+# "e2e: <platform>". When target_available=false the job-level if: guard
+# skips the job entirely — no runner is consumed and the cell shows grey.
+#
+# Inputs:
+#   source_repo     — ROCm/TheRock or ROCm/rockrel
+#   artifact_source — behaviour depends on source_repo:
+#       ROCm/TheRock  : "latest-release" (full artifact tarball, default)
+#                       OR a release tag (e.g. "nightly-2026-05-25")
+#       ROCm/rockrel  : workflow filename (e.g. "build.yml"); setup_matrix
+#                       resolves the latest completed run_id via the GitHub API
+#   include_dev     — rockrel path only: also download _dev archives
+#                     (headers, CMake configs, static libs).
+
+name: ROCm Nightly Tests
+
+on:
+  schedule:
+    - cron: '0 11 * * *'   # 11:00 AM UTC daily
+    - cron: '30 17 * * *'  # 05:30 PM UTC daily
+
+  workflow_call:
+    inputs:
+      source_repo:
+        description: 'Source repository: ROCm/TheRock or ROCm/rockrel'
+        type: string
+        default: ROCm/rockrel
+      artifact_source:
+        description: >
+          ROCm/TheRock: "latest-release" OR a release tag.
+          ROCm/rockrel: workflow filename (e.g. "multi_arch_release.yml") whose latest
+          run_id is resolved automatically.
+        type: string
+        default: multi_arch_release.yml
+      include_dev:
+        description: >
+          For ROCm/rockrel: Download _dev artifacts needed for test binary compilation.
+        type: boolean
+        default: true
+
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: 'GitHub repo to pull artifacts from'
+        type: choice
+        options:
+          - ROCm/rockrel
+          - ROCm/TheRock
+        default: ROCm/rockrel
+
+      artifact_source:
+        description: >
+          ROCm/TheRock: "latest-release" OR a release tag.
+          ROCm/rockrel: workflow filename (e.g. "multi_arch_release.yml") whose latest
+          run_id is resolved automatically.
+        type: string
+        default: 'multi_arch_release.yml'
+
+      include_dev:
+        description: >
+          For ROCm/rockrel: Download _dev artifacts needed for test binary compilation.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  setup_matrix:
+    name: Setup test matrix
+    runs-on: ubuntu-latest
+    outputs:
+      targets:         ${{ steps.testplan.outputs.targets }}
+      skipped_targets: ${{ steps.testplan.outputs.skipped_targets }}
+      run_id:          ${{ steps.get_runid.outputs.run_id }}
+    steps:
+      - name: Checkout rocm-tests
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve rockrel run_id from workflow name
+        id: get_runid
+        if: ${{ (inputs.source_repo || 'ROCm/rockrel') == 'ROCm/rockrel' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REPO: ${{ inputs.source_repo || 'ROCm/rockrel' }}
+          ARTIFACT_SOURCE: ${{ inputs.artifact_source || 'multi_arch_release.yml' }}
+        shell: python
+        run: |
+          import json, os
+          from urllib.request import urlopen, Request
+          repo     = os.environ["SOURCE_REPO"]
+          workflow = os.environ["ARTIFACT_SOURCE"]
+          url = (
+            f'https://api.github.com/repos/{repo}/actions/workflows/'
+            f'{workflow}/runs?status=completed&per_page=1'
+          )
+          req = Request(url, headers={
+            'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          })
+          with urlopen(req) as resp:
+            data = json.loads(resp.read())
+          run_id = data['workflow_runs'][0]['id']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            f.write(f'run_id={run_id}\n')
+          print(f'Latest completed run of {repo}/{workflow}: {run_id}')
+
+      - name: Build test matrix from Test Configuration
+        id: testplan
+        shell: python
+        run: |
+          import os, configparser, json
+          conf = configparser.ConfigParser()
+          conf.read('testplan.ini')
+          all_targets = []
+          skipped     = []
+          for section in conf.sections():
+              entry = {'name': section, **dict(conf.items(section))}
+              all_targets.append(entry)
+              if entry.get('target_available', 'true').strip().lower() == 'false':
+                  skipped.append(section)
+          print(f'all targets: {repr(all_targets)}')
+          print(f'skipped:     {repr(skipped)}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'targets={json.dumps(all_targets)}\n')
+              f.write(f'skipped_targets={json.dumps(skipped)}\n')
+
+  e2e_nightly:
+    name: "${{ matrix.target.name }}"
+    needs: setup_matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.setup_matrix.outputs.targets) }}
+    uses: ./.github/workflows/e2e-tests.yml
+    with:
+      name:             ${{ matrix.target.name }}
+      runs_on:          ${{ matrix.target.runs_on }}
+      artifact_group:   ${{ matrix.target.artifact_group }}
+      gpu_arch:         ${{ matrix.target.gpu_arch || '' }}
+      tests_filters:    ${{ matrix.target.tests_filters }}
+      source_repo:      ${{ inputs.source_repo || 'ROCm/rockrel' }}
+      artifact_source:  ${{ inputs.artifact_source || 'multi_arch_release.yml' }}
+      include_dev:      ${{ inputs.include_dev || true }}
+      run_id:           ${{ needs.setup_matrix.outputs.run_id || '' }}
+      target_available: ${{ matrix.target.target_available || 'true' }}
+
+  report:
+    name: "Nightly Test Summary — ${{ needs.setup_matrix.outputs.run_id || inputs.artifact_source || 'latest-release' }}"
+    needs: [setup_matrix, e2e_nightly]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all platform counts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          pattern: test-counts-*
+          path: all-counts
+          merge-multiple: false
+
+      - name: Build master summary table
+        env:
+          RUN_ID: ${{ needs.setup_matrix.outputs.run_id || inputs.artifact_source || 'latest-release' }}
+          SKIPPED_TARGETS: ${{ needs.setup_matrix.outputs.skipped_targets }}
+        shell: python
+        run: |
+          import json, os, pathlib
+
+          rows = []
+          for counts_file in sorted(pathlib.Path("all-counts").rglob("counts.json")):
+              try:
+                  rows.append(json.loads(counts_file.read_text()))
+              except Exception as e:
+                  print(f"Skipping {counts_file}: {e}")
+
+          raw = os.environ.get("SKIPPED_TARGETS", "").strip()
+          skipped_names = json.loads(raw) if raw else []
+
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+          has_skip = any(r.get("skipped", 0) > 0 for r in rows)
+
+          lines = []
+          run_id = os.environ["RUN_ID"]
+          lines.append(f"## Nightly Results — {run_id} — All Platforms")
+          lines.append("")
+
+          if has_skip:
+              lines.append("| Platform | Tests Run | Pass | Skip | Fail | Error | Status |")
+              lines.append("|---|--:|--:|--:|--:|--:|---|")
+          else:
+              lines.append("| Platform | Tests Run | Pass | Fail | Error | Status |")
+              lines.append("|---|--:|--:|--:|--:|---|")
+
+          total_run = total_pass = total_skip = total_fail = total_err = 0
+          for r in rows:
+              ok = r["failed"] == 0 and r["error"] == 0 and r["total"] > 0
+              status = "✅ Passed" if ok else "❌ Failed"
+              if has_skip:
+                  lines.append(
+                      f"| {r['platform']} | {r['total']} | {r['passed']} | "
+                      f"{r.get('skipped', 0)} | {r['failed']} | {r['error']} | {status} |"
+                  )
+              else:
+                  lines.append(
+                      f"| {r['platform']} | {r['total']} | {r['passed']} | "
+                      f"{r['failed']} | {r['error']} | {status} |"
+                  )
+              total_run  += r["total"]
+              total_pass += r["passed"]
+              total_skip += r.get("skipped", 0)
+              total_fail += r["failed"]
+              total_err  += r["error"]
+
+          for name in skipped_names:
+              if has_skip:
+                  lines.append(f"| {name} | — | — | — | — | — | ⏭ Skipped — platform not available |")
+              else:
+                  lines.append(f"| {name} | — | — | — | — | ⏭ Skipped — platform not available |")
+
+          if rows:
+              if has_skip:
+                  lines.append(
+                      f"| **TOTAL** | **{total_run}** | **{total_pass}** | "
+                      f"**{total_skip}** | **{total_fail}** | **{total_err}** | |"
+                  )
+              else:
+                  lines.append(
+                      f"| **TOTAL** | **{total_run}** | **{total_pass}** | "
+                      f"**{total_fail}** | **{total_err}** | |"
+                  )
+          else:
+              lines.append("_No platform results collected._")
+
+          lines.append("")
+
+          with open(summary_path, "a") as f:
+              f.write("\n".join(lines) + "\n")
