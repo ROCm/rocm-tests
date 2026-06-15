@@ -26,7 +26,7 @@ import pytest
 _SRC = pathlib.Path(__file__).parent / "src" / "hipblaslt_shape_boundary.py"
 
 
-@pytest.mark.runtime.fast
+@pytest.mark.ci.weekly
 def test_hipblaslt_shape_boundary(
     target_executor,
     ld_path: dict,

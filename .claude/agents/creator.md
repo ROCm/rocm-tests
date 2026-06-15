@@ -46,7 +46,6 @@ If a requirements document or C++ source is provided, read it completely and ide
 | Directory | Auto-injected markers | What to declare in test file |
 |---|---|---|
 | `tests/e2e/compiler/` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` | `runtime.*` only |
-| `tests/e2e/concurrent_collectives/` | `hw.multi_gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` | `runtime.*` + `@pytest.mark.gpu_count(N)` — **both always required** |
 | `tests/e2e/hwq_heuristic/` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` | `runtime.*` only |
 | `tests/e2e/hip_runtime/` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` | `runtime.*` only |
 | `tests/e2e/hipblaslt/` | `hw.gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` | `runtime.*` only |
@@ -59,7 +58,7 @@ If a requirements document or C++ source is provided, read it completely and ide
 
 **Override rule:** A function-level marker always beats the profile. Use this to escalate a test to `ci.weekly` while keeping the profile's other markers.
 
-**`gpu_count(N)` is a parametric marker — never auto-injected by any profile.** Even though `hw.multi_gpu` is injected for `concurrent_collectives/`, `@pytest.mark.gpu_count(N)` must always be declared explicitly on every multi-GPU test function. Without it, `target_executor` does not know how many GPUs to acquire.
+**`gpu_count(N)` is a parametric marker — never auto-injected by any profile.** `@pytest.mark.gpu_count(N)` must always be declared explicitly on every multi-GPU test function. Without it, `target_executor` does not know how many GPUs to acquire.
 
 ---
 
@@ -168,7 +167,7 @@ def <key>_binary(compile_binary) -> str:
 
 ### 6b. conftest.py — With Library Link Flags
 
-Use when the binary links against ROCm libraries (e.g. RCCL, rocBLAS). Mirrors `tests/e2e/concurrent_collectives/conftest.py`.
+Use when the binary links against ROCm libraries (e.g. RCCL, rocBLAS).
 
 ```python
 # Copyright Advanced Micro Devices, Inc.
@@ -262,7 +261,7 @@ def test_<name>(
 """
 test_<name>.py — <collective operation> on 2+ GPUs.
 
-Markers auto-injected by CATEGORY_PROFILES for tests/e2e/concurrent_collectives/:
+Markers auto-injected by CATEGORY_PROFILES for tests/e2e/<domain>/:
     hw.multi_gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux
 
 Explicit markers: runtime.*, gpu_count(N).
@@ -588,7 +587,6 @@ pytest tests/e2e/<domain>/test_<name>.py -v --rock-dir=/path/to/rocm
 | ROCm layer / domain | Target directory |
 |---|---|
 | hipcc compilation, LLVM/HIP codegen | `tests/e2e/compiler/` |
-| RCCL collectives (AllReduce, Broadcast…) | `tests/e2e/concurrent_collectives/` |
 | GPU hardware queue heuristics | `tests/e2e/hwq_heuristic/` |
 | HIP runtime, driver API, multi-stream | `tests/e2e/hip_runtime/` |
 | hipBLASLt GEMM, Tensile heuristics | `tests/e2e/hipblaslt/` |
@@ -605,17 +603,17 @@ pytest tests/e2e/<domain>/test_<name>.py -v --rock-dir=/path/to/rocm
 User: "Test that RCCL AllReduce completes in < 30s on 2 GPUs with correct sum"
 
 Analysis:
-  Directory: tests/e2e/concurrent_collectives/
-  Profile injects: hw.multi_gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux
-  Explicit markers needed: runtime.medium, gpu_count(2)
+  Directory: tests/e2e/rccl_collectives/   (new domain — no existing profile)
+  Explicit markers needed: hw.multi_gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux, runtime.medium, gpu_count(2)
   conftest.py: compile_binary with -lrccl -lamdhip64 flags (see template 6b)
   test file: template 6d (multi-GPU with optional weekly soak variant)
+  taxonomy.py: add CATEGORY_PROFILES entry for tests/e2e/rccl_collectives/ first
 
 Generated files:
-  tests/e2e/concurrent_collectives/conftest.py   (if not already present — add CompileSpec)
-  tests/e2e/concurrent_collectives/test_rccl_allreduce.py
+  tests/e2e/rccl_collectives/conftest.py
+  tests/e2e/rccl_collectives/test_rccl_allreduce.py
 
 Validation:
-  pytest tests/e2e/concurrent_collectives/test_rccl_allreduce.py --collect-only -q --no-gpu
+  pytest tests/e2e/rccl_collectives/test_rccl_allreduce.py --collect-only -q --no-gpu
   # Expected: 1 test collected (or 2 if weekly variant included)
 ```

@@ -39,6 +39,14 @@ tests/e2e/*/build/
 *.exe
 *.out
 
+# Fleet configuration (real host.yaml files must not be committed)
+host.yaml
+*.host.yaml
+
+# Allure local run outputs
+allure-results/
+.allure/
+
 # IDE / local tooling
 .claude/settings.local.json
 .idea/

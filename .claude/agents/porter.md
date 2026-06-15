@@ -135,7 +135,6 @@ extra_flags=[
 | Target directory | Auto-injected | What to declare |
 |---|---|---|
 | `tests/e2e/compiler/` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` | `runtime.*` only |
-| `tests/e2e/concurrent_collectives/` | `hw.multi_gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` | `runtime.*` + `@pytest.mark.gpu_count(N)` — **both always required** |
 | `tests/e2e/hwq_heuristic/` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` | `runtime.*` only |
 | `tests/e2e/hip_runtime/` | `hw.gpu`, `layer.runtime`, `ci.nightly`, `e2e.stack`, `os.linux` | `runtime.*` only |
 | `tests/e2e/hipblaslt/` | `hw.gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` | `runtime.*` only |
@@ -467,7 +466,6 @@ Add or remove rows to match what was actually in the source.
 | Ported source domain | Target directory |
 |---|---|
 | hipcc compilation, LLVM/HIP codegen | `tests/e2e/compiler/` |
-| RCCL collectives (`rccl-tests` suite) | `tests/e2e/concurrent_collectives/` |
 | GPU hardware queue tests | `tests/e2e/hwq_heuristic/` |
 | HIP runtime, driver API, multi-stream | `tests/e2e/hip_runtime/` |
 | hipBLASLt GEMM, Tensile | `tests/e2e/hipblaslt/` |

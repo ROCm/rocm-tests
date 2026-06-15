@@ -85,9 +85,12 @@ jobs:
 
     steps:
       - name: Resolve platform
+        env:
+          PLATFORM_NAME: ${{ inputs.name }}
+          TARGET_AVAILABLE: ${{ inputs.target_available }}
         run: |
-          echo "Platform: ${{ inputs.name }}"
-          echo "target_available: ${{ inputs.target_available }}"
+          echo "Platform: ${PLATFORM_NAME}"
+          echo "target_available: ${TARGET_AVAILABLE}"
 
       - name: Setup Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -96,14 +99,17 @@ jobs:
           python-version: 3.12
 
       - name: Checkout rocm-tests
-        uses: actions/checkout@v6 # v6.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Checkout TheRock
-        uses: actions/checkout@v6 # v6.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: "ROCm/TheRock"
           ref: main
           path: TheRock
+          persist-credentials: false
 
       # ── Install ROCm artifacts ────────────────────────────────────────────
       # source_repo = ROCm/TheRock:
@@ -113,43 +119,50 @@ jobs:
       #   artifact_source = <workflow.yml>   → run_id resolved by setup_matrix;
       #   When include_dev=true: also fetches _dev archives (headers, cmake, .a)
       - name: Install ROCm artifacts
+        env:
+          ARTIFACT_GROUP: ${{ inputs.artifact_group }}
+          GPU_ARCH: ${{ inputs.gpu_arch }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          RUN_ID: ${{ inputs.run_id }}
+          ARTIFACT_SOURCE: ${{ inputs.artifact_source }}
+          INCLUDE_DEV: ${{ inputs.include_dev }}
         run: |
           cd TheRock
           python3 -m pip install --root-user-action=ignore -r requirements-test.txt
 
-          COMMON_FLAGS="--artifact-group ${{ inputs.artifact_group }} --amdgpu-targets ${{ inputs.gpu_arch }} --tests --blas --prim --rand --hipblasltprovider --output-dir ../therock_build"
+          COMMON_FLAGS="--artifact-group ${ARTIFACT_GROUP} --amdgpu-targets ${GPU_ARCH} --tests --blas --prim --rand --hipblasltprovider --output-dir ../therock_build"
 
-          if [ "${{ inputs.source_repo }}" = "ROCm/rockrel" ]; then
+          if [ "${SOURCE_REPO}" = "ROCm/rockrel" ]; then
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
-              --run-github-repo "${{ inputs.source_repo }}" \
-              --run-id "${{ inputs.run_id }}" \
+              --run-github-repo "${SOURCE_REPO}" \
+              --run-id "${RUN_ID}" \
               $COMMON_FLAGS
-          elif [ "${{ inputs.artifact_source || 'latest-release' }}" = "latest-release" ]; then
+          elif [ "${ARTIFACT_SOURCE:-latest-release}" = "latest-release" ]; then
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
               --latest-release \
               $COMMON_FLAGS
           else
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
-              --tag "${{ inputs.artifact_source }}" \
-              --run-github-repo "${{ inputs.source_repo }}" \
+              --tag "${ARTIFACT_SOURCE}" \
+              --run-github-repo "${SOURCE_REPO}" \
               $COMMON_FLAGS
           fi
 
           # Supplement _dev artifacts (headers / CMake / static libs) when requested
-          if [ "${{ inputs.source_repo }}" = "ROCm/rockrel" ] && \
-             [ "${{ inputs.include_dev }}" = "true" ]; then
+          if [ "${SOURCE_REPO}" = "ROCm/rockrel" ] && \
+             [ "${INCLUDE_DEV}" = "true" ]; then
             RELEASE_TYPE=nightly python3 build_tools/fetch_artifacts.py \
-              --run-id "${{ inputs.run_id }}" \
-              --run-github-repo "${{ inputs.source_repo }}" \
-              --artifact-group ${{ inputs.artifact_group }} \
-              --amdgpu-targets ${{ inputs.gpu_arch }} \
+              --run-id "${RUN_ID}" \
+              --run-github-repo "${SOURCE_REPO}" \
+              --artifact-group ${ARTIFACT_GROUP} \
+              --amdgpu-targets ${GPU_ARCH} \
               --output-dir ../therock_build \
               --flatten \
               '_dev'
           fi
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6  # v6
+        uses: astral-sh/setup-uv@bd01e18f51369d5a26f1651c3cb451d3417e3bba # v6.3.1
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
         with:
@@ -170,6 +183,8 @@ jobs:
           CURRENT_BRANCH: ${{ github.ref_name }}
           PYTHON_LIB: ${{ steps.setup-python.outputs.python-path }}
           LD_LIBRARY_PATH: "${{ github.workspace }}/therock_build/lib:${LD_LIBRARY_PATH}"
+          GPU_ARCH: ${{ inputs.gpu_arch }}
+          TESTS_FILTERS: ${{ inputs.tests_filters }}
         run: |
           source .venv/bin/activate
           export LD_LIBRARY_PATH="$(dirname ${PYTHON_LIB})/../lib:${GITHUB_WORKSPACE}/therock_build/lib:${LD_LIBRARY_PATH}"
@@ -177,22 +192,24 @@ jobs:
             tests/e2e/hwq_heuristic/ \
             tests/e2e/hip* tests/e2e/roc* \
             --rock-dir=therock_build \
-            --gpu-arch=${{ inputs.gpu_arch }} \
+            --gpu-arch=${GPU_ARCH} \
             --html=nightly_report.html --self-contained-html \
             --md-report --md-report-verbose=1 --md-report-color=never \
             --md-report-flavor gfm --md-report-output=md_summary.md --md-report-tee \
             --md-report-show-duration --tb=short \
             -v \
-            -m ${{ inputs.tests_filters }}
+            -m "${TESTS_FILTERS}"
 
       - name: Extract test counts
         if: always()
+        env:
+          PLATFORM_NAME: ${{ inputs.name }}
         shell: python
         run: |
           import re, json, os
 
           counts = {
-              "platform": "${{ inputs.name }}",
+              "platform": os.environ["PLATFORM_NAME"],
               "passed": 0, "skipped": 0, "failed": 0, "error": 0, "total": 0,
           }
 
@@ -308,7 +325,7 @@ jobs:
       - name: Upload test artifacts
         if: always()
         id: upload
-        uses: actions/upload-artifact@v6 # v6.2.3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nightly-artifacts-${{ inputs.name }}-${{ github.run_id }}
           path: |
@@ -321,7 +338,7 @@ jobs:
 
       - name: Upload test counts
         if: always()
-        uses: actions/upload-artifact@v6 # v6.2.3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-counts-${{ inputs.name }}
           path: test-counts/counts.json
@@ -330,13 +347,16 @@ jobs:
 
       - name: Add report download link to summary
         if: always()
+        env:
+          PLATFORM_NAME: ${{ inputs.name }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
         run: |
-          url="${{ steps.upload.outputs.artifact-url }}"
+          url="${ARTIFACT_URL}"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$url" ]; then
-            echo "### ⬇ [Download nightly report — ${{ inputs.name }}]($url)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### ⬇ [Download nightly report — ${PLATFORM_NAME}]($url)" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### ⬇ Download nightly report — ${{ inputs.name }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "### ⬇ Download nightly report — ${PLATFORM_NAME}" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "> Zip archive — extract \`nightly_report.html\` and open locally." >> "$GITHUB_STEP_SUMMARY"

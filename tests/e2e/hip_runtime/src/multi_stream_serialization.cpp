@@ -26,6 +26,7 @@ THE SOFTWARE.
  * Usage:
  *   ./multi_stream_serialization
  */
+// SPDX-License-Identifier: MIT
 
 #include <hip/hip_runtime.h>
 

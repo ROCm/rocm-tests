@@ -1,6 +1,6 @@
 site_name: rocm-test-v2
 site_description: AMD ROCm System E2E Test Framework Documentation
-repo_url: https://github.com/ROCm/rocm-test
+repo_url: https://github.com/ROCm/rocm-tests
 
 theme:
   name: material

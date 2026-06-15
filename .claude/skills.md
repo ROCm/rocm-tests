@@ -53,7 +53,6 @@ A deep-dive reference for Claude Code operating inside `rocm-tests`. This docume
 │  │  tests/ — Test Suite                                        │   │
 │  │    dry_run/               ← ci.pr, hw.cpu_only, no GPU      │   │
 │  │    e2e/compiler/          ← layer.runtime, hipcc            │   │
-│  │    e2e/concurrent_collectives/ ← layer.math_lib, RCCL       │   │
 │  │    e2e/hwq_heuristic/     ← layer.runtime, HW queue tests   │   │
 │  │    e2e/hip_runtime/       ← layer.runtime, HIP driver API   │   │
 │  │    e2e/hipblaslt/         ← layer.math_lib, GEMM heuristics │   │
@@ -302,7 +301,7 @@ VRAM requirements, prerequisite declarations, health gate impact, artifact volum
 ```bash
 /refiner tests/e2e/stack_validation/test_hip_runtime.py     # full 4-persona review
 /refiner review-as developer tests/e2e/compiler/test_hip_compile.py  # single persona
-/refiner tests/e2e/concurrent_collectives/test_rccl_allreduce.py add a broadcast variant
+/refiner tests/e2e/hip_runtime/test_multi_stream.py add an event-dependency variant
 ```
 
 **Output format (Review mode):**
@@ -554,8 +553,8 @@ Enable `log_level = "debug"` in `rocm-test.toml` or set `ROCM_TEST_FRAMEWORK_LOG
 
 ```
 DEBUG scheduling_plugin [resource-most]: 24 items — 4 multi-resource, 20 single-gpu
-DEBUG xdist_group assigned: tests/e2e/concurrent_collectives/test_rccl_allreduce.py::test_allreduce_sum → multi_gpu_2_0
-DEBUG xdist_group assigned: tests/e2e/concurrent_collectives/test_rccl_allreduce.py::test_allreduce_broadcast → multi_gpu_2_1
+DEBUG xdist_group assigned: tests/e2e/rocprim/test_multi_gpu_hmm.py::test_hmm_alloc_2gpu → multi_gpu_2_0
+DEBUG xdist_group assigned: tests/e2e/rocprim/test_multi_gpu_hmm.py::test_hmm_migration_2gpu → multi_gpu_2_1
 ```
 
 Use `--collect-only -q` to preview the sorted test order without running:

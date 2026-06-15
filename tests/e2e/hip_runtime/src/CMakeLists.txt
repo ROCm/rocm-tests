@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 cmake_minimum_required(VERSION 3.21)
 
 # Shared ROCm path resolution and CMAKE_PREFIX_PATH setup.

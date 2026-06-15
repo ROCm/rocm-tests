@@ -16,6 +16,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
+// SPDX-License-Identifier: MIT
 
 // Standalone HIP harness: multi-stream large-buffer stress for LLVM lowering of
 // __builtin_memset, __builtin_memcpy, and __builtin_memmove vs host std::mem*

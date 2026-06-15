@@ -133,11 +133,4 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
-    "tests/e2e/concurrent_collectives": [
-        "hw.multi_gpu",
-        "layer.math_lib",
-        "ci.nightly",
-        "e2e.stack",
-        "os.linux",
-    ],
 }

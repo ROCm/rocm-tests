@@ -86,7 +86,6 @@ tests/
   dry_run/                       ci.pr DryRun / cpu_only tests (no GPU required)
   e2e/
     compiler/                    hipcc compilation tests; CompileSpec conftest registry
-    concurrent_collectives/      RCCL concurrent collective stress tests; CMake build
     hip_runtime/                 HIP driver API and multi-stream kernel tests; CMake build
     hipblaslt/                   hipBLASLt GEMM heuristic and shape-boundary tests; CMake build
     hwq_heuristic/               hardware queue heuristic tests; CMake build
@@ -856,10 +855,10 @@ claude
 > Validate that RCCL AllReduce completes in < 5s on 2 GPUs with correct sum
 
 # 3. Validate collection (no GPU required)
-pytest tests/e2e/concurrent_collectives/ --collect-only -q --no-gpu
+pytest tests/e2e/hip_runtime/ --collect-only -q --no-gpu
 
 # 4. Four-persona review before opening a PR
-/refiner tests/e2e/concurrent_collectives/test_allreduce.py
+/refiner tests/e2e/hip_runtime/test_hip_invalid_codeobject_load.py
 
 # 5. Port an existing shell test
 /porter scripts/validate_hip_device_count.sh
@@ -977,33 +976,37 @@ def test_hip_large_allocation(target_executor):
 
 ### Multi-GPU Test
 
-Tests under `tests/e2e/concurrent_collectives/` get `hw.multi_gpu`, `layer.math_lib`, `ci.nightly`, `e2e.stack`, `os.linux` from the profile. Declare `runtime.*` and `gpu_count(N)` explicitly.
+For tests that require multiple GPUs, use `@pytest.mark.hw.multi_gpu` together with `@pytest.mark.gpu_count(N)`. Place them in a new domain directory and register a `CATEGORY_PROFILES` entry in `framework/markers/taxonomy.py`.
 
 ```python
-# tests/e2e/concurrent_collectives/test_my_collective.py
+# tests/e2e/<domain>/test_my_collective.py
 import pytest
 
 
+@pytest.mark.hw.multi_gpu
+@pytest.mark.layer.math_lib
+@pytest.mark.ci.nightly
+@pytest.mark.e2e.stack
+@pytest.mark.os.linux
 @pytest.mark.gpu_count(2)
 @pytest.mark.runtime.medium
-def test_allreduce_two_gpus(target_executor, concurrent_collectives_binary):
-    """Verify RCCL AllReduce completes correctly on 2 GPUs."""
-    result = target_executor.run(
-        f"{concurrent_collectives_binary} --op=allreduce --size=256M --ngpus=2"
-    )
-    assert result.ok, f"AllReduce failed:\n{result.stdout}\n{result.stderr}"
+def test_op_two_gpus(target_executor, my_binary):
+    """Verify the collective operation completes correctly on 2 GPUs."""
+    result = target_executor.run(f"{my_binary} --ngpus=2")
+    assert result.ok, f"Op failed:\n{result.stdout}\n{result.stderr}"
     assert "RESULT_OK" in result.stdout
 
 
+@pytest.mark.hw.multi_gpu
+@pytest.mark.layer.math_lib
+@pytest.mark.ci.weekly
+@pytest.mark.e2e.stack
+@pytest.mark.os.linux
 @pytest.mark.gpu_count(4)
-@pytest.mark.runtime.longevity
-@pytest.mark.ci.weekly          # override profile's ci.nightly for this slow test
-def test_allreduce_four_gpus_soak(target_executor, concurrent_collectives_binary):
-    """Soak: RCCL AllReduce on 4 GPUs for extended duration."""
-    result = target_executor.run(
-        f"{concurrent_collectives_binary} --op=allreduce --size=1G --ngpus=4 --iters=1000",
-        timeout=7200,
-    )
+@pytest.mark.runtime.soak
+def test_op_four_gpus_soak(target_executor, my_binary):
+    """Soak: collective operation on 4 GPUs for extended duration."""
+    result = target_executor.run(f"{my_binary} --ngpus=4 --iters=1000", timeout=7200)
     assert result.ok
     assert "RESULT_OK" in result.stdout
 ```

@@ -70,7 +70,7 @@ Example: tests/e2e/hwq_heuristic/ → auto-injects hw.gpu, layer.runtime, ci.nig
 | `ci.*` missing AND directory has no profile | ERROR | Declare required dimension |
 | `layer.*` missing AND directory has no profile | ERROR | Declare required dimension |
 | `hw.*`/`ci.*`/`layer.*` missing BUT auto-injected by profile | INFO only | Not a violation |
-| `hw.multi_gpu` auto-injected (e.g. `concurrent_collectives/`) but `gpu_count(N)` absent | ERROR | `@pytest.mark.gpu_count(N)` is a **parametric** marker — never auto-injected by any profile; always declare explicitly on every multi-GPU test function |
+| `hw.multi_gpu` auto-injected by profile but `gpu_count(N)` absent | ERROR | `@pytest.mark.gpu_count(N)` is a **parametric** marker — never auto-injected by any profile; always declare explicitly on every multi-GPU test function |
 | `gpu_indices` marker argument is a bare int (e.g. `gpu_indices(0)`) | ERROR | Must be a list: `@pytest.mark.gpu_indices([0])` — bare int crashes collection |
 | `gpu_indices` + `gpu_count` on the same function | ERROR | Mutually exclusive — remove `gpu_count` when using `gpu_indices` |
 | `gpu_indices` + `hw.multi_gpu` on the same function | ERROR | Mutually exclusive — use `gpu_indices` alone to pin specific indices |

@@ -168,7 +168,6 @@ tests/
     dry_run/      # Config and DryRun tests (no GPU required, ci.pr)
     e2e/
         compiler/               # hipcc compilation tests
-        concurrent_collectives/ # RCCL concurrent collective stress tests
         hwq_heuristic/          # GPU hardware queue heuristic tests (3 test files)
         hip_runtime/            # HIP driver API and multi-stream kernel tests
         hipblaslt/              # hipBLASLt GEMM heuristic and shape-boundary tests

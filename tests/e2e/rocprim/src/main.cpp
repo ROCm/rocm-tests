@@ -1,5 +1,6 @@
 // MIT License
 // Copyright (c) 2017-2026 Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 // Main entry point for rocPRIM Standalone Test Suite
 // Single executable with Google Test framework
