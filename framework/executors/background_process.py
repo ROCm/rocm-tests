@@ -472,7 +472,7 @@ def _blocking_stream_run(
     """
     process = subprocess.Popen(
         command,
-        shell=True,
+        shell=True,  # nosec B602 — shell=True required for pipeline/redirect support
         env=env,
         cwd=cwd,
         stdout=subprocess.PIPE,
@@ -580,7 +580,7 @@ def _make_background_process(
     """
     proc = subprocess.Popen(
         command,
-        shell=True,
+        shell=True,  # nosec B602 — shell=True required for pipeline/redirect support
         env=env,
         cwd=cwd,
         stdout=subprocess.PIPE,

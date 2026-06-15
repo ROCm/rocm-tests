@@ -225,7 +225,7 @@ class GpuDetector(AbstractGpuDetector):
                 raise RuntimeError(f"Remote command failed (rc={result.exit_code}): {result.stderr}")
             return result.stdout
         # Local subprocess execution
-        proc = subprocess.run(
+        proc = subprocess.run(  # nosec B602 — shell=True required; detection commands are framework-controlled system calls, not user input
             cmd,
             shell=True,
             capture_output=True,
