@@ -126,6 +126,7 @@ jobs:
           RUN_ID: ${{ inputs.run_id }}
           ARTIFACT_SOURCE: ${{ inputs.artifact_source }}
           INCLUDE_DEV: ${{ inputs.include_dev }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd TheRock
           python3 -m pip install --root-user-action=ignore -r requirements-test.txt
