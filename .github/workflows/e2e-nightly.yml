@@ -29,7 +29,6 @@ name: ROCm Nightly Tests
 on:
   schedule:
     - cron: '0 11 * * *'   # 11:00 AM UTC daily
-    - cron: '30 17 * * *'  # 05:30 PM UTC daily
 
   workflow_call:
     inputs:
