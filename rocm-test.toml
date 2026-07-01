@@ -19,7 +19,7 @@ run_id_prefix = "rocm-test"
 # Directory for per-test artifact capture (relative to repo root)
 artifact_dir  = "output/artifacts/"
 # Aggregate session log — overwritten at the start of each pytest session
-session_log   = "output/artifacts/session.log"
+session_log   = "output/logs/session.log"
 
 [gpu]
 # GPU detection strategy: "auto", "kfd" (Linux KFD), "amd-smi" (Windows/fallback)

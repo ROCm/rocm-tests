@@ -5,7 +5,10 @@ cmake_minimum_required(VERSION 3.21)
 
 # Shared ROCm path resolution and CMAKE_PREFIX_PATH setup.
 # Does NOT set compiler variables — the hipcc fallback below owns that.
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../../common/cmake")
+if(NOT ROCM_TEST_CMAKE_MODULE_DIR)
+  message(FATAL_ERROR "ROCM_TEST_CMAKE_MODULE_DIR is not set; build through the pytest builder fixture.")
+endif()
+list(APPEND CMAKE_MODULE_PATH "${ROCM_TEST_CMAKE_MODULE_DIR}")
 include(rocm_setup)
 
 if(NOT GPU_ARCH)

@@ -47,6 +47,10 @@ host.yaml
 allure-results/
 .allure/
 
+# Ephemeral test run summaries and HTML reports
+md_summary.md
+nightly_report.html
+
 # IDE / local tooling
 .claude/settings.local.json
 .idea/

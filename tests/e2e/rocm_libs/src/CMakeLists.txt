@@ -5,7 +5,10 @@ cmake_minimum_required(VERSION 3.21)
 
 # Shared ROCm path resolution and CMAKE_PREFIX_PATH setup.
 # Does NOT set compiler variables — the hipcc fallback below owns that.
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../../common/cmake")
+if(NOT ROCM_TEST_CMAKE_MODULE_DIR)
+  message(FATAL_ERROR "ROCM_TEST_CMAKE_MODULE_DIR is not set; build through the pytest builder fixture.")
+endif()
+list(APPEND CMAKE_MODULE_PATH "${ROCM_TEST_CMAKE_MODULE_DIR}")
 include(rocm_setup)
 
 if(NOT GPU_ARCH)
@@ -46,6 +49,27 @@ if(rocblas_FOUND)
   set(ROCBLAS_LIBS roc::rocblas)
 else()
   set(ROCBLAS_LIBS rocblas)
+endif()
+
+find_package(rocsolver CONFIG QUIET PATHS "${ROCM_PATH}")
+if(rocsolver_FOUND)
+  set(ROCSOLVER_LIBS roc::rocsolver)
+else()
+  set(ROCSOLVER_LIBS rocsolver)
+endif()
+
+find_package(hipblas CONFIG QUIET PATHS "${ROCM_PATH}")
+if(hipblas_FOUND)
+  set(HIPBLAS_LIBS roc::hipblas)
+else()
+  set(HIPBLAS_LIBS hipblas)
+endif()
+
+find_package(hipsparse CONFIG QUIET PATHS "${ROCM_PATH}")
+if(hipsparse_FOUND)
+  set(HIPSPARSE_LIBS roc::hipsparse)
+else()
+  set(HIPSPARSE_LIBS hipsparse)
 endif()
 
 # Binary 1: Small sliding contact TRSV (rocBLAS)

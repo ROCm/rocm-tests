@@ -124,7 +124,7 @@ class GpuDetector(AbstractGpuDetector):
         self._artifact_dir = artifact_dir
         self._cached: list[GpuInfo] | None = None
 
-    def detect(self) -> list[GpuInfo]:
+    def detect(self) -> list[GpuInfo]:  # noqa: C901
         """Detect AMD GPUs and return their descriptors.
 
         Results are cached after the first call.  GPU topology does not change
@@ -186,10 +186,21 @@ class GpuDetector(AbstractGpuDetector):
         if self._ssh is None:
             self._print_kfd_dri_diagnostics()
 
-        # THIRD FALLBACK: amd-smi from TheRock rock_dir.
-        # Activated when lspci and KFD both return 0 — common in containers where
-        # the AMD compute GPU appears as "Processing accelerators" in lspci and
-        # /sys/class/kfd is not exposed inside the container sysfs namespace.
+        # THIRD FALLBACK: amd-smi from PATH. This covers direct host/container
+        # runs where pciutils/KFD sysfs are unavailable but ROCm tools are usable.
+        try:
+            gpus = self._detect_via_amd_smi()
+            if gpus:
+                logger.info("GPU detection [%s]: system amd-smi detected %d GPU(s)", target, len(gpus))
+                self._cached = gpus
+                self._run_amd_smi_diagnostic(node_label=node_label)
+                return list(gpus)
+            logger.warning("GPU detection [%s]: system amd-smi returned 0 GPU(s)", target)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning("GPU detection [%s]: system amd-smi failed: %s", target, exc)
+
+        # FOURTH FALLBACK: amd-smi from TheRock rock_dir.
+        # Activated when lspci/KFD/system amd-smi all return 0.
         # Returns real arch and VRAM (unlike lspci which yields arch="unknown").
         if self._rock_dir:
             rock_amd_smi = os.path.join(self._rock_dir, "bin", "amd-smi")
