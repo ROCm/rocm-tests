@@ -15,7 +15,7 @@ If the null stream's queue is incorrectly released between Phase 1 and Phase 3,
 Phase 3 will write incorrect values and the test fails immediately with the
 failing index and expected vs. actual values.
 
-Regression for SWDEV-567580 (CLR hardware queue heuristic defects).
+Regression for CLR hardware queue heuristic.
 
 Binary compiled via CMake from:
     tests/e2e/hwq_heuristic/src/hwq_null_stream_protection_regr.cpp

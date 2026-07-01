@@ -27,10 +27,19 @@ import contextlib
 import logging
 import os
 import pathlib
+import posixpath
+import select
 import shlex
+import sys
 import time
 
 from framework.common.helpers import ExecutionResult
+from framework.common.workspace_layout import (
+    REMOTE_WORKSPACE_DIR,
+    is_managed_remote_path,
+    remote_workspace_path,
+    sftp_stage_path,
+)
 from framework.executors.abstract_executor import AbstractExecutor
 from framework.logging.test_logger import TestLogger
 
@@ -46,6 +55,78 @@ logger = logging.getLogger(__name__)
 # Paramiko's transport layer emits connection and auth INFO messages that clutter
 # test output.  Raise the threshold so only warnings and errors are shown.
 _PARAMIKO_LOG_THRESHOLD = logging.WARNING
+
+# When streaming (long remote builds), emit a heartbeat at this cadence so the
+# console shows the command is alive and how long it has been running, even when
+# the build produces no output for minutes at a time.
+_STREAM_HEARTBEAT_SECS = 60.0
+
+
+def _stream_remote_channel(
+    chan,
+    timeout: float,
+    started_at: float,
+    session_key: str,
+    pre_stderr: list[str] | None = None,
+) -> tuple[str, str, int]:
+    """Drain a Paramiko channel incrementally, forwarding output as it arrives.
+
+    Reads stdout/stderr in a non-blocking loop, writing each chunk to
+    ``sys.stdout`` in real time (visible with pytest ``-s`` / capture disabled)
+    and logging a periodic elapsed-time heartbeat (always visible via ``log_cli``).
+    This gives progress visibility for long-running remote builds, which would
+    otherwise be silent until completion under the default blocking read.
+
+    Args:
+        chan:        Paramiko ``Channel`` (``stdout`` channel of ``exec_command``).
+        timeout:     Maximum seconds from *started_at* before raising.
+        started_at:  ``time.monotonic()`` value captured when the command started.
+        session_key: Executor session key, used in heartbeat log lines.
+        pre_stderr:  Any stderr lines already read (e.g. while capturing the PID).
+
+    Returns:
+        Tuple ``(stdout, stderr, exit_code)``.
+
+    Raises:
+        TimeoutError: If the command exceeds *timeout*.
+    """
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = list(pre_stderr or [])
+    last_beat = time.monotonic()
+    chan.setblocking(False)
+
+    while True:
+        select.select([chan], [], [], 1.0)
+        got = False
+        if chan.recv_ready():
+            data = chan.recv(65536).decode("utf-8", errors="replace")
+            if data:
+                stdout_parts.append(data)
+                sys.stdout.write(data)
+                sys.stdout.flush()
+                got = True
+        if chan.recv_stderr_ready():
+            data = chan.recv_stderr(65536).decode("utf-8", errors="replace")
+            if data:
+                stderr_parts.append(data)
+                sys.stdout.write(data)
+                sys.stdout.flush()
+                got = True
+
+        now = time.monotonic()
+        if now - started_at > timeout:
+            raise TimeoutError(f"remote command exceeded {timeout:.0f}s")
+        if now - last_beat >= _STREAM_HEARTBEAT_SECS:
+            logger.info("SshExecutor[%s] still running (elapsed %.0fs)…", session_key, now - started_at)
+            last_beat = now
+
+        if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
+            break
+        if not got:
+            time.sleep(0.1)
+
+    exit_code = chan.recv_exit_status()
+    return "".join(stdout_parts), "".join(stderr_parts), exit_code
 
 
 class SshExecutor(AbstractExecutor):
@@ -88,6 +169,8 @@ class SshExecutor(AbstractExecutor):
         self.gpu_indices: list[int] = list(gpu_indices) if gpu_indices else []
         self.test_logger = test_logger
         self._client: paramiko.SSHClient | None = None
+        self._remote_home: str | None = None
+        self._remote_workspace_root: str | None = None
 
         # Silence INFO-level messages from paramiko.transport / paramiko.auth
         # (e.g. "Authentication (publickey) failed.") that pollute test logs.
@@ -166,7 +249,87 @@ class SshExecutor(AbstractExecutor):
             self._client = None
             logger.debug("SshExecutor: closed connection to %s", self.session_key)
 
-    def upload_tree(self, local_dir: str) -> None:
+    def _get_remote_home(self) -> str:
+        """Return the remote user's home directory, cached per SSH executor."""
+        if self._remote_home:
+            return self._remote_home
+        result = self.run("printf '%s' \"$HOME\"", timeout=10.0)
+        if not result.ok or not result.stdout.strip():
+            raise RuntimeError(
+                f"SshExecutor: could not resolve remote HOME on {self.host} "
+                f"(exit={result.exit_code}):\n{result.stderr}"
+            )
+        self._remote_home = result.stdout.strip()
+        return self._remote_home
+
+    def remote_path_for(self, local_path: str) -> str:
+        """Return the stable remote staging path for a local path.
+
+        Local absolute paths are staged under
+        ``$HOME/run-rocm-tests/sftp`` rather than mirrored literally. This keeps
+        remote builds portable across hosts where the local checkout owner/path
+        """
+        raw = pathlib.PurePath(local_path).as_posix()
+        if self._is_managed_remote_path(raw):
+            return posixpath.normpath(raw)
+        return sftp_stage_path(self.remote_workspace_root(), local_path)
+
+    def remote_workspace_root(self) -> str:
+        """Return the root directory for all framework-managed remote files."""
+        if self._remote_workspace_root:
+            return self._remote_workspace_root
+        self._remote_workspace_root = posixpath.join(self._get_remote_home(), REMOTE_WORKSPACE_DIR)
+        return self._remote_workspace_root
+
+    def _is_managed_remote_path(self, path: str) -> bool:
+        """Return True when *path* is already under this executor's workspace."""
+        return is_managed_remote_path(path, self.remote_workspace_root())
+
+    def workspace_path_for(self, path: str | os.PathLike, category: str = "work") -> str:
+        """Map a local/relative path into the managed remote workspace.
+
+        Args:
+            path: Local absolute path or repo-relative path.
+            category: Workspace category. ``"work"`` is retained as a
+                compatibility alias for ``output/``.
+
+        Returns:
+            Absolute remote path under the managed workspace.
+        """
+        norm = path if isinstance(path, str) else pathlib.PurePath(path)
+        return remote_workspace_path(self.remote_workspace_root(), norm, category=category)
+
+    def _mkdir_remote_dirs(self, dirs: list[str]) -> None:
+        """Create remote directories in bounded batches and fail loudly."""
+        if not dirs:
+            return
+
+        batch: list[str] = []
+        batch_len = len("mkdir -p")
+        for directory in dirs:
+            quoted = shlex.quote(directory)
+            # Keep each SSH command comfortably below common ARG_MAX limits.
+            if batch and batch_len + len(quoted) + 1 > 24000:
+                result = self.run("mkdir -p " + " ".join(batch), timeout=60.0)
+                if not result.ok:
+                    raise RuntimeError(
+                        f"SshExecutor.upload_tree: remote mkdir failed on {self.host} "
+                        f"(exit={result.exit_code}):\n{result.stderr}"
+                    )
+                batch = []
+                batch_len = len("mkdir -p")
+            batch.append(quoted)
+            batch_len += len(quoted) + 1
+
+        if batch:
+            result = self.run("mkdir -p " + " ".join(batch), timeout=60.0)
+            if not result.ok:
+                raise RuntimeError(
+                    f"SshExecutor.upload_tree: remote mkdir failed on {self.host} "
+                    f"(exit={result.exit_code}):\n{result.stderr}"
+                )
+
+    def upload_tree(self, local_dir: str) -> str:
         """Upload a local directory tree to the remote host at the same absolute path.
 
         Creates parent directories on the remote via SSH ``mkdir -p``, then
@@ -179,22 +342,35 @@ class SshExecutor(AbstractExecutor):
             RuntimeError: If the SFTP transfer fails.
         """
         local_root = pathlib.Path(local_dir).resolve()
+        if not local_root.exists():
+            raise RuntimeError(f"SshExecutor.upload_tree: local path does not exist: {local_root}")
+        if not local_root.is_dir():
+            raise RuntimeError(f"SshExecutor.upload_tree: local path is not a directory: {local_root}")
+
+        remote_root = self.remote_path_for(str(local_root))
         files = [f for f in local_root.rglob("*") if f.is_file()]
         if not files:
-            return
+            self._mkdir_remote_dirs([remote_root])
+            return remote_root
 
-        dirs = sorted({str(f.parent) for f in files})
-        self.run(shlex.join(["mkdir", "-p", *dirs]))
+        dirs = sorted({posixpath.join(remote_root, f.relative_to(local_root).parent.as_posix()) for f in files})
+        self._mkdir_remote_dirs(dirs)
 
         sftp = self._connect().open_sftp()
         try:
             for f in files:
-                sftp.put(str(f), str(f))
-                logger.debug("SshExecutor.upload_tree: %s → %s:%s", f, self.host, f)
+                rel = f.relative_to(local_root).as_posix()
+                remote_file = posixpath.join(remote_root, rel)
+                sftp.put(str(f), remote_file)
+                logger.debug("SshExecutor.upload_tree: %s → %s:%s", f, self.host, remote_file)
         except Exception as exc:
-            raise RuntimeError(f"SshExecutor.upload_tree: SFTP upload to {self.host} failed: {exc}") from exc
+            raise RuntimeError(
+                f"SshExecutor.upload_tree: SFTP upload to {self.host} failed while staging "
+                f"{local_root} under {remote_root}: {exc}"
+            ) from exc
         finally:
             sftp.close()
+        return remote_root
 
     def __enter__(self) -> SshExecutor:
         return self
@@ -211,6 +387,7 @@ class SshExecutor(AbstractExecutor):
         command: str,
         timeout: float | None = None,
         env_overrides: dict | None = None,
+        stream: bool = False,
     ) -> ExecutionResult:
         """Execute *command* on the remote host and return the result.
 
@@ -257,19 +434,19 @@ class SshExecutor(AbstractExecutor):
             if env_overrides:
                 effective_env.update(env_overrides)
 
-            full_cmd = cmd
+            exports = ""
             if effective_env:
-                env_pairs = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in effective_env.items())
-                full_cmd = f"env {env_pairs} {cmd}"
+                exports = " ".join(f"export {k}={shlex.quote(str(v))};" for k, v in effective_env.items()) + " "
 
             # Wrap in a subshell that emits its PID on stderr before exec-ing the
             # real command.  The PID is captured immediately so we can kill the
             # remote process on timeout instead of leaving it as an orphan.
             pid_marker = "__SSH_PID__"
-            wrapped_cmd = f"bash -c 'echo {pid_marker}$$ >&2; exec {full_cmd}'"
+            script = f"echo {pid_marker}$$ >&2; {exports}exec bash -lc {shlex.quote(cmd)}"
+            wrapped_cmd = f"bash -c {shlex.quote(script)}"
 
             client = self._connect()
-            logger.debug("SshExecutor[%s] running: %s", self.session_key, full_cmd)
+            logger.debug("SshExecutor[%s] running: %s%s", self.session_key, exports, cmd)
 
             remote_pid: int | None = None
             t0 = time.monotonic()
@@ -292,9 +469,14 @@ class SshExecutor(AbstractExecutor):
             stderr_ch.channel.settimeout(t_eff)
 
             try:
-                raw_stdout = stdout_ch.read().decode("utf-8", errors="replace")
-                raw_stderr = "".join(pid_line_buf) + stderr_ch.read().decode("utf-8", errors="replace")
-                exit_code = stdout_ch.channel.recv_exit_status()
+                if stream:
+                    raw_stdout, raw_stderr, exit_code = _stream_remote_channel(
+                        stdout_ch.channel, t_eff, t0, self.session_key, pre_stderr=pid_line_buf
+                    )
+                else:
+                    raw_stdout = stdout_ch.read().decode("utf-8", errors="replace")
+                    raw_stderr = "".join(pid_line_buf) + stderr_ch.read().decode("utf-8", errors="replace")
+                    exit_code = stdout_ch.channel.recv_exit_status()
             except Exception:
                 # Kill the remote process so it cannot hold the GPU after the
                 # NodeSlot is released back to the pool (cascading timeouts).

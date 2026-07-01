@@ -61,7 +61,7 @@ import shutil
 
 import pytest
 
-from tests.common._cmake_build import cmake_build, find_rocm_clangpp
+from framework.builder.binary_builder import cmake_build, find_rocm_clangpp
 
 logger = logging.getLogger(__name__)
 

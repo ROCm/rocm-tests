@@ -28,6 +28,7 @@ import pytest
 
 from framework.common.helpers import executor_log_path, gpu_monitor_log_path
 from framework.executors.executor_group import NodeExecutorGroup
+from framework.markers.gpu_count import gpu_count_from_marker, resolve_gpu_count
 from framework.nodes.node_pool import MultiGpuSlots, NodePool, NodeSlot
 from framework.nodes.node_spec import HostConfigLoader, NodeSpec
 
@@ -539,6 +540,10 @@ def pytest_configure(config: pytest.Config) -> None:
         node_specs = [NodeSpec(hostname="localhost", label="localhost")]
         logger.info("NodePool: LOCAL mode — detecting GPUs on localhost")
 
+    detector_override = None
+    if config.getoption("--mock-gpu", default=False) or not remote_node_path:
+        detector_override = getattr(config, "_gpu_detector", None)
+
     from framework.config.loader import load_config as _load_cfg
 
     _cfg = _load_cfg(config_path=config.getoption("--rocm-config", default=None))
@@ -550,6 +555,7 @@ def pytest_configure(config: pytest.Config) -> None:
             headroom_gb=headroom_gb,
             detect_timeout=60.0,
             artifact_dir=_cfg.framework.artifact_dir,
+            detector_override=detector_override,
         )
     except Exception as exc:
         logger.warning("NodePool construction failed: %s — tests requiring GPUs will skip", exc)
@@ -823,7 +829,8 @@ def _acquire_single(node_pool, ctx):
                 f"Topology: {node_pool.topology_summary()}"
             )
         else:
-            pytest.skip(f"TEST PLATFORM missing required GPUs (transient): {exc}")
+            reason = "capability" if "VRAM requirement" in str(exc) else "transient"
+            pytest.skip(f"TEST PLATFORM missing required GPUs ({reason}): {exc}")
     return None  # unreachable; satisfies type checker
 
 
@@ -849,7 +856,8 @@ def _acquire_multi_gpu(node_pool, ctx, count):
             test_id=ctx["test_name"],
         )
     except RuntimeError as exc:
-        pytest.skip(f"TEST PLATFORM missing required GPUs: {exc}")
+        reason = "capability" if "VRAM requirement" in str(exc) else "transient"
+        pytest.skip(f"TEST PLATFORM missing required GPUs ({reason}): {exc}")
     return None  # unreachable
 
 
@@ -1405,7 +1413,7 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
             )
             return
 
-        gpu_count_per_node = int(gpu_count_marker.args[0]) if gpu_count_marker and gpu_count_marker.args else 1
+        gpu_count_per_node = gpu_count_from_marker(gpu_count_marker, default=1)
 
         try:
             multi_list: list[MultiGpuSlots] = node_pool.acquire_multi_node(
@@ -1415,7 +1423,8 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
                 test_id=test_name,
             )
         except RuntimeError as exc:
-            pytest.skip(f"TEST PLATFORM missing required GPUs: {exc}")
+            reason = "capability" if "VRAM requirement" in str(exc) else "transient"
+            pytest.skip(f"TEST PLATFORM missing required GPUs ({reason}): {exc}")
             return
 
         yield from _acquire_and_yield(
@@ -1432,7 +1441,11 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
     # Multi-GPU same-node path: acquire N GPUs from one node
     # -------------------------------------------------------------------------
     if ctx["is_multi_gpu"]:
-        count = int(gpu_count_marker.args[0]) if gpu_count_marker and gpu_count_marker.args else 2
+        count = resolve_gpu_count(
+            gpu_count_from_marker(gpu_count_marker, default=2),
+            available=node_pool.max_gpus_per_node(),
+            default=2,
+        )
         multi = _acquire_multi_gpu(node_pool, ctx, count)
         yield from _acquire_and_yield(
             multi_list=[multi],
@@ -1522,7 +1535,11 @@ def multi_gpu_fixture(request, framework_config, node_pool):
 
     ctx = _resolve_test_context(request, framework_config, config)
     gpu_count_marker = ctx["gpu_count_marker"]
-    count = int(gpu_count_marker.args[0]) if gpu_count_marker and gpu_count_marker.args else 2
+    count = resolve_gpu_count(
+        gpu_count_from_marker(gpu_count_marker, default=2),
+        available=node_pool.max_gpus_per_node(),
+        default=2,
+    )
 
     multi = _acquire_multi_gpu(node_pool, ctx, count)
     yield from _acquire_and_yield(
@@ -1591,7 +1608,7 @@ def multi_node_fixture(request, framework_config, node_pool):
 
     ctx = _resolve_test_context(request, framework_config, config)
     gpu_count_marker = ctx["gpu_count_marker"]
-    gpu_count_per_node = int(gpu_count_marker.args[0]) if gpu_count_marker and gpu_count_marker.args else 1
+    gpu_count_per_node = gpu_count_from_marker(gpu_count_marker, default=1)
 
     try:
         multi_list: list[MultiGpuSlots] = node_pool.acquire_multi_node(

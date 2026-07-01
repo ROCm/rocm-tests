@@ -32,7 +32,7 @@ class FrameworkSection:
     log_level: str = "normal"
     run_id_prefix: str = "rocm-test"
     artifact_dir: str = "output/artifacts/"
-    session_log: str = "output/artifacts/session.log"
+    session_log: str = "output/logs/session.log"
 
 
 @dataclass

@@ -56,6 +56,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
+import os
+import pathlib
 import shlex
 
 import pytest
@@ -64,6 +66,10 @@ logger = logging.getLogger(__name__)
 
 _SUBDIR = "compiler"
 _COMMON_INCLUDE = "tests/common/include"
+
+# HIP-Examples is cloned at runtime; keep the ref overridable for reproducibility.
+_HIP_EXAMPLES_URL = "https://github.com/ROCm/HIP-Examples.git"
+_HIP_EXAMPLES_REF = os.environ.get("ROCM_TEST_HIP_EXAMPLES_REF", "master")
 
 
 # ---------------------------------------------------------------------------
@@ -162,3 +168,43 @@ def _build(compile_binary, name: str) -> str:
 def llvm_mem_intrinsic_stress_binary(compile_binary) -> str:
     """Compile llvm_memIntrinsic_stress.cpp → binary path.  Used by test_llvm.py."""
     return _build(compile_binary, "llvm_mem_intrinsic_stress")
+
+
+@pytest.fixture(scope="session")
+def hip_examples_repo(external_build, compiler_build_dir: str):
+    """Clone HIP-Examples once per session and return the checkout path."""
+    dest = pathlib.Path(compiler_build_dir) / _SUBDIR / "HIP-Examples"
+    repo = external_build.clone_repo(_HIP_EXAMPLES_URL, dest, ref=_HIP_EXAMPLES_REF)
+    external_build.assert_license_present(repo)  # provenance guard
+    return repo
+
+
+@pytest.fixture(scope="session")
+def vectoradd_hip_binary(compile_binary, hip_examples_repo) -> str:
+    """Build the basic HIP vector-add sample via hipcc."""
+    return compile_binary(
+        src=str(hip_examples_repo / "vectorAdd" / "vectoradd_hip.cpp"),
+        output_name="vectoradd_hip",
+        subdir=_SUBDIR,
+    )
+
+
+@pytest.fixture(scope="session")
+def openmp_helloworld_binary(compile_binary, hip_examples_repo) -> str:
+    """Build the OpenMP HIP sample; ``-fopenmp`` matches its upstream Makefile."""
+    return compile_binary(
+        src=str(hip_examples_repo / "openmp-helloworld" / "openmp_helloworld.cpp"),
+        output_name="openmp_helloworld",
+        extra_flags=["-fopenmp"],
+        subdir=_SUBDIR,
+    )
+
+
+@pytest.fixture(scope="session")
+def matrixmultiplication_binary(compile_binary, hip_examples_repo) -> str:
+    """Build the larger HIP-Examples matrix-multiplication app via hipcc."""
+    return compile_binary(
+        src=str(hip_examples_repo / "HIP-Examples-Applications" / "MatrixMultiplication" / "MatrixMultiplication.cpp"),
+        output_name="MatrixMultiplication",
+        subdir=_SUBDIR,
+    )

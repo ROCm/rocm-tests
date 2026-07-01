@@ -12,7 +12,7 @@ proving the hardware is actually overlapping compute and copy in parallel.
 The test exercises the CLR queue heuristic's ability to assign compute kernels
 and DMA transfers to separate GPU hardware queues.
 
-Regression for SWDEV-567580 (CLR hardware queue heuristic defects).
+Regression for CLR hardware queue heuristic defects.
 
 Binary compiled via CMake from:
     tests/e2e/hwq_heuristic/src/hwq_compute_copy_overlap_test.cpp

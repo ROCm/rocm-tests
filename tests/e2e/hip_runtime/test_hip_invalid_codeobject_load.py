@@ -13,8 +13,6 @@ or memory corruption. Three sub-tests:
 * ArchSpecificLoad  — A real .hsaco from hipBLASLt loads successfully on the
                       current GPU architecture (skipped if hipBLASLt absent).
 
-Regression for SWDEV-508590 / TMS 1002344.
-
 Binary compiled via CMake from:
     tests/e2e/hip_runtime/src/hip_invalid_codeobject_load_test.cpp
 

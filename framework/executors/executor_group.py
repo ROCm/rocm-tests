@@ -101,6 +101,30 @@ class NodeExecutorGroup:
         """
         return len(self._executors)
 
+    @property
+    def visible_gpu_count(self) -> int:
+        """Number of GPU ordinals exposed to the first executor.
+
+        Multi-GPU same-node tests use a single executor with multiple GPU
+        indices injected through ``ROCR_VISIBLE_DEVICES``. This property reports
+        that visible GPU count so tests can pass matching ``-g``/``--ngpus``
+        values without parsing environment variables or reaching into plugins.
+
+        Returns:
+            Number of visible GPUs for the first executor, or ``1`` for
+            executors that do not expose GPU-index metadata (DryRun/container).
+        """
+        executor = self._executors[0]
+        gpu_indices = getattr(executor, "gpu_indices", None)
+        if gpu_indices:
+            return len(gpu_indices)
+        gpu_index = getattr(executor, "gpu_index", None)
+        if isinstance(gpu_index, list):
+            return len(gpu_index)
+        if gpu_index is not None:
+            return 1
+        return 1
+
     # ------------------------------------------------------------------
     # Executor delegation — forwards to the first executor
     # ------------------------------------------------------------------

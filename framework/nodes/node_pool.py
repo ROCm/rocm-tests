@@ -18,7 +18,8 @@ import threading
 import time
 
 from framework.gpu.allocator import GpuAllocator
-from framework.gpu.detector import GpuDetector, GpuInfo
+from framework.gpu.detector import AbstractGpuDetector, GpuDetector, GpuInfo
+from framework.markers.gpu_count import GPU_COUNT_ALL
 from framework.nodes.gpu_file_lock import GpuFileLock
 from framework.nodes.node_spec import NodeSpec
 from framework.nodes.pending_tracker import PendingAcquisitionTracker
@@ -237,6 +238,7 @@ class NodePool:
         detect_timeout: float = 60.0,
         prefilled_gpus: dict[str, list[GpuInfo]] | None = None,
         artifact_dir: str | None = None,
+        detector_override: AbstractGpuDetector | None = None,
     ) -> None:
         """Discover GPUs on all nodes and initialise per-node allocators.
 
@@ -265,6 +267,7 @@ class NodePool:
         self._slot_released = threading.Event()
         self._rock_dir = rock_dir
         self._headroom_gb = headroom_gb
+        self._detector_override = detector_override
         if artifact_dir is None:
             from framework.config.loader import FrameworkSection  # pylint: disable=import-outside-toplevel
 
@@ -339,7 +342,9 @@ class NodePool:
             self._ssh_sessions[spec.label] = ssh
             logger.info("NodePool: opened SSH session to %s (%s)", spec.label, spec.hostname)
 
-        detector = GpuDetector(rock_dir=self._rock_dir, ssh_executor=ssh, artifact_dir=self._artifact_dir)
+        detector = self._detector_override or GpuDetector(
+            rock_dir=self._rock_dir, ssh_executor=ssh, artifact_dir=self._artifact_dir
+        )
         gpus = detector.detect()
 
         class _StaticDetector:
@@ -374,6 +379,14 @@ class NodePool:
             total += len(allocator._pool)
         return total
 
+    def max_gpus_per_node(self) -> int:
+        """Return the largest GPU pool size among all nodes (0 if none detected).
+
+        Used to resolve ``@pytest.mark.gpu_count("ALL")`` for same-node multi-GPU
+        acquisition, where ALL means every GPU on the chosen node.
+        """
+        return max((len(alloc._pool) for alloc in self._allocators.values()), default=0)
+
     def pool_status(self) -> tuple[int, int]:
         """Return ``(available_slots, total_slots)`` across all nodes.
 
@@ -406,6 +419,58 @@ class NodePool:
             count = len(alloc._pool) if alloc else 0
             parts.append(f"{spec.label}({count})")
         return " + ".join(parts)
+
+    def _vram_requirement_detail(
+        self,
+        vram_required_gb: float,
+        count: int = 1,
+        node_label: str | None = None,
+    ) -> str:
+        """Return a human-readable VRAM capability summary for allocation errors."""
+        if vram_required_gb <= 0:
+            return ""
+
+        node_parts = []
+        eligible_node_count = 0
+        for spec in self.node_specs:
+            if node_label is not None and spec.label != node_label:
+                continue
+            alloc = self._allocators.get(spec.label)
+            gpus = list(alloc._pool) if alloc else []
+            eligible = [gpu for gpu in gpus if (gpu.vram_mb / 1024) - self._headroom_gb >= vram_required_gb]
+            if len(eligible) >= count:
+                eligible_node_count += 1
+            vram_bits = ", ".join(f"GPU-{gpu.index}={gpu.vram_mb / 1024:.1f}GB" for gpu in gpus)
+            node_parts.append(f"{spec.label}: {vram_bits or 'no GPUs'} ({len(eligible)} eligible)")
+
+        scope = "selected node" if node_label is not None else "any node"
+        return (
+            f"VRAM requirement: >= {vram_required_gb:g}GB per GPU, "
+            f"need {count} eligible GPU(s) on {scope}; "
+            f"detected VRAM: {'; '.join(node_parts) or 'no matching nodes'}; "
+            f"headroom reserve: {self._headroom_gb:g}GB; "
+            f"nodes satisfying requirement: {eligible_node_count}."
+        )
+
+    def _has_vram_capacity(
+        self,
+        vram_required_gb: float,
+        count: int = 1,
+        node_label: str | None = None,
+    ) -> bool:
+        """Return whether the detected topology can ever satisfy a VRAM request."""
+        if vram_required_gb <= 0:
+            return True
+        for spec in self.node_specs:
+            if node_label is not None and spec.label != node_label:
+                continue
+            alloc = self._allocators.get(spec.label)
+            if alloc is None:
+                continue
+            eligible = [gpu for gpu in alloc._pool if (gpu.vram_mb / 1024) - self._headroom_gb >= vram_required_gb]
+            if len(eligible) >= count:
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Slot acquisition
@@ -442,6 +507,13 @@ class NodePool:
         Raises:
             RuntimeError: If no slot is available within *wait_timeout_secs*.
         """
+        if not self._has_vram_capacity(vram_required_gb):
+            raise RuntimeError(
+                "NodePool: no detected GPU satisfies the test VRAM requirement. "
+                f"{self._vram_requirement_detail(vram_required_gb)} "
+                f"Topology: {self.topology_summary()}."
+            )
+
         deadline = time.monotonic() + wait_timeout_secs
 
         while True:
@@ -523,8 +595,10 @@ class NodePool:
                             return found_slot
 
             if time.monotonic() >= deadline:
+                vram_detail = self._vram_requirement_detail(vram_required_gb)
                 raise RuntimeError(
                     f"NodePool: no GPU slot available after {wait_timeout_secs}s. "
+                    f"{vram_detail + ' ' if vram_detail else ''}"
                     f"Topology: {self.topology_summary()}. "
                     "Consider using --gpu-acquire-timeout to increase the timeout."
                 )
@@ -535,7 +609,7 @@ class NodePool:
             )
             time.sleep(0.5)
 
-    def acquire_slots(  # pylint: disable=too-many-locals,too-many-positional-arguments
+    def acquire_slots(  # noqa: C901  # pylint: disable=too-many-locals,too-many-positional-arguments
         self,
         count: int,
         node_label: str | None = None,
@@ -568,6 +642,13 @@ class NodePool:
         Raises:
             RuntimeError: If *count* slots are unavailable within the timeout.
         """
+        if not self._has_vram_capacity(vram_required_gb, count=count, node_label=node_label):
+            raise RuntimeError(
+                "NodePool: no detected node satisfies the test VRAM requirement. "
+                f"{self._vram_requirement_detail(vram_required_gb, count=count, node_label=node_label)} "
+                f"Topology: {self.topology_summary()}."
+            )
+
         deadline = time.monotonic() + wait_timeout_secs
 
         # Register intent in the cross-process pending tracker so that
@@ -642,9 +723,15 @@ class NodePool:
                             return MultiGpuSlots(slots=acquired, node_spec=spec)
 
                 if time.monotonic() >= deadline:
+                    vram_detail = self._vram_requirement_detail(
+                        vram_required_gb,
+                        count=count,
+                        node_label=node_label,
+                    )
                     raise RuntimeError(
                         f"NodePool: cannot acquire {count} GPU slots from one node "
                         f"after {wait_timeout_secs}s. "
+                        f"{vram_detail + ' ' if vram_detail else ''}"
                         f"Topology: {self.topology_summary()}"
                     )
                 logger.debug(
@@ -845,7 +932,7 @@ class NodePool:
 
     def acquire_multi_node(  # pylint: disable=too-many-positional-arguments
         self,
-        gpu_count_per_node: int = 1,
+        gpu_count_per_node: int | str = 1,
         vram_required_gb: float = 0.0,
         wait_timeout_secs: float = 30.0,
         test_id: str = "",
@@ -869,10 +956,16 @@ class NodePool:
         Raises:
             RuntimeError: If any node cannot provide the requested slots.
         """
+        want_all = isinstance(gpu_count_per_node, str) and gpu_count_per_node.strip().lower() == GPU_COUNT_ALL
         result: list[MultiGpuSlots] = []
         for spec in self.node_specs:
+            if want_all:
+                alloc = self._allocators.get(spec.label)
+                count = len(alloc._pool) if alloc else 0
+            else:
+                count = int(gpu_count_per_node)
             slots = self.acquire_slots(
-                count=gpu_count_per_node,
+                count=count,
                 node_label=spec.label,
                 vram_required_gb=vram_required_gb,
                 wait_timeout_secs=wait_timeout_secs,
