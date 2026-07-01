@@ -17,7 +17,14 @@ import logging
 
 import pytest
 
+from framework.markers.gpu_count import GPU_COUNT_ALL, parse_gpu_count
+
 logger = logging.getLogger(__name__)
+
+# Sort weight for gpu_count("ALL"): the test reserves the whole node, so it is
+# treated as the most resource-demanding (runs first under resource-most, gets a
+# dedicated xdist_group). The concrete count is resolved at acquisition time.
+_ALL_SORT_WEIGHT = 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -63,9 +70,11 @@ def _multi_gpu_count(item) -> int:
     """
     gpu_count_marker = item.get_closest_marker("gpu_count")
     if gpu_count_marker and gpu_count_marker.args:
-        n = int(gpu_count_marker.args[0])
-        if n > 1:
-            return n
+        parsed = parse_gpu_count(gpu_count_marker.args[0])
+        if parsed == GPU_COUNT_ALL:
+            return _ALL_SORT_WEIGHT
+        if parsed > 1:
+            return parsed
     if any(m.name == "hw.multi_gpu" for m in item.iter_markers()):
         return 2  # default gpu_count for hw.multi_gpu without explicit marker
     return 0
