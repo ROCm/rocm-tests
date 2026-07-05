@@ -73,6 +73,7 @@ def _multi_gpu_count(item) -> int:
         parsed = parse_gpu_count(gpu_count_marker.args[0])
         if parsed == GPU_COUNT_ALL:
             return _ALL_SORT_WEIGHT
+        assert isinstance(parsed, int)
         if parsed > 1:
             return parsed
     if any(m.name == "hw.multi_gpu" for m in item.iter_markers()):
