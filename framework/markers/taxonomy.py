@@ -119,6 +119,15 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # RCCL collective / error-handling ports (Tier 4). rccl_error_handling is
+    # single-GPU and overrides hw.multi_gpu -> hw.gpu at the function level.
+    "tests/e2e/rccl": [
+        "hw.multi_gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/rocm_libs": [
         "hw.gpu",
         "layer.math_lib",

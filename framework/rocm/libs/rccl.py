@@ -26,12 +26,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import shlex
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from framework.executors.abstract_executor import AbstractExecutor
 
 logger = logging.getLogger(__name__)
+
+# stdout substrings that unambiguously indicate an rccl-tests run failed,
+# independent of the bandwidth numbers (used by correctness_ok()).
+_FAILURE_MARKERS: tuple[str, ...] = (
+    "aborted",
+    "test failure",
+    "segmentation fault",
+    "out of memory",
+)
 
 
 @dataclass
@@ -99,6 +109,81 @@ def rccl_version(executor: AbstractExecutor) -> str | None:
     return None
 
 
+def run_perf(
+    executor: AbstractExecutor,
+    binary: str,
+    *,
+    n_gpus: int = 2,
+    extra_args: str = "",
+    env: dict[str, str] | None = None,
+    launcher: str = "",
+    operation: str = "perf",
+    size_mb: int = 0,
+    timeout: float = 300.0,
+) -> RcclResult:
+    """Run any ``rccl-tests`` ``*_perf`` binary and return parsed results.
+
+    Single generic runner shared by every rccl-tests-based test (multi-GPU,
+    HIP-graph, PAT-algorithm, plus the ``run_allreduce`` / ``run_broadcast`` /
+    ``run_allgather`` convenience wrappers below). It only builds the command
+    string and delegates execution to *executor*, so it works unchanged across
+    local, SSH, and container contexts.
+
+    The benchmark binary is invoked single-process / multi-thread via ``-g
+    <n_gpus>`` (one thread per visible GPU). Environment variables (e.g.
+    ``LD_LIBRARY_PATH`` for a TheRock install, ``NCCL_ALGO=PAT``) are prepended
+    with ``env`` so callers never have to format the command themselves.
+
+    Args:
+        executor:   Any executor / ``NodeExecutorGroup`` with a ``.run()`` method.
+        binary:     Path to (or PATH name of) the ``*_perf`` binary.
+        n_gpus:     Number of GPU devices to use (maps to ``-g``).
+        extra_args: Verbatim extra rccl-tests flags (e.g. ``"-b 16 -e 1G -f 2 -G 1"``).
+        env:        Environment variables to export before the binary runs.
+        launcher:   Optional command prefix such as ``"mpirun -np 2"``.
+        operation:  Label stored on the returned ``RcclResult`` (for reporting).
+        size_mb:    Message size in MB recorded on the result (metadata only).
+        timeout:    Maximum seconds to wait.
+
+    Returns:
+        ``RcclResult`` with parsed bandwidth/latency and the full ``raw_output``.
+    """
+    cmd = f"{binary} -g {n_gpus}"
+    if launcher:
+        cmd = f"{launcher} {cmd}"
+    if extra_args:
+        cmd = f"{cmd} {extra_args}"
+    if env:
+        prefix = "env " + " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items())
+        cmd = f"{prefix} {cmd}"
+    result = executor.run(cmd, timeout=timeout)
+    return _parse_rccl_output(operation, size_mb, n_gpus, result.stdout, result.ok)
+
+
+def correctness_ok(result: RcclResult) -> bool:
+    """Return True when an rccl-tests run completed *and* passed data validation.
+
+    Distinct from ``RcclResult.passed`` (which is bandwidth-based): this checks
+    the data-correctness path used by the functional tests (HIP-graph, PAT,
+    multi-GPU). With checking enabled (``-c 1``) rccl-tests prints ``OK`` per
+    row / ``# Out of bounds values : 0 OK`` and exits cleanly; any abort,
+    mismatch (``FAILED``), or known failure marker means the run did not pass.
+
+    Args:
+        result: A ``RcclResult`` produced by :func:`run_perf`.
+
+    Returns:
+        True if the run looks correct, False otherwise.
+    """
+    out = result.raw_output
+    low = out.lower()
+    if any(marker in low for marker in _FAILURE_MARKERS):
+        return False
+    if "FAILED" in out:
+        return False
+    return "OK" in out
+
+
 def run_allreduce(
     executor: AbstractExecutor,
     size_mb: int = 256,
@@ -120,9 +205,15 @@ def run_allreduce(
         Requires ``all_reduce_perf`` from ``rccl-tests`` on the runner PATH.
     """
     size_bytes = size_mb * 1024 * 1024
-    cmd = f"all_reduce_perf " f"-b {size_bytes} -e {size_bytes} -f 2 " f"-g {n_gpus} -w {n_warmup} -n {n_iters}"
-    result = executor.run(cmd, timeout=120.0)
-    return _parse_rccl_output("allreduce", size_mb, n_gpus, result.stdout, result.ok)
+    return run_perf(
+        executor,
+        "all_reduce_perf",
+        n_gpus=n_gpus,
+        extra_args=f"-b {size_bytes} -e {size_bytes} -f 2 -w {n_warmup} -n {n_iters}",
+        operation="allreduce",
+        size_mb=size_mb,
+        timeout=120.0,
+    )
 
 
 def run_broadcast(
@@ -142,9 +233,15 @@ def run_broadcast(
         Requires ``broadcast_perf`` from ``rccl-tests``.
     """
     size_bytes = size_mb * 1024 * 1024
-    cmd = f"broadcast_perf -b {size_bytes} -e {size_bytes} -f 2 -g {n_gpus}"
-    result = executor.run(cmd, timeout=120.0)
-    return _parse_rccl_output("broadcast", size_mb, n_gpus, result.stdout, result.ok)
+    return run_perf(
+        executor,
+        "broadcast_perf",
+        n_gpus=n_gpus,
+        extra_args=f"-b {size_bytes} -e {size_bytes} -f 2",
+        operation="broadcast",
+        size_mb=size_mb,
+        timeout=120.0,
+    )
 
 
 def run_allgather(
@@ -164,9 +261,15 @@ def run_allgather(
         Requires ``all_gather_perf`` from ``rccl-tests``.
     """
     size_bytes = size_mb * 1024 * 1024
-    cmd = f"all_gather_perf -b {size_bytes} -e {size_bytes} -f 2 -g {n_gpus}"
-    result = executor.run(cmd, timeout=120.0)
-    return _parse_rccl_output("allgather", size_mb, n_gpus, result.stdout, result.ok)
+    return run_perf(
+        executor,
+        "all_gather_perf",
+        n_gpus=n_gpus,
+        extra_args=f"-b {size_bytes} -e {size_bytes} -f 2",
+        operation="allgather",
+        size_mb=size_mb,
+        timeout=120.0,
+    )
 
 
 # ---------------------------------------------------------------------------
