@@ -192,6 +192,7 @@ jobs:
           pytest tests/e2e/compiler/ \
             tests/e2e/hwq_heuristic/ \
             tests/e2e/hip_runtime/ tests/e2e/rocm_libs/ \
+            tests/e2e/rccl/ \
             --rock-dir=therock_build \
             --gpu-arch=${GPU_ARCH} \
             --html=nightly_report.html --self-contained-html \
