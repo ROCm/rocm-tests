@@ -21,8 +21,16 @@ import enum
 import logging
 import os
 import pathlib
+import re
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_artifact_name(name: str) -> str:
+    """Return a filesystem-portable artifact filename stem."""
+    safe = re.sub(r"[^A-Za-z0-9._=-]+", "_", name)
+    safe = re.sub(r"_+", "_", safe).strip("._")
+    return safe or "test"
 
 
 @dataclass(frozen=True)
@@ -81,7 +89,7 @@ def _executor_log_file(artifact_dir: str, test_name: str, nodeid: str | None = N
         test_subdir = pathlib.Path(test_file).parent.name
     else:
         test_subdir = "executor-logs"
-    safe_func = test_name.replace("/", "_").replace("::", "__")
+    safe_func = _safe_artifact_name(test_name.replace("::", "__"))
     return pathlib.Path(artifact_dir) / test_subdir / f"{safe_func}.log"
 
 
@@ -129,7 +137,7 @@ def gpu_monitor_log_path(artifact_dir: str, test_name: str) -> str:
     Returns:
         Path string ending in ``<safe_name>_gpu_monitor.log``.
     """
-    safe = test_name.replace("/", "_").replace("::", "__")
+    safe = _safe_artifact_name(test_name.replace("::", "__"))
     log_dir = os.path.join(artifact_dir, "executor-logs")
     pathlib.Path(log_dir).mkdir(parents=True, exist_ok=True)
     return os.path.join(log_dir, f"{safe}_gpu_monitor.log")
