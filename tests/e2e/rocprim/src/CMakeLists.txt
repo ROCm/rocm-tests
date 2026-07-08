@@ -9,7 +9,10 @@ cmake_minimum_required(VERSION 3.21 FATAL_ERROR)
 # Shared ROCm path resolution and CMAKE_PREFIX_PATH setup.
 # Does NOT set compiler variables — the compiler is passed via -DCMAKE_CXX_COMPILER
 # from the conftest (mandatory; conftest calls pytest.fail if clang++ is absent).
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../../common/cmake")
+if(NOT ROCM_TEST_CMAKE_MODULE_DIR)
+  message(FATAL_ERROR "ROCM_TEST_CMAKE_MODULE_DIR is not set; build through the pytest builder fixture.")
+endif()
+list(APPEND CMAKE_MODULE_PATH "${ROCM_TEST_CMAKE_MODULE_DIR}")
 include(rocm_setup)
 
 project(rocprim_tests
@@ -29,7 +32,7 @@ set(MEMORYCHECK_COMMAND_OPTIONS
 # DEPENDENCIES
 # ============================================================================
 
-# Module-mode find_package(HIP) — matches AIGQA-Tests/rocPRIM_Tests original.
+# Module-mode find_package(HIP)
 # Avoids the config-mode chain (hip-config-amd.cmake → find_dependency(AMDDeviceLibs))
 # which fails when --blas installs a broken AMDDeviceLibsConfig.cmake forwarding stub.
 find_package(HIP REQUIRED)

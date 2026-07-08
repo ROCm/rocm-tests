@@ -3,17 +3,21 @@
 """
 conftest.py -- CMake build fixtures for tests/e2e/hip_runtime/.
 
-Two separate CMake build steps keep the host-only binary independent of GPU_ARCH:
+Each test declares the binary fixture it needs; that fixture configures/builds
+only the required target rather than compiling unrelated HIP runtime binaries:
 
 - ``_hip_host_cmake_build_dir``   — builds ``hip_invalid_codeobject_load_test``
   (pure HIP driver API, no GPU kernels; does not require ``--gpu-arch``).
 - ``_hip_stream_cmake_build_dir`` — builds ``multi_stream_serialization``
   (HIP kernel code; requires ``--gpu-arch`` so ``-DGPU_ARCH`` can be forwarded).
+- ``_split_barrier_stress_build_dir`` — builds ``split_barrier_stress``
+  (standalone cooperative-groups stress sample; requires ``--gpu-arch``).
 
 Build output layout::
 
     output/test-binaries/hip_runtime/host_build/hip_invalid_codeobject_load_test
     output/test-binaries/hip_runtime/stream_build/multi_stream_serialization
+    output/test-binaries/hip_runtime/split_barrier_stress/split_barrier_stress
 """
 
 from __future__ import annotations
@@ -26,10 +30,10 @@ import pytest
 
 logger = logging.getLogger(__name__)
 _SRC_DIR = "tests/e2e/hip_runtime/src"
+_SPLIT_BARRIER_SRC_DIR = "tests/e2e/hip_runtime/src/split_barrier_stress"
 
-# HIP samples upstream suite (ROCm/hip-tests "samples/" subtree).  The legacy
-# ROCmTest driver built the samples that ship in the installed ROCm package at
-# share/hip/samples — those are the same sources published in ROCm/hip-tests.
+# HIP samples upstream suite (ROCm/hip-tests "samples/" subtree).
+# Samples are the same sources published in ROCm/hip-tests.
 # Cloned at runtime (never vendored); pin via env override.
 _HIP_TESTS_URL = "https://github.com/ROCm/hip-tests.git"
 _HIP_TESTS_REF = os.environ.get("ROCM_TEST_HIP_TESTS_REF", "develop")
@@ -66,6 +70,29 @@ def _hip_stream_cmake_build_dir(gpu_arch: str | None, cmake_build_dir, require_g
 
 
 @pytest.fixture(scope="session")
+def _split_barrier_stress_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build the vendored ``split_barrier_stress`` HIP cooperative-groups sample.
+
+    The sample ships its own self-contained ``CMakeLists.txt`` (FindHIP
+    ``HIP_ADD_EXECUTABLE`` + rocSOLVER/rocBLAS), so it is built in its own
+    subdirectory independent of the shared ``hip_runtime`` CMake project.
+    ``compiler_mode="none"`` lets FindHIP locate hipcc via ``ROCM_PATH`` exactly
+    as the legacy ``cmake -DROCM_PATH -DGPU_ARCH .. && make`` invocation did.
+    """
+    require_gpu_arch_for("hip_runtime/split_barrier_stress")
+    return cmake_build_dir(
+        src=_SPLIT_BARRIER_SRC_DIR,
+        subdir="hip_runtime/split_barrier_stress",
+        gpu_arch=gpu_arch,
+        compiler_mode="none",
+        label="hip_runtime/split_barrier_stress",
+        sync_dirs=[_SPLIT_BARRIER_SRC_DIR],
+        artifact="split_barrier_stress",
+        target="split_barrier_stress",
+    )
+
+
+@pytest.fixture(scope="session")
 def hip_invalid_codeobject_load_binary(_hip_host_cmake_build_dir: str, built_binary) -> str:
     """Compiled ``hip_invalid_codeobject_load_test`` binary path."""
     return built_binary(
@@ -79,6 +106,12 @@ def multi_stream_serialization_binary(_hip_stream_cmake_build_dir: str, built_bi
     return built_binary(
         os.path.join(_hip_stream_cmake_build_dir, "multi_stream_serialization"), "multi_stream_serialization"
     )
+
+
+@pytest.fixture(scope="session")
+def split_barrier_stress_binary(_split_barrier_stress_build_dir: str, built_binary) -> str:
+    """Compiled ``split_barrier_stress`` binary path."""
+    return built_binary(os.path.join(_split_barrier_stress_build_dir, "split_barrier_stress"), "split_barrier_stress")
 
 
 # HIP samples are cloned from ROCm/hip-tests rather than vendored.

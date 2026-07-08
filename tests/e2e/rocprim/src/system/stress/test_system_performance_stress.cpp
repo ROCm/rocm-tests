@@ -146,13 +146,17 @@ TEST(SystemStressTests, MaximumMemoryPressure_100Percent) {
   const size_t operational_cushion = 4ULL * 1024ULL * 1024ULL * 1024ULL;
 
   int *d_data = nullptr;
+  int *d_chunk_outputs = nullptr;
   void *d_temp = nullptr;
   size_t temp_bytes = 0;
 
   hipStream_t stream = hipStreamDefault;
+  constexpr size_t max_reduce_elements = 10'000'000;  // per rocPRIM call
+  size_t chunk_count = 0;
 
   size_t data_bytes = target_bytes;
 
+retry_payload:
   // Try to find the largest payload that:
   //  1) Allocates successfully
   //  2) Allows rocPRIM temp allocation
@@ -167,11 +171,16 @@ TEST(SystemStressTests, MaximumMemoryPressure_100Percent) {
     }
 
     const size_t n = data_bytes / sizeof(int);
+    const size_t first_chunk = std::min(n, max_reduce_elements);
+    chunk_count = (n + max_reduce_elements - 1) / max_reduce_elements;
 
-    // Query temp
+    // Query temp for the largest per-chunk reduce and for the final reduction of
+    // chunk outputs. This preserves the original near-VRAM payload while avoiding
+    // an oversized single rocPRIM launch.
     temp_bytes = 0;
-    hipError_t stq = rocprim::reduce(nullptr, temp_bytes, d_data, d_output, n,
-                                     rocprim::plus<int>(), stream);
+    size_t chunk_temp_bytes = 0;
+    hipError_t stq = rocprim::reduce(nullptr, chunk_temp_bytes, d_data, d_output,
+                                     first_chunk, rocprim::plus<int>(), stream);
     if (stq != hipSuccess) {
       std::cout << "reduce failed" << std::endl;
       HIP_CHECK(hipFree(d_data));
@@ -179,6 +188,19 @@ TEST(SystemStressTests, MaximumMemoryPressure_100Percent) {
       data_bytes = (data_bytes > backoff) ? (data_bytes - backoff) : 0;
       continue;
     }
+    size_t final_temp_bytes = 0;
+    if (chunk_count > 1) {
+      stq = rocprim::reduce(nullptr, final_temp_bytes, d_chunk_outputs, d_output,
+                            chunk_count, rocprim::plus<int>(), stream);
+      if (stq != hipSuccess) {
+        std::cout << "final reduce failed" << std::endl;
+        HIP_CHECK(hipFree(d_data));
+        d_data = nullptr;
+        data_bytes = (data_bytes > backoff) ? (data_bytes - backoff) : 0;
+        continue;
+      }
+    }
+    temp_bytes = std::max(chunk_temp_bytes, final_temp_bytes);
 
     // Allocate temp
     d_temp = nullptr;
@@ -191,6 +213,20 @@ TEST(SystemStressTests, MaximumMemoryPressure_100Percent) {
 
         size_t shrink = std::max(backoff, temp_bytes / 2);
         data_bytes = (data_bytes > shrink) ? (data_bytes - shrink) : 0;
+        continue;
+      }
+    }
+    d_chunk_outputs = nullptr;
+    if (chunk_count > 1) {
+      hipError_t sto = hipMalloc(&d_chunk_outputs, chunk_count * sizeof(int));
+      if (sto != hipSuccess) {
+        HIP_CHECK(hipFree(d_data));
+        d_data = nullptr;
+        if (d_temp) {
+          HIP_CHECK(hipFree(d_temp));
+          d_temp = nullptr;
+        }
+        data_bytes = (data_bytes > backoff) ? (data_bytes - backoff) : 0;
         continue;
       }
     }
@@ -207,6 +243,10 @@ TEST(SystemStressTests, MaximumMemoryPressure_100Percent) {
       if (d_temp) {
         HIP_CHECK(hipFree(d_temp));
         d_temp = nullptr;
+      }
+      if (d_chunk_outputs) {
+        HIP_CHECK(hipFree(d_chunk_outputs));
+        d_chunk_outputs = nullptr;
       }
 
       data_bytes = (data_bytes > backoff) ? (data_bytes - backoff) : 0;
@@ -238,9 +278,44 @@ TEST(SystemStressTests, MaximumMemoryPressure_100Percent) {
 
   // Timed reduce
   auto start = std::chrono::high_resolution_clock::now();
-  HIP_CHECK(rocprim::reduce(d_temp, temp_bytes, d_data, d_output, n,
-                            rocprim::plus<int>(), stream));
-  HIP_CHECK(hipStreamSynchronize(stream));
+  hipError_t reduce_status = hipSuccess;
+  if (chunk_count == 1) {
+    reduce_status = rocprim::reduce(d_temp, temp_bytes, d_data, d_output, n,
+                                    rocprim::plus<int>(), stream);
+  } else {
+    for (size_t chunk = 0; chunk < chunk_count && reduce_status == hipSuccess;
+         ++chunk) {
+      const size_t offset = chunk * max_reduce_elements;
+      const size_t chunk_n = std::min(max_reduce_elements, n - offset);
+      reduce_status = rocprim::reduce(d_temp, temp_bytes, d_data + offset,
+                                      d_chunk_outputs + chunk, chunk_n,
+                                      rocprim::plus<int>(), stream);
+    }
+    if (reduce_status == hipSuccess) {
+      reduce_status = rocprim::reduce(d_temp, temp_bytes, d_chunk_outputs,
+                                      d_output, chunk_count,
+                                      rocprim::plus<int>(), stream);
+    }
+  }
+  if (reduce_status == hipSuccess)
+    reduce_status = hipStreamSynchronize(stream);
+  if (reduce_status != hipSuccess) {
+    std::cout << "  Reduce launch failed at payload " << gib(data_bytes)
+              << " GB (" << hipGetErrorString(reduce_status)
+              << "); backing off and retrying\n";
+    HIP_CHECK(hipFree(d_data));
+    d_data = nullptr;
+    if (d_chunk_outputs) {
+      HIP_CHECK(hipFree(d_chunk_outputs));
+      d_chunk_outputs = nullptr;
+    }
+    if (d_temp) {
+      HIP_CHECK(hipFree(d_temp));
+      d_temp = nullptr;
+    }
+    data_bytes = (data_bytes > backoff) ? (data_bytes - backoff) : 0;
+    goto retry_payload;
+  }
   auto end = std::chrono::high_resolution_clock::now();
 
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
@@ -254,6 +329,8 @@ TEST(SystemStressTests, MaximumMemoryPressure_100Percent) {
 
   HIP_CHECK(hipFree(d_data));
   HIP_CHECK(hipFree(d_output));
+  if (d_chunk_outputs)
+    HIP_CHECK(hipFree(d_chunk_outputs));
   if (d_temp)
     HIP_CHECK(hipFree(d_temp));
 
