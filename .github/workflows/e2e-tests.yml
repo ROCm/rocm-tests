@@ -193,6 +193,7 @@ jobs:
             tests/e2e/hwq_heuristic/ \
             tests/e2e/hip_runtime/ \
             tests/e2e/hipblaslt/ \
+            tests/e2e/rccl/ \
             tests/e2e/rocm_libs/ \
             tests/e2e/rocprim/ \
             --rock-dir=therock_build \
