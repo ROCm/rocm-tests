@@ -11,7 +11,7 @@ Build output layout::
     output/test-binaries/rocprim/build/rocprim_tests
 
 The binary is invoked per test with ``--gtest_filter`` (SystemMultiStreamTests,
-MultiGPUHMMTests, SystemStressTests).
+MultiGPUHMMTests, SystemStressTests, RocprimSampleTests).
 """
 
 from __future__ import annotations
