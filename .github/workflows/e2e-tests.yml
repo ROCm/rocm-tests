@@ -131,7 +131,7 @@ jobs:
           cd TheRock
           python3 -m pip install --root-user-action=ignore -r requirements-test.txt
 
-          COMMON_FLAGS="--artifact-group ${ARTIFACT_GROUP} --amdgpu-targets ${GPU_ARCH} --tests --blas --prim --rand --rocwmma --hipblasltprovider --libhipcxx --output-dir ../therock_build"
+          COMMON_FLAGS="--artifact-group ${ARTIFACT_GROUP} --amdgpu-targets ${GPU_ARCH} --tests --blas --prim --rand --rocwmma --hipblasltprovider --libhipcxx --rccl --output-dir ../therock_build"
 
           if [ "${SOURCE_REPO}" = "ROCm/rockrel" ]; then
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
@@ -159,7 +159,8 @@ jobs:
               --amdgpu-targets ${GPU_ARCH} \
               --output-dir ../therock_build \
               --flatten \
-              '_dev'
+              '_dev' \
+              'hipify_run'
           fi
 
       - name: Install uv
