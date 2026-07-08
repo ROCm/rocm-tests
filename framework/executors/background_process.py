@@ -157,16 +157,16 @@ def _reader_loop(
         if stop_evt.is_set() and proc.poll() is not None:
             break
 
-        ready = select.select([proc.stdout, proc.stderr], [], [], 0.5)[0]
+        ready = select.select([s for s in [proc.stdout, proc.stderr] if s is not None], [], [], 0.5)[0]
 
         if proc.stdout in ready:
-            chunk = proc.stdout.read()  # type: ignore[union-attr]
+            chunk = proc.stdout.read()
             if chunk:
                 _bg_pipe_write(chunk, stdout_console, log_fh)
                 stdout_chunks.append(chunk)
 
         if proc.stderr in ready:
-            chunk = proc.stderr.read()  # type: ignore[union-attr]
+            chunk = proc.stderr.read()
             if chunk:
                 _bg_pipe_write(chunk, stderr_console, log_fh)
                 stderr_chunks.append(chunk)
@@ -497,20 +497,20 @@ def _blocking_stream_run(
                 raise TimeoutError(f"Command timed out after {timeout}s: {command}")
 
             ready = select.select(
-                [process.stdout, process.stderr],
+                [s for s in [process.stdout, process.stderr] if s is not None],
                 [],
                 [],
                 min(max(timeout - elapsed, 0.1), 5.0),
             )[0]
 
             if process.stdout in ready:
-                chunk = process.stdout.read()  # type: ignore[union-attr]
+                chunk = process.stdout.read()
                 if chunk:
                     _bg_pipe_write(chunk, stdout_console, log_fh)
                     stdout_buf += chunk
 
             if process.stderr in ready:
-                chunk = process.stderr.read()  # type: ignore[union-attr]
+                chunk = process.stderr.read()
                 if chunk:
                     _bg_pipe_write(chunk, stderr_console, log_fh)
                     stderr_buf += chunk
