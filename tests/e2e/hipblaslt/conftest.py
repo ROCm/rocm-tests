@@ -61,8 +61,6 @@ import shutil
 
 import pytest
 
-from framework.builder.binary_builder import cmake_build, find_rocm_clangpp
-
 logger = logging.getLogger(__name__)
 
 _SUBDIR = "hipblaslt"
@@ -253,7 +251,7 @@ def gemm_heuristic_workspace_budget_binary(compile_binary, rock_dir: str, cmake_
 
 
 @pytest.fixture(scope="session")
-def _hip_heuristic_cmake_build_dir(gpu_arch: str | None, rock_dir: str, compiler_build_dir: str, cmake_executor) -> str:
+def _hip_heuristic_cmake_build_dir(gpu_arch: str | None, cmake_build_dir, cmake_executor) -> str:
     """Build hipblaslt-heuristic-test via CMake; return build directory path.
 
     Runs ``cmake -S <src> -B <build> -DROCM_PATH=<rock_dir> [-DGPU_ARCH=<arch>]``
@@ -267,8 +265,7 @@ def _hip_heuristic_cmake_build_dir(gpu_arch: str | None, rock_dir: str, compiler
 
     Args:
         gpu_arch:            Target GPU architecture from the ``gpu_arch`` fixture (``--gpu-arch``).
-        rock_dir:            Path to the ROCm/TheRock install (``--rock-dir`` / ``ROCK_DIR``).
-        compiler_build_dir:  Session-scoped output root (``output/test-binaries/`` by default).
+        cmake_build_dir:     Session-scoped CMake build factory from ``builder_plugin``.
         cmake_executor:      Session-scoped ``SshExecutor`` for remote cmake; ``None`` for local builds.
 
     Returns:
@@ -277,25 +274,16 @@ def _hip_heuristic_cmake_build_dir(gpu_arch: str | None, rock_dir: str, compiler
     if cmake_executor is None and not shutil.which("cmake"):
         pytest.skip("cmake not found in PATH — install cmake to run this test locally")
 
-    rocm_path = os.path.realpath(rock_dir)
-    build_dir = os.path.abspath(os.path.join(compiler_build_dir, "hipblaslt_heuristic_workspace", "build"))
-
-    # clang++ is used as the host CXX compiler; the CMakeLists.txt handles HIP compiler
-    # detection (find_program amdclang++) independently. Both may arrive as -D flags.
-    clangpp = find_rocm_clangpp(rocm_path)
-    compiler_args = [f"-DCMAKE_CXX_COMPILER={clangpp}"] if clangpp else []
-
-    cmake_build(
-        _CMAKE_SRC_DIR,
-        build_dir,
-        rocm_path,
+    return cmake_build_dir(
+        src=_CMAKE_SRC_DIR,
+        subdir="hipblaslt_heuristic_workspace",
         gpu_arch=gpu_arch,
-        compiler_args=compiler_args,
+        compiler_mode="optional_auto",
         label="hipblaslt_heuristic_workspace",
-        remote_executor=cmake_executor,
-        sync_dirs=[os.path.abspath(_CMAKE_SRC_DIR)],
+        sync_dirs=[_CMAKE_SRC_DIR],
+        artifact=_CMAKE_BINARY_NAME,
+        target=_CMAKE_BINARY_NAME,
     )
-    return build_dir
 
 
 @pytest.fixture(scope="session")
