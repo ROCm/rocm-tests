@@ -14,9 +14,6 @@ Binary compiled via CMake from:
     tests/e2e/rocprim/src/system/reliability/test_system_multigpu_hmm.cpp
     tests/e2e/rocprim/src/system/stress/test_system_performance_stress.cpp
 
-Binary output location:
-    output/test-binaries/rocprim/build/rocprim_tests
-
 ``runtime.medium`` is declared explicitly (< 2 min for concurrency filter).
 
 GTest suites in the binary:

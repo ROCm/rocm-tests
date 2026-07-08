@@ -397,8 +397,8 @@ class BinaryBuilder:
                     select_wait = min(select_wait, timeout - elapsed)
                 select_wait = max(select_wait, 0.1)
 
-                if select.select([process.stdout], [], [], select_wait)[0]:
-                    chunk = process.stdout.read()  # type: ignore[union-attr]
+                if process.stdout is not None and select.select([process.stdout], [], [], select_wait)[0]:
+                    chunk = process.stdout.read()
                     if chunk:
                         t_last_output = time.monotonic()
                         _write_chunk(chunk, log_fh)

@@ -317,7 +317,7 @@ def run_cmd_get_stdout_stderr(
     stdout_buf, stderr_buf = b"", b""
     chunk: bytes = b"x"  # non-empty sentinel to enter the loop
     while chunk != b"":
-        ready = select.select([process.stdout, process.stderr], [], [], timeout)[0]
+        ready = select.select([s for s in [process.stdout, process.stderr] if s is not None], [], [], timeout)[0]
         if not ready:
             msg = f"Reached timeout of {timeout}s — killing process."
             logger.warning(msg)
