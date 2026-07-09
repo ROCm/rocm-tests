@@ -2,7 +2,7 @@
 # Copyright (c) 2017-2026 Advanced Micro Devices, Inc. All rights reserved.
 #
 # rocPRIM Standalone Test Suite
-# This CMakeLists.txt includes only existing tests
+# This CMakeLists.txt builds the shared GTest binary for rocPRIM e2e tests.
 
 cmake_minimum_required(VERSION 3.21 FATAL_ERROR)
 
@@ -51,6 +51,7 @@ find_package(GTest QUIET)
 if(NOT GTest_FOUND)
     include(FetchContent)
     message(STATUS "GTest not found, downloading...")
+    # GoogleTest is BSD-3-Clause licensed: https://github.com/google/googletest/blob/main/LICENSE
     FetchContent_Declare(
         googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
@@ -98,7 +99,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__HIP_PLATFORM_AMD__")
 
 message(STATUS "")
 message(STATUS "=============================================================")
-message(STATUS "rocPRIM Test Suite - Existing Tests Only")
+message(STATUS "rocPRIM Test Suite")
 message(STATUS "=============================================================")
 
 set(TEST_SOURCES
@@ -113,6 +114,9 @@ set(TEST_SOURCES
     
     # System tests - Stress
     system/stress/test_system_performance_stress.cpp
+
+    # Sample workflows
+    samples/test_rocprim_samples.cpp
 )
 
 message(STATUS "Test Files:")
@@ -154,6 +158,7 @@ message(STATUS "✓ Test executable: rocprim_tests")
 message(STATUS "  - Concurrency: 4 tests (8 streams, parallel)")
 message(STATUS "  - Multi-GPU HMM: 2 tests")
 message(STATUS "  - Stress: 4 tests (MaxMemoryPressure, MassiveConcurrency, MixedWorkload, LinearScaling)")
+message(STATUS "  - Samples: 4 tests (running statistics, top-k frequency, ML feature engineering, ETL)")
 
 # ============================================================================
 # CTEST INTEGRATION
@@ -187,12 +192,20 @@ set_tests_properties(stress_tests PROPERTIES
     TIMEOUT 1200 
     LABELS "stress;system")
 
+# Sample workflow tests
+add_test(NAME sample_tests
+         COMMAND rocprim_tests --gtest_filter=RocprimSampleTests.*)
+set_tests_properties(sample_tests PROPERTIES
+    TIMEOUT 600
+    LABELS "samples;system")
+
 message(STATUS "")
 message(STATUS "CTest Labels:")
 message(STATUS "  - all: All tests")
 message(STATUS "  - concurrency: Multi-stream tests")
 message(STATUS "  - multigpu: Multi-GPU HMM tests")
 message(STATUS "  - stress: Aggressive stress tests")
+message(STATUS "  - samples: Sample workflow tests")
 
 # ============================================================================
 # CUSTOM TEST TARGETS
@@ -218,12 +231,18 @@ add_custom_target(run_stress
     DEPENDS rocprim_tests
     COMMENT "Running stress tests")
 
+add_custom_target(run_samples
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L samples
+    DEPENDS rocprim_tests
+    COMMENT "Running sample workflow tests")
+
 message(STATUS "")
 message(STATUS "Custom Targets:")
 message(STATUS "  - make run_all")
 message(STATUS "  - make run_concurrency")
 message(STATUS "  - make run_multigpu")
 message(STATUS "  - make run_stress")
+message(STATUS "  - make run_samples")
 
 # ============================================================================
 # CONFIGURATION SUMMARY
@@ -243,5 +262,6 @@ message(STATUS "  ./build/rocprim_tests")
 message(STATUS "  ctest --test-dir build -L concurrency")
 message(STATUS "  ctest --test-dir build -L multigpu")
 message(STATUS "  ctest --test-dir build -L stress")
+message(STATUS "  ctest --test-dir build -L samples")
 message(STATUS "=============================================================")
 message(STATUS "")
