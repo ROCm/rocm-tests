@@ -89,8 +89,6 @@ jobs:
           PLATFORM_NAME: ${{ inputs.name }}
           TARGET_AVAILABLE: ${{ inputs.target_available }}
         run: |
-          getent group
-          id
           echo "Platform: ${PLATFORM_NAME}"
           echo "target_available: ${TARGET_AVAILABLE}"
 
