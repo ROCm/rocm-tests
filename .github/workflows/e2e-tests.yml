@@ -72,13 +72,13 @@ jobs:
         --ipc host
         --device /dev/kfd
         --device /dev/dri
-        --group-add 993
-        --group-add 992
+        --group-add video
+        --group-add render
         --group-add 110
         --ulimit memlock=-1:-1
         --security-opt seccomp=unconfined
-        --env-file /etc/podinfo/gha-gpu-isolation-settings
         --user 0:0
+        ${{inputs.extra_docker_args}}
     defaults:
       run:
         shell: bash
@@ -89,6 +89,7 @@ jobs:
           PLATFORM_NAME: ${{ inputs.name }}
           TARGET_AVAILABLE: ${{ inputs.target_available }}
         run: |
+          id
           echo "Platform: ${PLATFORM_NAME}"
           echo "target_available: ${TARGET_AVAILABLE}"
 
