@@ -9,8 +9,6 @@ Binary registry
 This area mixes two build strategies:
 
 1. ``compile_binary`` (hipcc direct) for pure C++ binaries:
-   - ``mini_residual_app``
-   - ``gemm_heuristic_workspace_budget``
 
 2. CMake build for the ``.hip`` source that requires HIP language mode:
    - ``hipblaslt_heuristic_workspace`` (binary: ``hipblaslt-heuristic-test``)
@@ -32,22 +30,6 @@ The ``.hip`` source requires the HIP language property (``set_source_files_prope
 which is not available through direct hipcc invocation.  The ``_hip_heuristic_cmake_build_dir``
 fixture runs ``cmake -S ... -B ...`` followed by ``cmake --build``, the same pattern
 as ``hwq_heuristic`` conftest.
-
-Layout
-------
-tests/e2e/hipblaslt/
-├── src/
-│   ├── mini_residual_app.cpp
-│   ├── gemm_heuristic_workspace_budget.cpp
-│   ├── hipblaslt_shape_boundary.py
-│   └── hipblaslt_heuristic_workspace/
-│       ├── hipblaslt_heuristic_workspace.hip
-│       └── CMakeLists.txt
-├── conftest.py  (this file)
-├── test_mini_residual_app.py
-├── test_gemm_heuristic_workspace.py
-├── test_hipblaslt_heuristic_workspace.py
-└── test_hipblaslt_shape_boundary.py
 """
 
 from __future__ import annotations
@@ -290,8 +272,12 @@ def _hip_heuristic_cmake_build_dir(gpu_arch: str | None, cmake_build_dir, cmake_
 def tensile_lib_path(rock_dir: str, gpu_arch: str | None, arch_lib_path, cmake_executor) -> str:
     """Resolve and validate the hipBLASLt Tensile library directory path.
 
-    Constructs the per-arch Tensile kernel directory path and validates that
-    ``TensileLibrary_lazy_<arch>.dat`` is present before any test runs.
+    Constructs the per-arch Tensile kernel directory path and validates that a
+    lazy master library ``TensileLibrary_lazy_<arch>.dat`` is present — in either
+    the plain form or one of the compressed forms TheRock now ships
+    (``.dat.zlib`` / ``.dat.gz``). hipBLASLt/Tensile loads the compressed library
+    directly at runtime, so any of these variants means the kernels are installed
+    and usable; only the *absence of all* variants is a real failure.
 
     - **Local mode** (``cmake_executor is None``): uses ``pathlib.Path.exists()``
       — fast and requires no subprocess.
@@ -317,73 +303,37 @@ def tensile_lib_path(rock_dir: str, gpu_arch: str | None, arch_lib_path, cmake_e
     tensile_lib = arch_lib_path(library_base)
 
     if gpu_arch:
-        tensile_dat = f"{tensile_lib}/TensileLibrary_lazy_{gpu_arch}.dat"
-        if cmake_executor is None:
-            if not pathlib.Path(tensile_dat).exists():
-                pytest.fail(_tensile_fail_msg(gpu_arch, tensile_dat, str(library_base), tensile_lib, None))
-        else:
-            result = cmake_executor.run(f"test -f {shlex.quote(tensile_dat)}")
-            if not result.ok:
-                pytest.fail(_tensile_fail_msg(gpu_arch, tensile_dat, str(library_base), tensile_lib, cmake_executor))
+        stem = f"{tensile_lib}/TensileLibrary_lazy_{gpu_arch}.dat"
+        # TheRock ships the lazy library either uncompressed or zlib/gzip-compressed;
+        # hipBLASLt decompresses on load, so accept whichever variant is present.
+        candidates = [stem, f"{stem}.zlib", f"{stem}.gz"]
+        if not _any_tensile_lib_present(candidates, cmake_executor):
+            checked = "\n".join(f"  - {path}" for path in candidates)
+            pytest.fail(
+                f"hipBLASLt Tensile kernels missing for arch {gpu_arch!r}. Checked (plain + compressed):\n"
+                f"{checked}\n"
+                "Install the BLAS artifact package (pass --blas to install_rocm_from_artifacts.py)."
+            )
 
     return tensile_lib
 
 
-def _tensile_fail_msg(gpu_arch: str, tensile_dat: str, library_base: str, tensile_lib: str, cmake_executor) -> str:
-    """Build a diagnostic failure message that lists the Tensile library directories.
-
-    On a missing ``TensileLibrary_lazy_<arch>.dat`` the message enumerates the
-    contents of both ``lib/hipblaslt/library/`` and ``lib/hipblaslt/library/<arch>/``
-    so the actual on-disk layout (or its absence) is visible directly in the report,
-    without needing to re-run with a shell on the node.
+def _any_tensile_lib_present(candidates: list[str], cmake_executor) -> bool:
+    """Return True if any candidate lazy-library file exists (local or remote).
 
     Args:
-        gpu_arch:       Target GPU architecture string (e.g. ``"gfx942"``).
-        tensile_dat:    Absolute path to the expected lazy-library ``.dat`` file.
-        library_base:   Base ``lib/hipblaslt/library`` directory.
-        tensile_lib:    Arch-specific sub-directory (``<library_base>/<arch>``).
-        cmake_executor: ``SshExecutor`` for remote listing, or ``None`` for local.
+        candidates:     Absolute paths to accept (plain and compressed variants).
+        cmake_executor: ``SshExecutor`` for remote checks, or ``None`` for local.
 
     Returns:
-        Multi-line failure string including directory listings.
-    """
-    lines = [
-        f"hipBLASLt Tensile kernels missing for arch {gpu_arch!r}: {tensile_dat}",
-        "Install the BLAS artifact package (pass --blas to install_rocm_from_artifacts.py).",
-        "",
-        "Diagnostics — searched for TensileLibrary_lazy_* in:",
-    ]
-    for label, path in (("library base", library_base), (f"arch subdir ({gpu_arch})", tensile_lib)):
-        lines.append(f"  [{label}] {path}")
-        for entry in _list_tensile_dir(path, cmake_executor):
-            lines.append(f"      {entry}")
-    return "\n".join(lines)
-
-
-def _list_tensile_dir(path: str, cmake_executor) -> list[str]:
-    """List a directory locally or over ``cmake_executor``; never raises.
-
-    Args:
-        path:           Directory to enumerate.
-        cmake_executor: ``SshExecutor`` for remote listing, or ``None`` for local.
-
-    Returns:
-        Directory entries (or a single explanatory marker if absent/unreadable).
+        True as soon as one candidate is found.
     """
     if cmake_executor is None:
-        directory = pathlib.Path(path)
-        if not directory.exists():
-            return ["<missing>"]
-        if not directory.is_dir():
-            return ["<not a directory>"]
-        entries = sorted(child.name for child in directory.iterdir())
-        return entries or ["<empty>"]
+        return any(pathlib.Path(path).exists() for path in candidates)
 
-    result = cmake_executor.run(f"ls -la {shlex.quote(path)}")
-    if not result.ok:
-        return ["<missing or unreadable>"]
-    output = (result.stdout or "").strip()
-    return output.splitlines() if output else ["<empty>"]
+    # Single round-trip: `test -f a || test -f b || ...`.
+    expr = " || ".join(f"test -f {shlex.quote(path)}" for path in candidates)
+    return cmake_executor.run(expr).ok
 
 
 @pytest.fixture(scope="session")
