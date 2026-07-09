@@ -6,6 +6,7 @@
 #include <hip/hip_runtime.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -113,6 +114,26 @@ int runCommand(const std::string& cmd, std::string& out) {
 }
 
 // Parse all_reduce_perf output and extract {size, time_us} pairs.
+// Parse `tok` as a complete base-10 integer. Returns false unless the entire
+// token is consumed, so partial matches like "6e99bc48428f" are rejected.
+bool parseWholeLongLong(const std::string& tok, long long& value) {
+    if (tok.empty()) return false;
+    errno = 0;
+    char* end = nullptr;
+    value = std::strtoll(tok.c_str(), &end, 10);
+    return errno == 0 && end == tok.c_str() + tok.size();
+}
+
+// Parse `tok` as a complete floating-point value (accepts scientific notation).
+// Returns false unless the entire token is consumed.
+bool parseWholeDouble(const std::string& tok, double& value) {
+    if (tok.empty()) return false;
+    errno = 0;
+    char* end = nullptr;
+    value = std::strtod(tok.c_str(), &end);
+    return errno == 0 && end == tok.c_str() + tok.size();
+}
+
 // Data lines look like:
 //   "        8             2     float     sum      -1    27.08    0.00 ..."
 // Fields: size(0)  count(1)  type(2)  redop(3)  root(4)  time(5)  ...
@@ -122,23 +143,26 @@ std::vector<PerfSample> parseAllReduceTimes(const std::string& output) {
     std::string line;
 
     while (std::getline(iss, line)) {
-        // Skip comment/header lines
+        // Skip blank and comment/header lines.
         size_t first = line.find_first_not_of(' ');
         if (first == std::string::npos) continue;
         if (line[first] == '#') continue;
-        char c = line[first];
-        if (c < '0' || c > '9') continue;
 
-        // Tokenize
+        // Tokenize.
         std::istringstream ls(line);
         std::string tok;
         std::vector<std::string> fields;
         while (ls >> tok) fields.push_back(tok);
         if (fields.size() < 6) continue;
 
+        // Genuine rccl-tests data rows have an all-numeric byte size (field 0)
+        // and a numeric time (field 5). NCCL debug lines can also begin with a
+        // digit when the host/container name is hex (e.g. "6e99bc48428f:..."),
+        // so validate the whole token instead of trusting the first character —
+        // this avoids a std::stod/std::stoll exception aborting the process.
         PerfSample s;
-        s.sizeBytes = std::stoll(fields[0]);
-        s.timeUs    = std::stod(fields[5]);
+        if (!parseWholeLongLong(fields[0], s.sizeBytes)) continue;
+        if (!parseWholeDouble(fields[5], s.timeUs)) continue;
         samples.push_back(s);
     }
     return samples;
