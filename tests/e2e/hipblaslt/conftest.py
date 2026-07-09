@@ -318,19 +318,72 @@ def tensile_lib_path(rock_dir: str, gpu_arch: str | None, arch_lib_path, cmake_e
 
     if gpu_arch:
         tensile_dat = f"{tensile_lib}/TensileLibrary_lazy_{gpu_arch}.dat"
-        fail_msg = (
-            f"hipBLASLt Tensile kernels missing for arch {gpu_arch!r}: {tensile_dat}\n"
-            "Install the BLAS artifact package (pass --blas to install_rocm_from_artifacts.py)."
-        )
         if cmake_executor is None:
             if not pathlib.Path(tensile_dat).exists():
-                pytest.fail(fail_msg)
+                pytest.fail(_tensile_fail_msg(gpu_arch, tensile_dat, str(library_base), tensile_lib, None))
         else:
             result = cmake_executor.run(f"test -f {shlex.quote(tensile_dat)}")
             if not result.ok:
-                pytest.fail(fail_msg)
+                pytest.fail(_tensile_fail_msg(gpu_arch, tensile_dat, str(library_base), tensile_lib, cmake_executor))
 
     return tensile_lib
+
+
+def _tensile_fail_msg(gpu_arch: str, tensile_dat: str, library_base: str, tensile_lib: str, cmake_executor) -> str:
+    """Build a diagnostic failure message that lists the Tensile library directories.
+
+    On a missing ``TensileLibrary_lazy_<arch>.dat`` the message enumerates the
+    contents of both ``lib/hipblaslt/library/`` and ``lib/hipblaslt/library/<arch>/``
+    so the actual on-disk layout (or its absence) is visible directly in the report,
+    without needing to re-run with a shell on the node.
+
+    Args:
+        gpu_arch:       Target GPU architecture string (e.g. ``"gfx942"``).
+        tensile_dat:    Absolute path to the expected lazy-library ``.dat`` file.
+        library_base:   Base ``lib/hipblaslt/library`` directory.
+        tensile_lib:    Arch-specific sub-directory (``<library_base>/<arch>``).
+        cmake_executor: ``SshExecutor`` for remote listing, or ``None`` for local.
+
+    Returns:
+        Multi-line failure string including directory listings.
+    """
+    lines = [
+        f"hipBLASLt Tensile kernels missing for arch {gpu_arch!r}: {tensile_dat}",
+        "Install the BLAS artifact package (pass --blas to install_rocm_from_artifacts.py).",
+        "",
+        "Diagnostics — searched for TensileLibrary_lazy_* in:",
+    ]
+    for label, path in (("library base", library_base), (f"arch subdir ({gpu_arch})", tensile_lib)):
+        lines.append(f"  [{label}] {path}")
+        for entry in _list_tensile_dir(path, cmake_executor):
+            lines.append(f"      {entry}")
+    return "\n".join(lines)
+
+
+def _list_tensile_dir(path: str, cmake_executor) -> list[str]:
+    """List a directory locally or over ``cmake_executor``; never raises.
+
+    Args:
+        path:           Directory to enumerate.
+        cmake_executor: ``SshExecutor`` for remote listing, or ``None`` for local.
+
+    Returns:
+        Directory entries (or a single explanatory marker if absent/unreadable).
+    """
+    if cmake_executor is None:
+        directory = pathlib.Path(path)
+        if not directory.exists():
+            return ["<missing>"]
+        if not directory.is_dir():
+            return ["<not a directory>"]
+        entries = sorted(child.name for child in directory.iterdir())
+        return entries or ["<empty>"]
+
+    result = cmake_executor.run(f"ls -la {shlex.quote(path)}")
+    if not result.ok:
+        return ["<missing or unreadable>"]
+    output = (result.stdout or "").strip()
+    return output.splitlines() if output else ["<empty>"]
 
 
 @pytest.fixture(scope="session")
