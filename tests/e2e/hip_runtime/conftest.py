@@ -73,18 +73,17 @@ def _hip_stream_cmake_build_dir(gpu_arch: str | None, cmake_build_dir, require_g
 def _split_barrier_stress_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
     """Build the vendored ``split_barrier_stress`` HIP cooperative-groups sample.
 
-    The sample ships its own self-contained ``CMakeLists.txt`` (FindHIP
-    ``HIP_ADD_EXECUTABLE`` + rocSOLVER/rocBLAS), so it is built in its own
-    subdirectory independent of the shared ``hip_runtime`` CMake project.
-    ``compiler_mode="none"`` lets FindHIP locate hipcc via ``ROCM_PATH`` exactly
-    as the legacy ``cmake -DROCM_PATH -DGPU_ARCH .. && make`` invocation did.
+    The sample ships its own self-contained ``CMakeLists.txt`` and is built in
+    its own subdirectory independent of the shared ``hip_runtime`` CMake project.
+    Inject the TheRock HIP compiler to avoid CMake falling back to system LLVM
+    runtime libraries in CI containers.
     """
     require_gpu_arch_for("hip_runtime/split_barrier_stress")
     return cmake_build_dir(
         src=_SPLIT_BARRIER_SRC_DIR,
         subdir="hip_runtime/split_barrier_stress",
         gpu_arch=gpu_arch,
-        compiler_mode="none",
+        compiler_mode="optional_cxx_hip",
         label="hip_runtime/split_barrier_stress",
         sync_dirs=[_SPLIT_BARRIER_SRC_DIR],
         artifact="split_barrier_stress",
@@ -116,8 +115,8 @@ def split_barrier_stress_binary(_split_barrier_stress_build_dir: str, built_bina
 
 # HIP samples are cloned from ROCm/hip-tests rather than vendored.
 # The legacy suite built each installed sample in its own CMake directory with
-# CMAKE_PREFIX_PATH pointing at ROCm; ``compiler_mode="none"`` keeps that path,
-# letting each sample's CMakeLists locate hipcc on local and remote nodes.
+# CMAKE_PREFIX_PATH pointing at ROCm. Inject the HIP compiler as well so CMake
+# does not fall back to probing fixed ROCm install paths such as /opt/rocm.
 
 
 @pytest.fixture(scope="session")
@@ -147,7 +146,7 @@ def hip_sample_build(cmake_build_dir, hip_samples_repo: str, built_binary):
         build_dir = cmake_build_dir(
             src=sample_src,
             subdir=subdir,
-            compiler_mode="none",
+            compiler_mode="optional_cxx_hip",
             artifact=exec_name,
             label="hip_samples/" + sample_relpath,
         )
