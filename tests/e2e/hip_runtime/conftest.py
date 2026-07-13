@@ -153,3 +153,32 @@ def hip_sample_build(cmake_build_dir, hip_samples_repo: str, built_binary):
         return built_binary(os.path.join(build_dir, exec_name), exec_name)
 
     return _build
+
+
+@pytest.fixture(scope="session")
+def hip_sample_spirv_build(cmake_build_dir, hip_samples_repo: str, built_binary):
+    """Return a factory that builds one HIP sample targeting SPIR-V and returns its binary path.
+
+    Same per-sample CMake project as ``hip_sample_build`` but forces the HIP
+    architecture to ``amdgcnspirv`` (``-DCMAKE_HIP_ARCHITECTURES=amdgcnspirv``)
+    so the sample is emitted as a SPIR-V offload bundle rather than a native gfx
+    code object. ``gpu_arch=None`` keeps the framework from also injecting a
+    concrete ``GPU_ARCH``. Built into a separate ``_spirv`` subdir so SPIR-V and
+    native builds of the same sample never share a build directory.
+    """
+
+    def _build(sample_relpath: str, exec_name: str) -> str:
+        sample_src = os.path.join(hip_samples_repo, *sample_relpath.split("/"))
+        subdir = "hip_runtime/hip_samples_spirv/" + sample_relpath.replace("/", "_")
+        build_dir = cmake_build_dir(
+            src=sample_src,
+            subdir=subdir,
+            gpu_arch=None,
+            extra_cmake_args=["-DCMAKE_HIP_ARCHITECTURES=amdgcnspirv"],
+            compiler_mode="optional_cxx_hip",
+            artifact=exec_name,
+            label="hip_samples_spirv/" + sample_relpath,
+        )
+        return built_binary(os.path.join(build_dir, exec_name), exec_name)
+
+    return _build
