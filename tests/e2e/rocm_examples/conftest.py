@@ -27,18 +27,13 @@ def rocm_examples_repo(external_build, compiler_build_dir: str):
 
 
 @pytest.fixture(scope="session")
-def rocm_example_build(cmake_build_dir, rock_dir: str, rocm_examples_repo, built_binary):
-    """Return a factory that builds one ROCm/rocm-examples sample."""
-
-    def _build(example_relpath: str, exec_name: str) -> str:
-        build_dir = cmake_build_dir(
-            src=str(rocm_examples_repo / example_relpath),
-            subdir=f"{_SUBDIR}/{example_relpath}",
-            extra_cmake_args=[f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}"],
-            compiler_mode="optional_cxx_hip",
-            artifact=exec_name,
-            label=f"rocm_examples/{example_relpath}",
-        )
-        return built_binary(os.path.join(build_dir, exec_name), exec_name)
-
-    return _build
+def rocm_examples_build_dir(cmake_build_dir, rock_dir: str, rocm_examples_repo) -> str:
+    """Configure and build the ROCm/rocm-examples CTest suite."""
+    return cmake_build_dir(
+        src=str(rocm_examples_repo),
+        subdir=_SUBDIR,
+        extra_cmake_args=[f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}"],
+        compiler_mode="optional_cxx_hip",
+        artifact="bin/HIP-Basic/hip_bit_extract",
+        label="rocm_examples",
+    )
