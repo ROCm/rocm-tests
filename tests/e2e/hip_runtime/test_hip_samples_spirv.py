@@ -1,23 +1,11 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Build representative HIP samples for SPIR-V and verify SPIR-V offload + execution.
-
-Ports the legacy ``hip_samples_spirv`` testcase: each selected upstream HIP
-sample is built with ``-DCMAKE_HIP_ARCHITECTURES=amdgcnspirv`` (SPIR-V target),
-confirmed to carry an ``amdgcnspirv`` offload bundle (``llvm-objdump
---offloading``), then run — HIP JIT-compiles the SPIR-V at load time and the
-sample must still print ``PASSED``/``Passed``.
-
-Uses the same ROCm/hip-tests ``samples/`` subtree as ``test_hip_samples`` (cloned
-once per session via the ``hip_samples_repo`` fixture), so the SPIR-V variant
-exercises the identical sample set as the native build.
-"""
+"""Build representative HIP samples for SPIR-V and verify bundle + execution."""
 
 import pytest
 
 from tests.common.spirv import assert_spirv_offload_bundle
 
-# Subset of the native hip_samples set that is single-GPU and self-validating.
 # (sample path under samples/, produced executable name)
 _SAMPLES = [
     ("0_Intro/bit_extract", "bit_extract"),
@@ -40,9 +28,7 @@ def test_hip_samples_spirv(
     sample_path: str,
     exec_name: str,
 ):
-    """Build one HIP sample for SPIR-V, assert it carries an amdgcnspirv bundle, and run it."""
-    # Resolving the build triggers the per-sample cmake configure + make targeting
-    # amdgcnspirv; a build failure surfaces as a fixture ERROR.
+    """Build and run one HIP sample targeting SPIR-V."""
     binary = hip_sample_spirv_build(sample_path, exec_name)
 
     assert_spirv_offload_bundle(target_executor, rock_dir, binary, f"hip sample {sample_path}")

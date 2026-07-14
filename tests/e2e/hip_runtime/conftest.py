@@ -157,15 +157,7 @@ def hip_sample_build(cmake_build_dir, hip_samples_repo: str, built_binary):
 
 @pytest.fixture(scope="session")
 def hip_sample_spirv_build(cmake_build_dir, hip_samples_repo: str, built_binary):
-    """Return a factory that builds one HIP sample targeting SPIR-V and returns its binary path.
-
-    Same per-sample CMake project as ``hip_sample_build`` but forces the HIP
-    architecture to ``amdgcnspirv`` (``-DCMAKE_HIP_ARCHITECTURES=amdgcnspirv``)
-    so the sample is emitted as a SPIR-V offload bundle rather than a native gfx
-    code object. ``gpu_arch=None`` keeps the framework from also injecting a
-    concrete ``GPU_ARCH``. Built into a separate ``_spirv`` subdir so SPIR-V and
-    native builds of the same sample never share a build directory.
-    """
+    """Return a factory that builds one HIP sample targeting SPIR-V."""
 
     def _build(sample_relpath: str, exec_name: str) -> str:
         sample_src = os.path.join(hip_samples_repo, *sample_relpath.split("/"))

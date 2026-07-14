@@ -212,15 +212,7 @@ def matrixmultiplication_binary(compile_binary, hip_examples_repo) -> str:
 
 @pytest.fixture(scope="session")
 def hip_basic_spirv_binary(cmake_build_dir, built_binary) -> str:
-    """Build a vendored basic HIP app targeting SPIR-V (``amdgcnspirv``) via CMake.
-
-    Uses CMake (not raw hipcc) so the ROCm HIP compiler is injected explicitly
-    from ``rock_dir`` — the build is immune to a stale ambient ``ROCM_PATH`` /
-    ``HIP_PATH`` on the host. ``-DCMAKE_HIP_ARCHITECTURES=amdgcnspirv`` forces a
-    SPIR-V offload bundle instead of a native gfx code object; HIP JIT-compiles
-    it at load time. Used by ``test_hip_basic_spirv`` to assert the SPIR-V
-    bundle is present and the JIT-compiled app still runs correctly.
-    """
+    """Build the minimal HIP app with an amdgcnspirv offload bundle."""
     build_dir = cmake_build_dir(
         src="tests/e2e/compiler/src/spirv",
         subdir="compiler/hip_basic_spirv",

@@ -1,6 +1,6 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Shared helpers for SPIR-V offload-bundle validation."""
+"""SPIR-V offload-bundle validation helpers."""
 
 from __future__ import annotations
 
@@ -9,26 +9,19 @@ import shlex
 
 import pytest
 
-# llvm-objdump lives under different subpaths depending on the ROCm packaging.
 _OBJDUMP_CANDIDATES = (
-    ("lib", "llvm", "bin", "llvm-objdump"),  # TheRock
-    ("llvm", "bin", "llvm-objdump"),  # standard ROCm
-    ("bin", "llvm-objdump"),  # packaging variants
+    ("lib", "llvm", "bin", "llvm-objdump"),
+    ("llvm", "bin", "llvm-objdump"),
+    ("bin", "llvm-objdump"),
 )
 
 
 def assert_spirv_offload_bundle(target_executor, rock_dir: str, binary: str, label: str) -> None:
-    """Assert that *binary* carries an amdgcnspirv offload bundle.
-
-    The lookup and objdump invocation run through ``target_executor`` instead of
-    local filesystem checks, so the helper works for local, container, and SSH
-    execution backends.
-    """
+    """Assert that *binary* carries an amdgcnspirv offload bundle."""
     candidates = [os.path.join(rock_dir, *parts) for parts in _OBJDUMP_CANDIDATES]
-    candidate_args = " ".join(shlex.quote(path) for path in candidates)
-    find_result = target_executor.run(
-        f'for p in {candidate_args}; do [ -x "$p" ] && printf "%s" "$p" && exit 0; done; exit 1'
-    )
+    find_cmd = "for p in " + " ".join(shlex.quote(path) for path in candidates)
+    find_cmd += '; do [ -x "$p" ] && printf "%s" "$p" && exit 0; done; exit 1'
+    find_result = target_executor.run(find_cmd)
     if not find_result.ok or not find_result.stdout.strip():
         pytest.skip(f"llvm-objdump not found under {rock_dir}; cannot verify SPIR-V offload bundle")
 
