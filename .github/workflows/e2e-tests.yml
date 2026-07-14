@@ -27,7 +27,7 @@ on:
         type: string
       gpu_arch:
         description: 'GPU architecture string for --gpu-arch (e.g. gfx942)'
-        required: false
+        required: true
         type: string
         default: ''
       tests_filters:
