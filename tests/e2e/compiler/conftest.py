@@ -71,7 +71,7 @@ _COMMON_INCLUDE = "tests/common/include"
 _HIP_EXAMPLES_URL = "https://github.com/ROCm/HIP-Examples.git"
 _HIP_EXAMPLES_REF = os.environ.get("ROCM_TEST_HIP_EXAMPLES_REF", "master")
 _ROCM_EXAMPLES_URL = "https://github.com/ROCm/rocm-examples.git"
-_ROCM_EXAMPLES_REF = os.environ.get("ROCM_TEST_ROCM_EXAMPLES_REF", "develop")
+_ROCM_EXAMPLES_REF = os.environ.get("ROCM_TEST_ROCM_EXAMPLES_REF", "amd-mainline")
 
 
 # ---------------------------------------------------------------------------
