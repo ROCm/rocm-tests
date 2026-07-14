@@ -1,35 +1,27 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Build and run representative public ROCm/rocm-examples HIP-Basic samples."""
+"""Build and run the public ROCm/rocm-examples CTest suite."""
 
 import pytest
 
-_EXAMPLES = [
-    ("HIP-Basic/bit_extract", "hip_bit_extract", "Validation passed."),
-    ("HIP-Basic/dynamic_shared", "hip_dynamic_shared", "Validation passed."),
-    ("HIP-Basic/events", "hip_events", "Validation passed."),
-    ("HIP-Basic/shared_memory", "hip_shared_memory", "Validation passed."),
-    ("HIP-Basic/streams", "hip_streams", "streams completed!"),
-]
+# Full amd-mainline CTest is green on gfx942 except callback/debug/profiler samples
+# that need extra runtime/debug-profiler environment beyond the examples app set.
+_KNOWN_FAILING = "hipfft_callback|rocfft_callback|rocgdb-.*|rocprof.*"
 
 
 @pytest.mark.runtime.medium
-@pytest.mark.parametrize(("example_path", "exec_name", "marker"), _EXAMPLES, ids=[e[0] for e in _EXAMPLES])
-def test_rocm_examples_hip_basic(
-    target_executor,
-    ld_path: dict,
-    rock_dir: str,
-    rocm_example_build,
-    example_path: str,
-    exec_name: str,
-    marker: str,
-):
-    """Build one ROCm/rocm-examples HIP-Basic sample and verify its success marker."""
-    binary = rocm_example_build(example_path, exec_name)
+def test_rocm_examples(target_executor, ld_path: dict, rock_dir: str, rocm_examples_build_dir: str):
+    """Run ROCm/rocm-examples CTest, excluding known failing callback samples."""
     ld = ld_path["LD_LIBRARY_PATH"]
-    result = target_executor.run(f"env LD_LIBRARY_PATH={ld} ROCM_PATH={rock_dir} {binary}")
-    assert result.ok, (
-        f"rocm-examples sample {example_path} failed (exit={result.exit_code}):\n"
-        f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
+    reqs = f"{rock_dir}/libexec/rocprofiler-compute/requirements.txt"
+    target_executor.run(f"test ! -f {reqs} || python -m pip install -q -r {reqs}", timeout=600)
+    result = target_executor.run(
+        f"env LD_LIBRARY_PATH={ld} ROCM_PATH={rock_dir} "
+        f"ctest --test-dir {rocm_examples_build_dir} --output-on-failure -E '{_KNOWN_FAILING}'",
+        timeout=7200,
     )
-    assert marker in result.stdout, f"rocm-examples sample {example_path} missed {marker!r}:\n{result.stdout[:2000]}"
+    assert result.ok, (
+        f"rocm-examples CTest failed (exit={result.exit_code}):\n"
+        f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-1000:]}"
+    )
+    assert "100% tests passed" in result.stdout, f"rocm-examples CTest was not fully green:\n{result.stdout[-4000:]}"
