@@ -14,7 +14,10 @@ Environment overrides:
     QUDA_TEST_GRID_SIZE  QUDA lattice grid ``"X Y Z T"``; a default is derived
                          from QUDA_NUM_GPUS. Set explicitly for GPU counts without
                          a built-in default.
-    QUDA_CTEST_JOBS      ctest parallelism (``ctest -j N``); default 8.
+    QUDA_CTEST_JOBS      ctest parallelism (``ctest -j N``); default = CPU count.
+    QUDA_CTEST_TIMEOUT   per-test ctest timeout in seconds (``ctest --timeout N``);
+                         default 1200. Keep it below the outer run cap in
+                         test_quda.py.
 """
 import os
 
@@ -28,9 +31,17 @@ _DEFAULT_GRIDS = {1: "1 1 1 1", 2: "1 1 1 2", 4: "1 1 1 4", 8: "1 1 2 4"}
 GRID = " ".join((os.environ.get("QUDA_TEST_GRID_SIZE") or _DEFAULT_GRIDS.get(NUM_GPUS, "")).split())
 
 # ctest parallelism. Each ctest test consumes NUM_GPUS GPUs, but the small test
-# lattice tolerates oversubscription, so this may exceed the GPU count. Raise for
-# faster multi-GPU runs (e.g. QUDA_CTEST_JOBS=128); keep modest on single-GPU nodes.
-CTEST_JOBS = os.environ.get("QUDA_CTEST_JOBS", "8")
+# lattice tolerates oversubscription, so this may exceed the GPU count. Defaults to
+# the node's CPU count: a low fixed value (e.g. 8) throttles the long
+# inverter/eigensolver tests and can push the suite past the runtime.medium cap,
+# whereas high parallelism keeps wall time ~12-15 min. Override with QUDA_CTEST_JOBS
+# (e.g. lower it on single-GPU nodes if oversubscription causes memory pressure).
+CTEST_JOBS = os.environ.get("QUDA_CTEST_JOBS") or str(os.cpu_count() or 16)
+
+# Per-test ctest timeout (seconds). Bounds any single hung test; ctest's own
+# default is 1500s. Kept below the outer target_executor.run() cap in test_quda.py
+# so one slow test can't consume the whole budget.
+CTEST_TIMEOUT = os.environ.get("QUDA_CTEST_TIMEOUT", "1200")
 
 # Per-config build-tree label: a 1-rank and a 2-rank build are distinct artifacts
 # (the rank count is baked into ctest at configure time), so they must not share

@@ -35,20 +35,22 @@ import os
 
 import pytest
 
-from tests.e2e.quda._workload import CTEST_JOBS, GRID, IS_SINGLE_GPU, NUM_GPUS, NUM_PROCS
+from tests.e2e.quda._workload import CTEST_JOBS, CTEST_TIMEOUT, GRID, IS_SINGLE_GPU, NUM_GPUS, NUM_PROCS
 
 logger = logging.getLogger(__name__)
 
-# hw dimension follows the configured GPU count; a function-level marker overrides
-# the hw.multi_gpu default injected by the CATEGORY_PROFILE.
-_hw_marker = pytest.mark.hw.gpu if IS_SINGLE_GPU else pytest.mark.hw.multi_gpu
+# hw dimension follows the configured GPU count (QUDA_NUM_GPUS). Declared via the
+# module-level ``pytestmark`` list rather than a bare MarkDecorator global: a
+# standalone MarkDecorator is callable, so pytest's collector would introspect it
+# and the repo's dotted-mark __getattr__ patch would emit spurious "unknown mark"
+# warnings. This hw.* overrides the hw.multi_gpu default from the CATEGORY_PROFILE.
+pytestmark = [pytest.mark.hw.gpu if IS_SINGLE_GPU else pytest.mark.hw.multi_gpu]
 
 # ctest emits this on success: "100% tests passed, 0 tests failed out of N".
 # The banner below is printed for any failing test in the suite.
 _CTEST_FAIL_BANNER = "The following tests FAILED"
 
 
-@_hw_marker
 @pytest.mark.gpu_count(NUM_GPUS)
 @pytest.mark.layer.math_lib
 @pytest.mark.e2e.stack
@@ -88,12 +90,11 @@ def test_quda_ctest_suite(
     # NOTE: the tuning variable is QUDA_ENABLE_TUNING (not QUDA_TUNING_ENABLED,
     # which QUDA silently ignores — leaving autotuning ON and causing ~1500s
     # per-test ctest timeouts). 0 disables autotuning.
-    # --timeout 600 caps each ctest below its 1500s/test default: with tuning off
-    # the individual tests run in seconds, so 10 min bounds any single hung test
-    # while keeping this a runtime.medium test. The whole run stays bounded by the
-    # target_executor.run() timeout below. ctest -j (QUDA_CTEST_JOBS) is configurable;
-    # NUM_PROCS/GRID come from _workload and MUST match what the build was configured
-    # with (QUDA bakes them into the CTest launch at configure time).
+    # ctest -j (QUDA_CTEST_JOBS) and --timeout (QUDA_CTEST_TIMEOUT) are configurable;
+    # the per-test timeout bounds any single hung test and stays below the outer
+    # target_executor.run() cap below. NUM_PROCS/GRID come from _workload and MUST
+    # match what the build was configured with (QUDA bakes them into the CTest launch
+    # at configure time).
     cmd = (
         f"mkdir -p {tunecache} && "
         f"env MPI_HOME={mpi_home} ROCM_PATH={rock_dir} "
@@ -102,7 +103,7 @@ def test_quda_ctest_suite(
         f"QUDA_RESOURCE_PATH={tunecache} "
         f"QUDA_ENABLE_TUNING=0 QUDA_TEST_NUM_PROCS={NUM_PROCS} QUDA_ENABLE_P2P=0 "
         f"QUDA_TEST_GRID_SIZE='{GRID}' "
-        f"ctest -j{CTEST_JOBS} --output-on-failure --timeout 600 --test-dir {build_dir}"
+        f"ctest -j{CTEST_JOBS} --output-on-failure --timeout {CTEST_TIMEOUT} --test-dir {build_dir}"
     )
 
     # ctest streams to the console live (run pytest with -s to see it) and always
