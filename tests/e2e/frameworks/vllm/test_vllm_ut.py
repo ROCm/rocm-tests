@@ -28,8 +28,9 @@ Semantics preserved from the source:
     * pytest summary counts (passed/failed/skipped/errors) are parsed and
       reported as Allure metrics.
 
-Marker rationale (tests/e2e/frameworks/vllm has no CATEGORY_PROFILE, so every
-dimension is declared explicitly):
+Marker rationale (tests/e2e/frameworks/vllm has a CATEGORY_PROFILE supplying
+hw.gpu/layer.runtime/ci.weekly/e2e.stack/os.linux; markers are still declared
+explicitly here for clarity and to override the profile where they differ):
     * hw.gpu       -- vLLM unit suite exercises HIP kernels on a single GPU.
     * layer.runtime-- vLLM sits on the ROCm/HIP runtime layer; the taxonomy
                       exposes only {runtime, math_lib} and runtime is the closest
@@ -37,7 +38,8 @@ dimension is declared explicitly):
     * ci.weekly    -- the full suite downloads several large gated HF models and
                       runs a broad pytest tree (hours) -> weekly gate.
     * runtime.soak -- multi-hour wall time for the full suite.
-    * ci.nightly / runtime.medium for the focused int4 AWQ case.
+    * ci.nightly / runtime.medium for the focused int4 AWQ case (overrides the
+      profile's ci.weekly).
     * e2e.stack, os.linux -- ROCm software-stack test, Linux-only container.
 
 Secrets: the HuggingFace token is sourced from the environment via the
@@ -152,42 +154,55 @@ def _build_suite_command(pytest_target: str, hf_token: str, testcase: str = "") 
     """
     tok = shlex.quote(hf_token)
     commands = [
+        # The framework's ContainerExecutor injects ROCR_VISIBLE_DEVICES for GPU
+        # isolation, but Ray (imported by vLLM at collection time) hard-refuses it
+        # and requires HIP_VISIBLE_DEVICES. Translate ROCR -> HIP and drop ROCR so
+        # vLLM/Ray start; HIP_VISIBLE_DEVICES gives identical device isolation.
+        'export HIP_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"',
+        "unset ROCR_VISIBLE_DEVICES",
         f"export HF_TOKEN={tok}",
         f"export HUGGING_FACE_HUB_TOKEN={tok}",
         "export VLLM_WORKER_MULTIPROC_METHOD=spawn",
         # Best-effort deps: do not fail the suite if the mirror is flaky.
         "python -m pip install --no-cache-dir modelscope tblib || true",
-        "(apt-get update && apt-get install -y --no-install-recommends "
-        "curl libsodium23) || true",
+        "(apt-get update && apt-get install -y --no-install-recommends curl libsodium23) || true",
     ]
 
     # Pre-download models required by specific test suites
     if testcase == "test_regression.py":
         commands.append("huggingface-cli download qwen/Qwen1.5-0.5B-Chat || true")
     elif testcase == "engine test_sequence.py test_config.py test_logger.py":
-        commands.extend([
-            "huggingface-cli download mistralai/Mistral-7B-Instruct-v0.2 || true",
-            "huggingface-cli download mistralai/Mistral-7B-v0.1 || true",
-            "huggingface-cli download meta-llama/Meta-Llama-3-8B-Instruct || true",
-        ])
+        commands.extend(
+            [
+                "huggingface-cli download mistralai/Mistral-7B-Instruct-v0.2 || true",
+                "huggingface-cli download mistralai/Mistral-7B-v0.1 || true",
+                "huggingface-cli download meta-llama/Meta-Llama-3-8B-Instruct || true",
+            ]
+        )
     elif testcase == "tokenization":
-        commands.extend([
-            "huggingface-cli download meta-llama/Llama-3.2-1B-Instruct || true",
-            "huggingface-cli download mistralai/Pixtral-12B-2409 || true",
-        ])
+        commands.extend(
+            [
+                "huggingface-cli download meta-llama/Llama-3.2-1B-Instruct || true",
+                "huggingface-cli download mistralai/Pixtral-12B-2409 || true",
+            ]
+        )
     elif testcase == "tool_use":
-        commands.extend([
-            "huggingface-cli download meta-llama/Llama-3.2-3B-Instruct || true",
-            "huggingface-cli download mistralai/Mistral-7B-Instruct-v0.3 || true",
-        ])
+        commands.extend(
+            [
+                "huggingface-cli download meta-llama/Llama-3.2-3B-Instruct || true",
+                "huggingface-cli download mistralai/Mistral-7B-Instruct-v0.3 || true",
+            ]
+        )
 
     # Locate the vLLM tests tree (same paths the source probed).
-    commands.extend([
-        "if [ -d /app/vllm/tests ]; then cd /app/vllm/tests; "
-        "elif [ -d /vllm-workspace/tests ]; then cd /vllm-workspace/tests; "
-        "else echo VLLM_TESTS_NOT_FOUND; exit 3; fi",
-        f"python -m pytest -v -s {pytest_target}",
-    ])
+    commands.extend(
+        [
+            "if [ -d /app/vllm/tests ]; then cd /app/vllm/tests; "
+            "elif [ -d /vllm-workspace/tests ]; then cd /vllm-workspace/tests; "
+            "else echo VLLM_TESTS_NOT_FOUND; exit 3; fi",
+            f"python -m pytest -v -s {pytest_target}",
+        ]
+    )
 
     return "\n".join(commands)
 
@@ -252,7 +267,6 @@ def test_vllm_ut(vllm_container, hf_token: str, testcase: str):
 
 
 @pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.medium
 @pytest.mark.os.linux

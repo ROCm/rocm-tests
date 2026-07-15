@@ -22,9 +22,13 @@ never hardcoded or committed. Supported env vars (first non-empty wins):
 
 from __future__ import annotations
 
+import logging
 import os
+import sys
 
 import pytest
+
+logger = logging.getLogger(__name__)
 
 # Env vars checked, in priority order, for the HuggingFace access token.
 _HF_TOKEN_ENV_VARS = (
@@ -66,14 +70,17 @@ def hf_token() -> str:
 def vllm_container(request, container_executor):
     """Return a readiness-checked ``ContainerExecutor`` for the vLLM/ROCm image.
 
-    The image is resolved by the ``container_executor`` fixture from either the
-    per-test ``@pytest.mark.container_image(...)`` marker or the
-    ``--container-image`` CLI option.
+    The image is resolved (in priority order):
+        1. The ``--container-image`` CLI option (takes precedence if explicitly set)
+        2. The ``VLLM_UT_DOCKER_IMAGE`` environment variable
+        3. The per-test ``@pytest.mark.container_image(...)`` marker
+        4. Default: ``rocm/vllm:latest``
 
     Behaviour:
         * ``--no-gpu`` active            → skip (no hardware session).
         * container runtime not ready    → skip (docker daemon down, AMD devices
                                            absent, or user lacks permissions).
+        * image pull fails               → skip with diagnostic output.
 
     Skipping (not failing) keeps DryRun / CPU-only collection runs green while
     still exercising fixture wiring.
@@ -84,4 +91,25 @@ def vllm_container(request, container_executor):
     status = container_executor.probe()
     if not status.ready:
         pytest.skip("vLLM container runtime not ready: " + "; ".join(status.errors))
+
+    # Check if --container-image was explicitly passed on the CLI. If so,
+    # override the image to respect the user's choice over the marker.
+    cli_image_explicit = any(arg.startswith("--container-image") for arg in sys.argv)
+    if cli_image_explicit:
+        cli_image = request.config.getoption("--container-image", default=None)
+        if cli_image:
+            logger.info("Overriding container image from CLI: %s", cli_image)
+            container_executor.image = cli_image
+
+    # Explicitly pull the image before running any tests
+    logger.info("Pulling vLLM container image: %s", container_executor.image)
+    pull_cmd = f"{container_executor.runtime} pull {container_executor.image}"
+    pull_result = container_executor._host.run(pull_cmd)
+    if not pull_result.ok:
+        logger.error("Failed to pull image %s", container_executor.image)
+        logger.error("stdout: %s", pull_result.stdout)
+        logger.error("stderr: %s", pull_result.stderr)
+        pytest.skip(f"Failed to pull vLLM container image '{container_executor.image}': {pull_result.stderr[:500]}")
+
+    logger.info("Successfully pulled image: %s", container_executor.image)
     return container_executor
