@@ -11,7 +11,7 @@
 name: E2E Tests
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       name:
         description: 'Platform name (e.g. linux-gfx94x)'
@@ -27,7 +27,7 @@ on:
         type: string
       gpu_arch:
         description: 'GPU architecture string for --gpu-arch (e.g. gfx942)'
-        required: false
+        required: true
         type: string
         default: ''
       tests_filters:
@@ -56,6 +56,45 @@ on:
         default: ''
       target_available:
         description: 'Set to "false" to grey-out/skip this platform in the GitHub UI'
+        required: false
+        type: string
+        default: 'true'
+
+  workflow_call:
+    inputs:
+      name:
+        required: true
+        type: string
+      runs_on:
+        required: true
+        type: string
+      artifact_group:
+        required: true
+        type: string
+      gpu_arch:
+        required: false
+        type: string
+        default: ''
+      tests_filters:
+        required: true
+        type: string
+      source_repo:
+        required: false
+        type: string
+        default: 'ROCm/TheRock'
+      artifact_source:
+        required: false
+        type: string
+        default: 'latest-release'
+      include_dev:
+        required: false
+        type: boolean
+        default: true
+      run_id:
+        required: false
+        type: string
+        default: ''
+      target_available:
         required: false
         type: string
         default: 'true'
