@@ -17,7 +17,7 @@ environment injected as an ``env VAR=... cmd`` prefix (never via ``os.environ``)
 The GPU count is configurable on a single node via ``QUDA_NUM_GPUS`` (default 2):
 ``1`` runs single-GPU mode (``hw.gpu``, 1 MPI rank), ``>1`` runs multi-GPU mode
 (``hw.multi_gpu``, one rank per GPU). See ``_workload.py`` for all env knobs
-(``QUDA_NUM_GPUS`` / ``QUDA_TEST_GRID_SIZE`` / ``QUDA_CTEST_JOBS``).
+(``QUDA_NUM_GPUS`` / ``QUDA_TEST_GRID_SIZE`` / ``QUDA_CTEST_TIMEOUT``).
 
 Markers (declared explicitly; also registered as a CATEGORY_PROFILE for
 tests/e2e/quda/):
@@ -35,7 +35,7 @@ import os
 
 import pytest
 
-from tests.e2e.quda._workload import CTEST_JOBS, CTEST_TIMEOUT, GRID, IS_SINGLE_GPU, NUM_GPUS, NUM_PROCS
+from tests.e2e.quda._workload import CTEST_TIMEOUT, GRID, IS_SINGLE_GPU, NUM_GPUS, NUM_PROCS
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +90,11 @@ def test_quda_ctest_suite(
     # NOTE: the tuning variable is QUDA_ENABLE_TUNING (not QUDA_TUNING_ENABLED,
     # which QUDA silently ignores — leaving autotuning ON and causing ~1500s
     # per-test ctest timeouts). 0 disables autotuning.
-    # ctest -j (QUDA_CTEST_JOBS) and --timeout (QUDA_CTEST_TIMEOUT) are configurable;
-    # the per-test timeout bounds any single hung test and stays below the outer
-    # target_executor.run() cap below. NUM_PROCS/GRID come from _workload and MUST
-    # match what the build was configured with (QUDA bakes them into the CTest launch
-    # at configure time).
+    # ctest runs serially: each test uses NUM_GPUS GPUs, so parallel ctest
+    # would oversubscribe the GPUs. --timeout (QUDA_CTEST_TIMEOUT) bounds any single
+    # hung test and stays below the outer target_executor.run() cap below. NUM_PROCS/
+    # GRID come from _workload and MUST match what the build was configured with
+    # (QUDA bakes them into the CTest launch at configure time).
     cmd = (
         f"mkdir -p {tunecache} && "
         f"env MPI_HOME={mpi_home} ROCM_PATH={rock_dir} "
@@ -103,7 +103,7 @@ def test_quda_ctest_suite(
         f"QUDA_RESOURCE_PATH={tunecache} "
         f"QUDA_ENABLE_TUNING=0 QUDA_TEST_NUM_PROCS={NUM_PROCS} QUDA_ENABLE_P2P=0 "
         f"QUDA_TEST_GRID_SIZE='{GRID}' "
-        f"ctest -j{CTEST_JOBS} --output-on-failure --timeout {CTEST_TIMEOUT} --test-dir {build_dir}"
+        f"ctest --output-on-failure --timeout {CTEST_TIMEOUT} --test-dir {build_dir}"
     )
 
     # ctest streams to the console live (run pytest with -s to see it) and always
