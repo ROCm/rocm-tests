@@ -192,8 +192,7 @@ def quda_build(
     # spaces via single quotes.  (QUDA_ENABLE_TUNING is a runtime var — see
     # test_quda.py; harmless here.)
     quda_env = (
-        f"QUDA_ENABLE_TUNING=0 QUDA_TEST_NUM_PROCS={NUM_PROCS} QUDA_ENABLE_P2P=0 "
-        f"QUDA_TEST_GRID_SIZE='{GRID}'"
+        f"QUDA_ENABLE_TUNING=0 QUDA_TEST_NUM_PROCS={NUM_PROCS} QUDA_ENABLE_P2P=0 " f"QUDA_TEST_GRID_SIZE='{GRID}'"
     )
     env_prefix = (
         f"MPI_HOME={mpi_home} "

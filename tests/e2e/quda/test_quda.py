@@ -121,7 +121,7 @@ def test_quda_ctest_suite(
         f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-2000:]}"
     )
     assert _CTEST_FAIL_BANNER not in result.stdout, f"QUDA ctest reported failing tests:\n{result.stdout[-4000:]}"
-    assert "No tests were found" not in result.stdout and result.stdout.strip(), (
-        f"QUDA ctest ran no tests — build likely produced no test targets:\n{result.stdout[-2000:]}"
-    )
+    no_tests = f"QUDA ctest ran no tests — build likely produced no test targets:\n{result.stdout[-2000:]}"
+    assert "No tests were found" not in result.stdout, no_tests
+    assert result.stdout.strip(), no_tests
     assert "tests passed" in result.stdout, f"QUDA ctest did not report a pass summary:\n{result.stdout[-4000:]}"
