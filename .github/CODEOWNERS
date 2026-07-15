@@ -6,6 +6,6 @@
 /framework/  @mparamas-amd @madkasul
 
 # CI workflows, build, and scan tooling
-/.github/     @ROCm/rocm-tests-write
-/build_tools/ @ROCm/rocm-tests-write
-/scan_tools/  @ROCm/rocm-tests-write
+/.github/     @mparamas-amd @madkasul
+/build_tools/ @mparamas-amd @madkasul
+/scan_tools/  @mparamas-amd @madkasul
