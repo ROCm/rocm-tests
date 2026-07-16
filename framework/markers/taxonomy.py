@@ -138,7 +138,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     # QUDA lattice-QCD HPC suite: third-party CMake build + MPI ctest run.
     # Nightly by default; hw.multi_gpu is the default, but the test overrides hw.*
     # to hw.gpu when QUDA_NUM_GPUS=1 (single-GPU mode).
-    "tests/e2e/quda": [
+    "tests/e2e/hpc/quda": [
         "hw.multi_gpu",
         "layer.math_lib",
         "ci.nightly",

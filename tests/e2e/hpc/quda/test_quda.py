@@ -20,7 +20,7 @@ The GPU count is configurable on a single node via ``QUDA_NUM_GPUS`` (default 2)
 (``QUDA_NUM_GPUS`` / ``QUDA_TEST_GRID_SIZE`` / ``QUDA_CTEST_TIMEOUT``).
 
 Markers (declared explicitly; also registered as a CATEGORY_PROFILE for
-tests/e2e/quda/):
+tests/e2e/hpc/quda/):
     hw.gpu / hw.multi_gpu -- chosen from QUDA_NUM_GPUS (single vs multi GPU)
     gpu_count(N)  -- acquire N=QUDA_NUM_GPUS GPUs from one node
     layer.math_lib -- QUDA is a GPU compute (lattice-QCD solver) library
@@ -35,7 +35,7 @@ import os
 
 import pytest
 
-from tests.e2e.quda._workload import CTEST_TIMEOUT, GRID, IS_SINGLE_GPU, NUM_GPUS, NUM_PROCS
+from tests.e2e.hpc.quda._workload import CTEST_TIMEOUT, GRID, IS_SINGLE_GPU, NUM_GPUS, NUM_PROCS
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +52,6 @@ _CTEST_FAIL_BANNER = "The following tests FAILED"
 
 
 @pytest.mark.gpu_count(NUM_GPUS)
-@pytest.mark.layer.math_lib
-@pytest.mark.e2e.stack
-@pytest.mark.os.linux
 @pytest.mark.runtime.medium
 def test_quda_ctest_suite(
     target_executor,

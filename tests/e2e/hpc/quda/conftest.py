@@ -1,7 +1,7 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""conftest.py -- Clone/build fixtures for tests/e2e/quda/.
+"""conftest.py -- Clone/build fixtures for tests/e2e/hpc/quda/.
 
 QUDA (https://github.com/lattice/quda) is a large third-party lattice-QCD
 library.  It cannot be built with the single-file ``compile_binary``/``hipcc``
@@ -19,7 +19,7 @@ remote-transparent external-build primitives:
       mutating ``os.environ``.
 
 The QUDA ctest suite is then executed by ``target_executor`` on the GPU node in
-``tests/e2e/quda/test_quda.py``.
+``tests/e2e/hpc/quda/test_quda.py``.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ import pytest
 
 from framework.builder.binary_builder import find_rocm_clangpp, resolve_parallel_jobs
 from framework.executors.background_process import _blocking_stream_run
-from tests.e2e.quda._workload import CONFIG_LABEL, GRID, NUM_GPUS, NUM_PROCS
+from tests.e2e.hpc.quda._workload import CONFIG_LABEL, GRID, NUM_GPUS, NUM_PROCS
 
 logger = logging.getLogger(__name__)
 
