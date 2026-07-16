@@ -47,3 +47,37 @@ def test_hip_basic_spirv(
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     )
     assert marker in result.stdout, f"SPIR-V HIP-Basic sample {sample_path} missed {marker!r}:\n{result.stdout[:2000]}"
+
+# Multi-GPU HIP-Basic samples: marked hw.multi_gpu + gpu_count(2) so the
+# framework auto-skips them where fewer than 2 GPUs are available and runs
+# them (ROCR_VISIBLE_DEVICES spanning the allocated GPUs) where >=2 exist.
+_MULTI_GPU_SAMPLES = [
+    ("multi_gpu_data_transfer", "hip_multi_gpu_data_transfer", "Validation passed."),
+]
+
+
+@pytest.mark.hw.multi_gpu
+@pytest.mark.gpu_count(2)
+@pytest.mark.runtime.fast
+@pytest.mark.parametrize(("sample_path", "exec_name", "marker"), _MULTI_GPU_SAMPLES, ids=[s[0] for s in _MULTI_GPU_SAMPLES])
+def test_hip_basic_spirv_multi_gpu(
+    target_executor,
+    ld_path: dict,
+    rock_dir: str,
+    hip_basic_spirv_build,
+    sample_path: str,
+    exec_name: str,
+    marker: str,
+):
+    """Verify a multi-GPU HIP-Basic sample emits a SPIR-V bundle and runs across >=2 GPUs."""
+    binary = hip_basic_spirv_build(sample_path, exec_name)
+
+    assert_spirv_offload_bundle(target_executor, rock_dir, binary, f"hip_basic_spirv/{sample_path}")
+
+    ld = ld_path["LD_LIBRARY_PATH"]
+    result = target_executor.run(f"env LD_LIBRARY_PATH={ld} {binary}")
+    assert result.ok, (
+        f"SPIR-V multi-GPU HIP app run failed (exit={result.exit_code}):\n"
+        f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
+    )
+    assert marker in result.stdout, f"SPIR-V multi-GPU sample {sample_path} missed {marker!r}:\n{result.stdout[:2000]}"
