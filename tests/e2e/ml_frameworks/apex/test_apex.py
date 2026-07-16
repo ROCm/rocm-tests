@@ -323,7 +323,8 @@ def test_apex_l0_suite(request, target_executor):
     # backstops -- a fault that aborts the runner mid-test (memory-access fault,
     # core dump) can leave the last sub-test without an outcome, and must never be
     # reported as a pass.
-    assert summary.is_clean and result.exit_code == 0 and not crash_markers, (
+    completed_cleanly = summary.is_clean and result.exit_code == 0 and not crash_markers
+    assert completed_cleanly, (
         f"Apex L0 suite did not complete cleanly "
         f"(exit={result.exit_code}, crash_markers={crash_markers or 'none'}, "
         f"failed={summary.failed}, errored={summary.errored}, "

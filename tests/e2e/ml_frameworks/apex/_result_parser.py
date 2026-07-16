@@ -30,16 +30,14 @@ outcomes were parsed at all.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
+import re
 
 # A sub-test header line: "<name> (<module>.<Class>.<method>)[ [params]] ... [rest]".
 # ``rest`` may hold the outcome (same-line case) or be empty/log text (the outcome
 # then arrives on a later line). The parenthesised id must contain a dot so plain
 # log lines that happen to contain " ... " are not mistaken for test headers.
-_START_LINE = re.compile(
-    r"^(?P<name>[^\s(]+\s+\([^)]*\.[^)]*\)(?:\s+\[[^\]]+\])*)\s+\.\.\.\s*(?P<rest>.*)$"
-)
+_START_LINE = re.compile(r"^(?P<name>[^\s(]+\s+\([^)]*\.[^)]*\)(?:\s+\[[^\]]+\])*)\s+\.\.\.\s*(?P<rest>.*)$")
 
 # The "ERROR:"/"FAIL:" summary header preceding each traceback. Requires the
 # unittest test-id form so ordinary "ERROR: ..." log lines are not captured.
@@ -197,6 +195,17 @@ def parse_unittest_output(text: str) -> ApexRunSummary:
                 pending = None
             continue
 
+    return _aggregate(parsed, header_names, summary_failures, summary_errors, ran_total)
+
+
+def _aggregate(
+    parsed: dict[str, str | None],
+    header_names: dict[str, list[str]],
+    summary_failures: int,
+    summary_errors: int,
+    ran_total: int,
+) -> ApexRunSummary:
+    """Tally per-sub-test outcomes into an :class:`ApexRunSummary`."""
     summary = ApexRunSummary(ran_total=ran_total)
     for name, outcome in parsed.items():
         if outcome == _PASS:
