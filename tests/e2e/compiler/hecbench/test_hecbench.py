@@ -219,7 +219,7 @@ def test_hecbench_smoke(
 @pytest.mark.ci.weekly
 @pytest.mark.runtime.soak
 @pytest.mark.parametrize("mode", _MODES)
-@pytest.mark.parametrize("benchmark", _ALL_BENCHMARKS)
+@pytest.mark.parametrize("benchmark", _ALL_BENCHMARKS, ids=_ALL_BENCHMARKS)
 def test_hecbench_full_suite(
     benchmark: str,
     mode: str,
