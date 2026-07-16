@@ -79,9 +79,9 @@ Supported keys:
 | `mode` | `auto`, `multiarch`, `family`, `staging` | Select the wheel channel strategy. Default is `auto`. |
 | `device` / `gfx` | `gfx90a`, `gfx942` | Multi-arch device extra. Produces `torch[device-gfxNNN]`. |
 | `gfx_family` / `family` | `gfx90a-dcgpu` | Family v2 index suffix override. Usually auto-detected. |
-| `torch` | `2.14.0a0+rocm7.15.0a20260716` | Pin the exact `torch` version. Disables fallback to a different torch version. |
-| `torchvision` | `0.29.0a0+rocm7.15.0a20260716` | Pin `torchvision`; otherwise version-matched from the selected `torch` ROCm build. |
-| `torchaudio` | `2.11.0+rocm7.15.0a20260716` | Pin `torchaudio`; otherwise version-matched from the selected `torch` ROCm build. |
+| `torch` | `2.14.0a0+rocm7.12.0a20260716` | Pin the exact `torch` version. Disables fallback to a different torch version. |
+| `torchvision` | `0.29.0a0+rocm7.12.0a20260716` | Pin `torchvision`; otherwise version-matched from the selected `torch` ROCm build. |
+| `torchaudio` | `2.11.0+rocm7.12.0a20260716` | Pin `torchaudio`; otherwise version-matched from the selected `torch` ROCm build. |
 | `index` / `index_url` | `https://.../whl-multi-arch/` | Override the package index. Makes the request explicit and single-candidate. |
 | `find_links` / `find_links_url` | `file:///.../wheels` | Add a local wheel source. Makes the request explicit and single-candidate. |
 | `requirements` | `/path/a.txt:/path/b.txt` | Ancillary dependency files. Defaults to `[frameworks].requirements_pytorch`. |
@@ -97,10 +97,10 @@ Examples:
 --pre-install "pytorch=mode=multiarch,device=gfx90a"
 
 # Exact torch pin. Companion packages are auto-matched unless pinned too.
---pre-install "pytorch=mode=multiarch,device=gfx90a,torch=2.14.0a0+rocm7.15.0a20260716"
+--pre-install "pytorch=mode=multiarch,device=gfx90a,torch=2.14.0a0+rocm7.12.0a20260716"
 
 # Fully pinned package set. No fallback to another torch version.
---pre-install "pytorch=mode=multiarch,device=gfx90a,torch=2.14.0a0+rocm7.15.0a20260716,torchvision=0.29.0a0+rocm7.15.0a20260716,torchaudio=2.11.0+rocm7.15.0a20260716"
+--pre-install "pytorch=mode=multiarch,device=gfx90a,torch=2.14.0a0+rocm7.12.0a20260716,torchvision=0.29.0a0+rocm7.12.0a20260716,torchaudio=2.11.0+rocm7.12.0a20260716"
 
 # Explicit family v2.
 --pre-install "pytorch=mode=family,gfx_family=gfx90a-dcgpu"
