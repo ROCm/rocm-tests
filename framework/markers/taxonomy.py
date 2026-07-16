@@ -152,4 +152,18 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # Apex fused-kernel L0 unit-test suite (ML frameworks): clones + builds the
+    # Apex HIP extensions, then runs the L0 unittest suite. Uses all GPUs by
+    # default (APEX_NUM_GPUS caps it); hw.gpu + hw.multi_gpu cover both the
+    # single- and multi-GPU profiles. Exercises the HIP runtime/compiler and the
+    # RCCL/rocBLAS/hipBLASLt math libraries.
+    "tests/e2e/ml_frameworks/apex": [
+        "hw.gpu",
+        "hw.multi_gpu",
+        "layer.runtime",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
 }
