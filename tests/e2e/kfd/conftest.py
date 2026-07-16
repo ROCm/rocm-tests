@@ -103,9 +103,7 @@ def _kfd_compiler_args(rocm_path: str) -> list[str]:
         )
     clangpp_str = str(clangpp)
     clang_str = clangpp_str[:-2] if clangpp_str.endswith("++") else clangpp_str
-    return [
-        f"-DCMAKE_C_COMPILER={clang_str}"
-    ]
+    return [f"-DCMAKE_C_COMPILER={clang_str}"]
 
 
 # Thunk headers kfdtest #includes as "hsakmt/hsakmt.h" and "hsakmt/linux/kfd_ioctl.h";
@@ -151,7 +149,8 @@ def kfdtest_binary(
     cmake_executor,
     gpu_arch: str | None,
     built_binary,
-    cmake_build_dir) -> str:
+    cmake_build_dir,
+) -> str:
     """Sparse-clone and CMake-build ``kfdtest``; return the absolute binary path.
 
     Session-scoped so the clone + build happens once per session regardless of
