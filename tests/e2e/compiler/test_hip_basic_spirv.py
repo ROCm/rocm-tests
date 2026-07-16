@@ -8,10 +8,19 @@ from tests.common.spirv import assert_spirv_offload_bundle
 
 _SAMPLES = [
     ("bit_extract", "hip_bit_extract", "Validation passed."),
+    ("device_globals", "hip_device_globals", "Validation passed."),
     ("dynamic_shared", "hip_dynamic_shared", "Validation passed."),
     ("events", "hip_events", "Validation passed."),
+    ("gpu_arch", "hip_gpu_arch", "Validation passed."),
+    ("hello_world", "hip_hello_world", "Hello world from device kernel"),
+    ("inline_assembly", "hip_inline_assembly", "Validation passed."),
+    ("matrix_multiplication", "hip_matrix_multiplication", "Validation passed."),
+    ("moving_average", "hip_moving_average", "Validation passed."),
+    ("occupancy", "hip_occupancy", "Theoretical Occupancy"),
+    ("saxpy", "hip_saxpy", "First 10 elements of the results"),
     ("shared_memory", "hip_shared_memory", "Validation passed."),
     ("streams", "hip_streams", "streams completed!"),
+    ("warp_shuffle", "hip_warp_shuffle", "Validation passed."),
 ]
 
 

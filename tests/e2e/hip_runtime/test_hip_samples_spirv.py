@@ -14,7 +14,11 @@ _SAMPLES = [
     ("2_Cookbook/1_hipEvent", "hipEvent"),
     ("2_Cookbook/3_shared_memory", "sharedMemory"),
     ("2_Cookbook/4_shfl", "shfl"),
+    ("2_Cookbook/5_2dshfl", "2dshfl"),
+    ("2_Cookbook/6_dynamic_shared", "dynamic_shared"),
     ("2_Cookbook/7_streams", "stream"),
+    ("2_Cookbook/9_unroll", "unroll"),
+    ("2_Cookbook/13_occupancy", "occupancy"),
 ]
 
 
