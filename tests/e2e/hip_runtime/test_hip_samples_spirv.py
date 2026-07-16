@@ -1,25 +1,19 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Build representative HIP samples for SPIR-V and verify bundle + execution."""
+"""Build the representative HIP samples for SPIR-V and verify bundle + execution.
+
+Reuses the exact single-GPU sample list from ``test_hip_samples`` (same
+ROCm/hip-tests sources); the only differences are the SPIR-V build fixture
+(``-DCMAKE_HIP_ARCHITECTURES=amdgcnspirv``) and the added amdgcnspirv
+offload-bundle assertion. Multi-GPU / toolchain-special / arch-gated samples are
+intentionally left out of this representative set (mirrors ``test_hip_samples``);
+the multi-GPU case is covered separately below.
+"""
 
 import pytest
 
 from tests.common.spirv import assert_spirv_offload_bundle
-
-# (sample path under samples/, produced executable name)
-_SAMPLES = [
-    ("0_Intro/bit_extract", "bit_extract"),
-    ("0_Intro/square", "square"),
-    ("2_Cookbook/0_MatrixTranspose", "MatrixTranspose"),
-    ("2_Cookbook/1_hipEvent", "hipEvent"),
-    ("2_Cookbook/3_shared_memory", "sharedMemory"),
-    ("2_Cookbook/4_shfl", "shfl"),
-    ("2_Cookbook/5_2dshfl", "2dshfl"),
-    ("2_Cookbook/6_dynamic_shared", "dynamic_shared"),
-    ("2_Cookbook/7_streams", "stream"),
-    ("2_Cookbook/9_unroll", "unroll"),
-    ("2_Cookbook/13_occupancy", "occupancy"),
-]
+from tests.e2e.hip_runtime.test_hip_samples import _SAMPLES
 
 
 @pytest.mark.runtime.medium
@@ -45,11 +39,12 @@ def test_hip_samples_spirv(
     )
     assert (
         "PASSED" in result.stdout or "Passed" in result.stdout
-    ), f"SPIR-V hip sample {sample_path} ran but did not report 'PASSED'/'Passed':\n{result.stdout[:2000]}"
+    ), f"SPIR-V hip sample {sample_path} ran but did not report PASSED/Passed:\n{result.stdout[:2000]}"
 
-# Multi-GPU HIP samples: marked hw.multi_gpu + gpu_count(2) so the framework
-# auto-skips them where fewer than 2 GPUs are available and runs them across
-# the allocated GPUs where >=2 exist.
+
+# Multi-GPU HIP sample: marked hw.multi_gpu + gpu_count(2) so the framework
+# auto-skips where fewer than 2 GPUs are available and runs across the allocated
+# GPUs otherwise (mirrors the multi-GPU exclusion in the single-GPU set above).
 _MULTI_GPU_SAMPLES = [
     ("2_Cookbook/8_peer2peer", "peer2peer"),
 ]
