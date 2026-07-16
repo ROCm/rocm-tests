@@ -124,7 +124,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     # driver / thunk layer under the HIP runtime.
     "tests/e2e/kfd": [
         "hw.gpu",
-        "layer.runtime",
+        "layer.driver",
         "ci.nightly",
         "e2e.stack",
         "os.linux",

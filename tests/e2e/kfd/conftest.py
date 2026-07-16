@@ -69,8 +69,7 @@ def _safe_ref_name(ref: str) -> str:
 
 # pkg-config deps kfdtest's CMakeLists.txt requires (pkg_check_modules). When the
 # corresponding -dev package is not provisioned on the build node, cmake configure
-# aborts before any compilation. These are host-provisioning deps (see module
-# docstring), so a missing one is an un-provisioned environment, not a test failure.
+# aborts before any compilation. The missing pre-reqs are highlighted as errors.
 _PROVISIONING_PKGS = ("libdrm", "libnuma")
 
 
@@ -94,9 +93,7 @@ def _kfd_compiler_args(rocm_path: str) -> list[str]:
 
     The original test hard-coded ``<rocm>/llvm/bin/amdclang`` and
     ``amdclang++``. ``find_rocm_clangpp`` performs the same TheRock/ROCm probe
-    used by every other CMake-based conftest; the C compiler is derived from the
-    resolved C++ compiler by stripping the trailing ``++`` (clang++ -> clang,
-    amdclang++ -> amdclang).
+    used by every other CMake-based conftest
     """
     clangpp = find_rocm_clangpp(rocm_path)
     if clangpp is None:
@@ -107,8 +104,7 @@ def _kfd_compiler_args(rocm_path: str) -> list[str]:
     clangpp_str = str(clangpp)
     clang_str = clangpp_str[:-2] if clangpp_str.endswith("++") else clangpp_str
     return [
-        f"-DCMAKE_C_COMPILER={clang_str}",
-        f"-DCMAKE_CXX_COMPILER={clangpp_str}",
+        f"-DCMAKE_C_COMPILER={clang_str}"
     ]
 
 
@@ -155,7 +151,7 @@ def kfdtest_binary(
     cmake_executor,
     gpu_arch: str | None,
     built_binary,
-) -> str:
+    cmake_build_dir) -> str:
     """Sparse-clone and CMake-build ``kfdtest``; return the absolute binary path.
 
     Session-scoped so the clone + build happens once per session regardless of
@@ -182,20 +178,18 @@ def kfdtest_binary(
     # Source is already on the build node (cloned above), so no sync_dirs are
     # needed; cmake_build handles local vs. remote (cmake_executor) transparently.
     try:
-        actual_build_dir = cmake_build(
+        build_dir = cmake_build_dir(
             src=str(kfdtest_src),
-            build_dir=str(build_dir),
-            rocm_path=rocm_path,
-            gpu_arch=gpu_arch,
-            compiler_args=_kfd_compiler_args(rocm_path),
+            subdir=f"kfd/kfdtest-{_safe_ref_name(_KFDTEST_REF)}",
+            compiler_mode="auto",  # sets CMAKE_CXX_COMPILER via rocm-tests standard path
             extra_cmake_args=[
+                _kfd_compiler_args(rocm_path),
                 "-DCMAKE_BUILD_TYPE=Release",
                 "-DCMAKE_EXE_LINKER_FLAGS=-ldl",
                 f"-DROCM_DIR={rocm_path}",
                 f"-DOPENCL_DIR={rocm_path}",
             ],
             label="kfdtest",
-            remote_executor=cmake_executor,
         )
     except (AssertionError, RuntimeError) as exc:
         # A missing pkg-config provisioning dep (libdrm/libnuma) is an
@@ -204,9 +198,8 @@ def kfdtest_binary(
         missing = _missing_provisioning_pkg(str(exc))
         if missing is None:
             raise
-        pytest.skip(
+        raise RuntimeError(
             f"kfdtest build dependency '{missing}' is not provisioned on the build node — "
-            f"cmake configure could not find its pkg-config module. Provision it via "
-            f"'--pre-install pkg={missing}-dev' (see conftest.py module docstring)."
+            f"cmake configure could not find its pkg-config module."
         )
-    return built_binary(os.path.join(str(actual_build_dir), "kfdtest"), "kfdtest")
+    return built_binary(os.path.join(str(build_dir), "kfdtest"), "kfdtest")
