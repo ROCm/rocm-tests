@@ -48,6 +48,7 @@ def test_hip_basic_spirv(
     )
     assert marker in result.stdout, f"SPIR-V HIP-Basic sample {sample_path} missed {marker!r}:\n{result.stdout[:2000]}"
 
+
 # Multi-GPU HIP-Basic samples: marked hw.multi_gpu + gpu_count(2) so the
 # framework auto-skips them where fewer than 2 GPUs are available and runs
 # them (ROCR_VISIBLE_DEVICES spanning the allocated GPUs) where >=2 exist.
@@ -59,7 +60,9 @@ _MULTI_GPU_SAMPLES = [
 @pytest.mark.hw.multi_gpu
 @pytest.mark.gpu_count(2)
 @pytest.mark.runtime.fast
-@pytest.mark.parametrize(("sample_path", "exec_name", "marker"), _MULTI_GPU_SAMPLES, ids=[s[0] for s in _MULTI_GPU_SAMPLES])
+@pytest.mark.parametrize(
+    ("sample_path", "exec_name", "marker"), _MULTI_GPU_SAMPLES, ids=[s[0] for s in _MULTI_GPU_SAMPLES]
+)
 def test_hip_basic_spirv_multi_gpu(
     target_executor,
     ld_path: dict,
