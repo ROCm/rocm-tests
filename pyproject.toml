@@ -187,6 +187,7 @@ disable = [
     "C0116",  # missing-function-docstring
     "R0903",  # too-few-public-methods — ABCs / dataclasses minimal by design
     "R0913",  # too-many-arguments — framework constructors need params
+    "R0917",  # too-many-positional-arguments — pytest injects fixtures positionally
     "R0801",  # duplicate-code — Linux/Windows adapter symmetry
     "W0212",  # protected-access — tests validly inspect private state
     "W0511",  # fixme/todo — tracked in issues

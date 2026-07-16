@@ -948,6 +948,16 @@ def clone_repo(  # noqa: C901
                     )
         else:
             logger.info("clone_repo (remote): %s already exists — skipping clone", abs_dest)
+            if sparse_subtree:
+                # Re-assert the sparse spec on a reused checkout: one cached from an
+                # earlier run with a narrower subtree would otherwise stay missing the
+                # files we now need (e.g. a sibling include/ tree). Idempotent when the
+                # spec already matches.
+                sc = remote_executor.run(f"git -C {abs_dest} sparse-checkout set {sparse_subtree}", timeout=timeout)
+                if not sc.ok:
+                    raise RuntimeError(
+                        f"git sparse-checkout re-assert failed on remote (exit={sc.exit_code}): {sc.stderr[:1000]}"
+                    )
 
         if ref:
             co = remote_executor.run(f"git -C {abs_dest} checkout {ref}", timeout=timeout)
@@ -1000,6 +1010,18 @@ def clone_repo(  # noqa: C901
             ), f"git sparse-checkout set failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
     else:
         logger.info("clone_repo (local): %s already exists — skipping clone", repo_dir)
+        if sparse_subtree:
+            # Re-assert the sparse spec on a reused checkout (see remote branch): a
+            # checkout cached from an earlier run with a narrower subtree would
+            # otherwise stay missing files we now need. Idempotent when unchanged.
+            proc = subprocess.run(
+                ["git", "-C", str(repo_dir), "sparse-checkout", "set", sparse_subtree],
+                capture_output=True,
+                text=True,
+            )
+            assert (
+                proc.returncode == 0
+            ), f"git sparse-checkout re-assert failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
 
     if ref:
         proc = subprocess.run(
