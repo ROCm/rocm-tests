@@ -43,7 +43,7 @@ import re
 
 import pytest
 
-from framework.builder.binary_builder import cmake_build, find_rocm_clangpp
+from framework.builder.binary_builder import find_rocm_clangpp
 
 logger = logging.getLogger(__name__)
 
@@ -200,5 +200,5 @@ def kfdtest_binary(
         raise RuntimeError(
             f"kfdtest build dependency '{missing}' is not provisioned on the build node — "
             f"cmake configure could not find its pkg-config module."
-        )
+        ) from exc
     return built_binary(os.path.join(str(build_dir), "kfdtest"), "kfdtest")
