@@ -4,20 +4,16 @@
 
 import pytest
 
-# Full amd-mainline CTest is green on gfx942 except callback/debug/profiler samples
-# that need extra runtime/debug-profiler environment beyond the examples app set.
-_KNOWN_FAILING = "hipfft_callback|rocfft_callback|rocgdb-.*|rocprof.*"
-
 
 @pytest.mark.runtime.medium
 def test_rocm_examples(target_executor, ld_path: dict, rock_dir: str, rocm_examples_build_dir: str):
-    """Run ROCm/rocm-examples CTest, excluding known failing callback samples."""
+    """Build and run the full public ROCm/rocm-examples CTest suite (no exclusions)."""
     ld = ld_path["LD_LIBRARY_PATH"]
     reqs = f"{rock_dir}/libexec/rocprofiler-compute/requirements.txt"
     target_executor.run(f"test ! -f {reqs} || python -m pip install -q -r {reqs}", timeout=600)
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld} ROCM_PATH={rock_dir} "
-        f"ctest --test-dir {rocm_examples_build_dir} --output-on-failure -E '{_KNOWN_FAILING}'",
+        f"ctest --test-dir {rocm_examples_build_dir} --output-on-failure",
         timeout=7200,
     )
     assert result.ok, (
