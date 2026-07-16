@@ -101,13 +101,14 @@ def _extract_total(regex: str, output: str) -> float:
     """
     total = 0.0
     for match in re.findall(regex, output):
-        candidate = next((g for g in match if g.strip()), "") if isinstance(match, tuple) else match
-        if candidate.strip():
-            try:
-                total += float(candidate)
-            except ValueError:
-                # Non-numeric capture (e.g. a checksum string)
-                continue
+        groups = match if isinstance(match, tuple) else (match,)
+        for candidate in groups:
+            if candidate and candidate.strip():
+                try:
+                    total += float(candidate)
+                except ValueError:
+                    # Non-numeric capture (e.g. a time string or checksum token).
+                    continue
     return total
 
 

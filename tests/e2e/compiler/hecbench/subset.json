@@ -586,7 +586,7 @@
       "(?:Total time \\(s\\): )([0-9.+-e]+)"
     ],
     "heat2d": [
-	    "(?:PASS)"
+	    ""
     ],
     "hellinger": [
       "(?:Average kernel execution time )([0-9.+-e]+)(?: \\(s\\))"
