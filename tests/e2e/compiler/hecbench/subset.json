@@ -255,9 +255,6 @@
     "clock": [
       "(?:Execution efficiency = )([0-9.+-e]+)"
     ],
-    "cm": [
-	    ""
-    ],
     "cmembench": [
       "(?:PASS\\s+)(?:Average kernel execution time \\(memory access width = [0-9]+ bytes\\):\\s)([0-9.+-e]+)(?: ms)"
     ],
@@ -1430,9 +1427,6 @@
     ],
     "urng": [
 	    ""
-    ],
-    "vanGenuchten": [
-        "(?:Average kernel execution time: )([0-9.+-e]+)(?: \\(s\\))"
     ],
     "vmc": [
       "(?:Average execution time of kernels: )([0-9.+-e]+)(?: \\(s\\))"
