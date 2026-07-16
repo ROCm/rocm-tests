@@ -182,7 +182,7 @@ def kfdtest_binary(
             subdir=f"kfd/kfdtest-{_safe_ref_name(_KFDTEST_REF)}",
             compiler_mode="auto",  # sets CMAKE_CXX_COMPILER via rocm-tests standard path
             extra_cmake_args=[
-                _kfd_compiler_args(rocm_path),
+                *_kfd_compiler_args(rocm_path),
                 "-DCMAKE_BUILD_TYPE=Release",
                 "-DCMAKE_EXE_LINKER_FLAGS=-ldl",
                 f"-DROCM_DIR={rocm_path}",
