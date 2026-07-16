@@ -22,7 +22,7 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     # CI gate membership (REQUIRED)
     "ci": {"pr", "nightly", "weekly"},
     # ROCm stack layer under test (REQUIRED)
-    "layer": {"runtime", "math_lib"},
+    "layer": {"driver", "runtime", "math_lib"},
     # Expected duration (optional but strongly recommended)
     "runtime": {"fast", "medium", "soak"},
     # Target platform (optional)
@@ -120,7 +120,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "os.linux",
     ],
     # KFD (Kernel Fusion Driver) — lowest layer of the ROCm stack, exercised via
-    # the libhsakmt kfdtest GTest suite. layer.runtime because KFD is the kernel
+    # the libhsakmt kfdtest GTest suite. layer.driver because KFD is the kernel
     # driver / thunk layer under the HIP runtime.
     "tests/e2e/kfd": [
         "hw.gpu",

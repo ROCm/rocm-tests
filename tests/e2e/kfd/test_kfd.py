@@ -19,7 +19,7 @@ ways, mirroring the original test's coverage:
                                     (the original test's ``--hsa_test_gpus_num`` option).
 
 Markers auto-injected by CATEGORY_PROFILES for tests/e2e/kfd/:
-    hw.gpu, layer.runtime, ci.nightly, e2e.stack, os.linux
+    hw.gpu, layer.driver, ci.nightly, e2e.stack, os.linux
 Per-function overrides below adjust hw.* / ci.* / runtime.* where needed.
 
 """

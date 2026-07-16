@@ -77,7 +77,8 @@ def _missing_provisioning_pkg(output: str) -> str | None:
     """Return the name of a missing pkg-config provisioning dep in *output*, if any.
 
     Detects the pkg_check_modules "required packages were not found" signature so a
-    missing host dep can be turned into an actionable skip rather than a hard ERROR.
+    missing host dep can be turned into an actionable, well-labeled error rather
+    than an opaque cmake configure failure.
     """
     lowered = output.lower()
     if "required packages were not found" not in lowered and "not found" not in lowered:
@@ -89,17 +90,27 @@ def _missing_provisioning_pkg(output: str) -> str | None:
 
 
 def _kfd_compiler_args(rocm_path: str) -> list[str]:
-    """Return ``-DCMAKE_{C,CXX}_COMPILER`` args pointing at ROCm's clang/clang++.
+    """Return the ``-DCMAKE_C_COMPILER`` arg pointing at ROCm's clang.
+
+    ``cmake_build_dir(compiler_mode="auto")`` already sets ``CMAKE_CXX_COMPILER``
+    via the rocm-tests standard probe; kfdtest additionally needs a C compiler
+    (it compiles C translation units), which cmake_build_dir does not yet set, so
+    we derive it here by trimming the trailing ``++`` off the resolved clang++.
 
     The original test hard-coded ``<rocm>/llvm/bin/amdclang`` and
     ``amdclang++``. ``find_rocm_clangpp`` performs the same TheRock/ROCm probe
-    used by every other CMake-based conftest
+    used by every other CMake-based conftest.
+
+    A missing compiler is a build-prerequisite failure, not a platform that
+    lacks the resource under test — without compiler detection no binary can be
+    produced and no test can run — so this raises rather than skipping.
     """
     clangpp = find_rocm_clangpp(rocm_path)
     if clangpp is None:
-        pytest.skip(
-            f"ROCm clang++ not found under {rocm_path} — cannot build kfdtest. "
-            "Verify ROCK_DIR / --rock-dir points at a complete ROCm install."
+        raise RuntimeError(
+            f"ROCm clang++ not found under {rocm_path} — KFD build requires a "
+            "ROCm-provided C/C++ compiler. Verify ROCK_DIR / --rock-dir points at "
+            "a complete ROCm install."
         )
     clangpp_str = str(clangpp)
     clang_str = clangpp_str[:-2] if clangpp_str.endswith("++") else clangpp_str
@@ -192,8 +203,9 @@ def kfdtest_binary(
         )
     except (AssertionError, RuntimeError) as exc:
         # A missing pkg-config provisioning dep (libdrm/libnuma) is an
-        # un-provisioned build host, not a broken build — skip with guidance
-        # rather than erroring. Any other failure is real breakage; re-raise.
+        # un-provisioned build host — surface it as an actionable, well-labeled
+        # error rather than an opaque cmake configure failure. Any other failure
+        # is real breakage; re-raise unchanged.
         missing = _missing_provisioning_pkg(str(exc))
         if missing is None:
             raise
