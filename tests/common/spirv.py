@@ -23,7 +23,7 @@ def assert_spirv_offload_bundle(target_executor, rock_dir: str, binary: str, lab
     find_cmd += '; do [ -x "$p" ] && printf "%s" "$p" && exit 0; done; exit 1'
     find_result = target_executor.run(find_cmd)
     if not find_result.ok or not find_result.stdout.strip():
-        pytest.skip(f"llvm-objdump not found under {rock_dir}; cannot verify SPIR-V offload bundle")
+        pytest.fail(f"llvm-objdump not found under {rock_dir}; cannot verify SPIR-V offload bundle")
 
     objdump = shlex.quote(find_result.stdout.strip().splitlines()[-1])
     dump = target_executor.run(f"{objdump} --offloading {shlex.quote(binary)}")
