@@ -21,6 +21,9 @@ ROCm stack components exercised:
     HIP ops), and the rocBLAS / MIOpen-style compute the resize / affine / warp
     kernels rely on.
 
+Supported architectures:
+    gfx1101, gfx1100, gfx950, gfx942, gfx90a, gfx908.
+
 Supported OS / environment profiles:
     Ubuntu 24.04, Alibaba Cloud Linux 3, Alibaba Cloud Linux 4, RHEL 10.1,
     SLES 15.7; bare-metal and container profiles.
