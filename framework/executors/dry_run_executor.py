@@ -20,7 +20,7 @@ import logging
 
 from framework.common.helpers import ExecutionResult
 from framework.executors.abstract_executor import AbstractExecutor
-from framework.executors.background_process import BackgroundProcess, NoOpBackgroundProcess
+from framework.executors.background_process import AbstractBackgroundProcess, NoOpBackgroundProcess
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,9 @@ class DryRunExecutor(AbstractExecutor):
         command: str,
         timeout: float | None = None,
         log_path: str | None = None,
-    ) -> BackgroundProcess:
+        console_label: str | None = None,
+        stream: bool = False,
+    ) -> AbstractBackgroundProcess:
         """Return a ``NoOpBackgroundProcess`` without starting a real subprocess.
 
         Logs the command for traceability so dry-run sessions remain auditable.
@@ -67,9 +69,11 @@ class DryRunExecutor(AbstractExecutor):
             command:  Command that would have been started (logged only).
             timeout:  Ignored in DryRun mode.
             log_path: Ignored in DryRun mode.
+            console_label: Ignored in DryRun mode (accepted for API parity).
+            stream:   Ignored in DryRun mode (accepted for API parity).
 
         Returns:
             ``NoOpBackgroundProcess`` with a synthetic ``ExecutionResult``.
         """
         logger.info("[DryRun] Skipping background start of: %s", command)
-        return NoOpBackgroundProcess()  # type: ignore[return-value]
+        return NoOpBackgroundProcess()

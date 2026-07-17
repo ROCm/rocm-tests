@@ -163,7 +163,11 @@ class TestLogger:
             ``time.monotonic()`` captured immediately after the header is written.
         """
         ts = _ts()
-        header = f">> [{ts}] {self.node_label} | {self.gpu_label} | $ {cmd}"
+        # truncate the console logs to max 300 characters
+        cmd_log_max = 300
+        tail = f"… <{len(cmd) - cmd_log_max} chars truncated>"
+        display_cmd = cmd if len(cmd) <= cmd_log_max else cmd[:cmd_log_max] + tail
+        header = f">> [{ts}] {self.node_label} | {self.gpu_label} | $ {display_cmd}"
         _BASE_LOGGER.info(header)
         self._session_append(
             f"CMD   {ts} {self.test_id[: _SESSION_ID_WIDTH]:<{_SESSION_ID_WIDTH}}" f" {self.node_label} $ {cmd}\n"
