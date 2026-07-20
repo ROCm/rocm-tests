@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from framework.common.helpers import ExecutionResult
 
 if TYPE_CHECKING:
-    from framework.executors.background_process import BackgroundProcess
+    from framework.executors.background_process import AbstractBackgroundProcess
 
 
 class AbstractExecutor(abc.ABC):
@@ -52,7 +52,9 @@ class AbstractExecutor(abc.ABC):
         command: str,
         timeout: float | None = None,
         log_path: str | None = None,
-    ) -> BackgroundProcess:
+        console_label: str | None = None,
+        stream: bool = False,
+    ) -> AbstractBackgroundProcess:
         """Start *command* in the background; return a handle immediately.
 
         The process runs concurrently while the test continues.  stdout and
@@ -76,11 +78,23 @@ class AbstractExecutor(abc.ABC):
             ``.stderr`` returned by ``handle.stop()`` are always per-process.
 
         Supported by:
-            ``LocalExecutor``, ``CpuExecutor``, ``DryRunExecutor``.
+            ``LocalExecutor``, ``CpuExecutor``, ``DryRunExecutor``, and
+            ``SshExecutor`` (via a detached ``SshBackgroundProcess``).  The SSH
+            backend launches the command fully detached (``setsid``) with output
+            redirected to node-side capture files; a daemon thread tails those
+            files and forwards new output to the console and *log_path* live
+            (a short poll interval behind the node), and ``stop()`` fetches the
+            final captured stdout/stderr.  All of this uses brief, serialised
+            control channels, so many concurrent background roles never exhaust
+            the remote ``MaxSessions`` limit.
+
+        For SSH, live streaming is **opt-in** (via *stream* and/or *log_path*): by
+        default the detached process is only captured at ``stop()``.  The local
+        executors always stream; they accept *console_label*/*stream* for API
+        parity and ignore them (they already forward output live).
 
         Not yet supported by:
-            ``SshExecutor`` — raises ``NotImplementedError``
-            (Paramiko channel background support is a future extension).
+            ``ContainerExecutor`` — raises ``NotImplementedError``.
 
         Args:
             command:  Shell command to launch in the background.
@@ -89,6 +103,11 @@ class AbstractExecutor(abc.ABC):
             log_path: If given, all subprocess output (stdout+stderr) is
                       appended to this file in real time.  Use a distinct path
                       per concurrent background process for isolated artifacts.
+            console_label: Human-readable label for live output attribution (SSH:
+                      ``[bg <console_label>]`` console prefix).  Ignored by local
+                      executors.
+            stream:   SSH only — emit live output to the ``rocm.test`` logger.
+                      Ignored by local executors (which always stream).
 
         Returns:
             ``BackgroundProcess`` handle with ``.pid``, ``.is_alive``,
