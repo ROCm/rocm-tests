@@ -16,7 +16,7 @@ Validates:
 Environment assumptions:
     The JAX source checkout must already exist on the execution node at
     ``ROCM_TEST_JAX_DIR`` (default ``/workspace/jax``) with JAX installed.
-    Each test skips gracefully when the checkout (or the JAX package) is absent
+    Each test fails when the checkout (or the JAX package) is absent
     rather than failing the session.
     All run knobs (checkout path, GPU count, version overrides, timeouts) come
     from ``_workload.py`` env vars.
@@ -40,7 +40,7 @@ import shlex
 
 import pytest
 
-from tests.e2e.frameworks.jax._workload import (
+from tests.e2e.ml_frameworks.jax._workload import (
     IS_SINGLE_GPU,
     JAX_DIR,
     JAX_FP8_UT_TIMEOUT,
@@ -71,7 +71,7 @@ def _run_in_jax_dir(target_executor, command: str, timeout: float):
 def _require_jax_checkout(target_executor) -> None:
     probe = target_executor.run(f"test -d {shlex.quote(JAX_DIR)}")
     if not probe.ok:
-        pytest.skip(f"JAX checkout not present at {JAX_DIR} on this node (set ROCM_TEST_JAX_DIR)")
+        pytest.fail(f"JAX checkout not present at {JAX_DIR} on this node (set ROCM_TEST_JAX_DIR)")
 
 
 def _detect_jax_version(target_executor):
@@ -96,11 +96,6 @@ def _detect_rocm_version(target_executor):
 
 
 @_JAX_UT_HW
-@pytest.mark.gpu_count(NUM_GPUS)
-@pytest.mark.ci.weekly
-@pytest.mark.layer.runtime
-@pytest.mark.e2e.stack
-@pytest.mark.os.linux
 @pytest.mark.runtime.soak
 def test_jax_ut(target_executor):
     """Run the JAX unit-test suite (``jax_ut``) on AMD GPUs.
