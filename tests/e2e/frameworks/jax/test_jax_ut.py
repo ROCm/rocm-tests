@@ -21,6 +21,10 @@ Environment assumptions:
     All run knobs (checkout path, GPU count, version overrides, timeouts) come
     from ``_workload.py`` env vars.
 
+    Wheel variant scope: These tests validate the installed JAX wheel variant
+    as-is (container or baremetal); the suite outcome is wheel-agnostic and
+    version-driven only. No per-variant runner branching is implemented.
+
 Markers:
     Required dimensions (hw.*, ci.*, layer.*) are also provided by the
     CATEGORY_PROFILE for ``tests/e2e/frameworks/`` (hw.gpu, layer.runtime,
@@ -61,54 +65,28 @@ _JAX_UT_HW = pytest.mark.hw.gpu if IS_SINGLE_GPU else pytest.mark.hw.multi_gpu
 
 
 def _run_in_jax_dir(target_executor, command: str, timeout: float):
-    """Run *command* from the JAX checkout directory on the execution node.
-
-    ``ExecutionResult.run`` has no ``cwd`` parameter, so the working directory is
-    established with a ``cd`` prefix (the executor injects ``ROCR_VISIBLE_DEVICES``
-    automatically -- it is never set here).
-
-    Args:
-        target_executor: The GPU executor group for the current test.
-        command:         Shell command to run relative to ``JAX_DIR``.
-        timeout:         Per-command wall-clock cap in seconds.
-
-    Returns:
-        The command's :class:`~framework.common.helpers.ExecutionResult`.
-    """
     return target_executor.run(f"cd {shlex.quote(JAX_DIR)} && {command}", timeout=timeout)
 
 
 def _require_jax_checkout(target_executor) -> None:
-    """Skip the test when the JAX checkout is absent on the execution node."""
     probe = target_executor.run(f"test -d {shlex.quote(JAX_DIR)}")
     if not probe.ok:
         pytest.skip(f"JAX checkout not present at {JAX_DIR} on this node (set ROCM_TEST_JAX_DIR)")
 
 
 def _detect_jax_version(target_executor):
-    """Return the installed JAX version, skipping when JAX is unavailable.
-
-    Honours the ``JAX_VERSION`` override; otherwise probes ``pip list`` on the
-    execution node
-    """
     if JAX_VERSION_OVERRIDE:
-        return parse_jax_version(f"jax {JAX_VERSION_OVERRIDE}") or pytest.skip(
+        return parse_jax_version(f"jax {JAX_VERSION_OVERRIDE}") or pytest.fail(
             f"JAX_VERSION override {JAX_VERSION_OVERRIDE!r} is not a valid version"
         )
     result = target_executor.run(f"cd {shlex.quote(JAX_DIR)} && python3 -m pip list")
     version = parse_jax_version(result.stdout)
     if version is None:
-        pytest.skip(f"JAX not installed on this node (pip list reported no 'jax' package):\n{result.stdout[-500:]}")
+        pytest.fail(f"JAX not installed on this node (pip list reported no 'jax' package):\n{result.stdout[-500:]}")
     return version
 
 
 def _detect_rocm_version(target_executor):
-    """Return the ROCm MAJOR.MINOR version, or ``None`` when undetectable.
-
-    Honours the ``JAX_ROCM_VERSION`` override; otherwise probes ``hipconfig``
-    and the ROCm ``.info/version`` file on the execution node.  A ``None`` result
-    causes the command builder to assume the newest legacy plugin layout.
-    """
     if ROCM_VERSION_OVERRIDE:
         return parse_rocm_version(ROCM_VERSION_OVERRIDE)
     result = target_executor.run("hipconfig --version 2>/dev/null || cat /opt/rocm/.info/version 2>/dev/null || true")
@@ -164,11 +142,6 @@ def test_jax_ut(target_executor):
             ), f"jax_ut step '{step.label}' produced no output -- runner may not have executed any tests"
 
 
-@pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
-@pytest.mark.layer.runtime
-@pytest.mark.e2e.stack
-@pytest.mark.os.linux
 @pytest.mark.runtime.medium
 def test_jax_rnn_ut(target_executor):
     """Run the JAX experimental-RNN unit test (``jax_rnn_ut``) on a single GPU."""
@@ -185,12 +158,7 @@ def test_jax_rnn_ut(target_executor):
     assert result.stdout.strip(), "jax_rnn_ut produced no output -- pytest may not have collected any tests"
 
 
-@pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
-@pytest.mark.layer.runtime
-@pytest.mark.e2e.stack
-@pytest.mark.os.linux
-@pytest.mark.runtime.fast
+@pytest.mark.runtime.medium
 def test_jax_fp8_ut(target_executor):
     """Run the JAX mixed-FP8 dot-general unit test (``jax_fp8_ut``) on a single GPU."""
     _require_jax_checkout(target_executor)
