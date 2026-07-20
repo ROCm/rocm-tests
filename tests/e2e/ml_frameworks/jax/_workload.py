@@ -124,7 +124,7 @@ def jax_ut_commands(
       the tree root (plugin folder ``"."``); ROCm > 7.0 (or unknown) nests them
       under ``jax_rocm_plugin/``.  When multi-GPU is requested the multi-GPU
       script runs first, then the single-GPU script
-    
+
     Args:
         jax_version:  Installed JAX version (from :func:`parse_jax_version`).
         rocm_version: Installed ROCm MAJOR.MINOR version (from
