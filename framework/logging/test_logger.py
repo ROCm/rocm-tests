@@ -174,7 +174,7 @@ class TestLogger:
         )
         return time.monotonic()
 
-    def cmd_end(self, stdout: str, stderr: str, exit_code: int, start: float) -> None:
+    def cmd_end(self, stdout: str, stderr: str, exit_code: int, _start: float) -> None:
         """Write verbatim output to per-test log; record exit code and output in session.log.
 
         Per-test log receives the full verbatim stdout/stderr.  session.log

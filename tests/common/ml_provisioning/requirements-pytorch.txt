@@ -1,0 +1,15 @@
+# ROCm/TheRock PyTorch - ANCILLARY dependencies only.
+#
+# IMPORTANT: this file deliberately does NOT list torch / torchvision / torchaudio.
+# Those ROCm wheels are installed by the ML provisioner
+# (tests/common/ml_provisioning/) from the configured wheel channel
+# (multi-arch / v2 family) using --index-url, so pip never resolves CUDA wheels from PyPI.
+# The provisioner installs this file INTO the managed venv AFTER the torch wheels.
+#
+# Channels & defaults live in rocm-test.toml [frameworks]; override per run with
+#   --pre-install pytorch=mode=multiarch,device=gfx942,torch=<version>
+# or rely on lazy fixture auto-provisioning (latest wheel matching node Python).
+#
+# Add only framework-adjacent helpers that are safe from PyPI here, e.g.:
+transformers
+accelerate
