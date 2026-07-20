@@ -11,7 +11,7 @@ and remote_node_plugin.py.
 """
 
 from framework.executors.abstract_executor import AbstractExecutor
-from framework.executors.background_process import BackgroundProcess, NoOpBackgroundProcess
+from framework.executors.background_process import AbstractBackgroundProcess, BackgroundProcess, NoOpBackgroundProcess
 from framework.executors.container_executor import ContainerExecutor, ContainerStatus
 from framework.executors.cpu_executor import CpuExecutor
 from framework.executors.dry_run_executor import DryRunExecutor
@@ -21,6 +21,7 @@ from framework.executors.local_executor import LocalExecutor
 from framework.executors.ssh_executor import SshExecutor
 
 __all__ = [
+    "AbstractBackgroundProcess",
     "AbstractExecutor",
     "BackgroundProcess",
     "ContainerExecutor",

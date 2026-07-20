@@ -62,7 +62,7 @@ import sys
 from framework.common.helpers import ExecutionResult
 from framework.executors.abstract_executor import AbstractExecutor
 from framework.executors.background_process import (
-    BackgroundProcess,
+    AbstractBackgroundProcess,
     _blocking_stream_run,
     _make_background_process,
 )
@@ -188,7 +188,9 @@ class LocalExecutor(AbstractExecutor):
         command: str,
         timeout: float | None = None,
         log_path: str | None = None,
-    ) -> BackgroundProcess:
+        console_label: str | None = None,
+        stream: bool = False,
+    ) -> AbstractBackgroundProcess:
         """Start *command* in the background with ``ROCR_VISIBLE_DEVICES`` set.
 
         Applies the same GPU environment logic as ``run()``: explicit
