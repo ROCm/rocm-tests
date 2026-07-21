@@ -239,9 +239,9 @@ jobs:
         run: |
           source .venv/bin/activate
           export LD_LIBRARY_PATH="$(dirname ${PYTHON_LIB})/../lib:${GITHUB_WORKSPACE}/therock_build/lib:${LD_LIBRARY_PATH}"
-          KEYWORD_ARG=""
+          KEYWORD_ARGS=()
           if [ -n "${KEYWORD_FILTER}" ]; then
-            KEYWORD_ARG="-k ${KEYWORD_FILTER}"
+            KEYWORD_ARGS=(-k "${KEYWORD_FILTER}")
           fi
           pytest tests/e2e/compiler/ \
             tests/e2e/hwq_heuristic/ \
@@ -258,7 +258,7 @@ jobs:
             --md-report-show-duration --tb=short \
             -v \
             -m "${TESTS_FILTERS}" \
-            ${KEYWORD_ARG}
+            "${KEYWORD_ARGS[@]}"
 
       - name: Extract test counts
         if: always()
