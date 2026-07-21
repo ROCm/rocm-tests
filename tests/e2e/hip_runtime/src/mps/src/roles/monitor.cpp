@@ -38,7 +38,7 @@ struct TempSensor {
     const char*     name;
 };
 
-// Probe HOTSPOT (JUNCTION) first — the primary sensor on MI300A/APU topologies.
+// Probe HOTSPOT first — the primary sensor on APU/integrated-GPU topologies.
 // Fall back to EDGE for discrete GPUs where HOTSPOT may not exist.
 // Returns {available=false} if neither sensor is present on this device.
 static TempSensor probe_temp_sensor(amdsmi_processor_handle gpu) {
@@ -145,7 +145,7 @@ int run_monitor(const RoleConfig& config) {
     int64_t total_queries = 0;
 
     // Probe which temperature sensor is available on this GPU topology once,
-    // before the main loop. MI300A/APU devices expose HOTSPOT (JUNCTION) but
+    // before the main loop. APU/integrated-GPU devices expose HOTSPOT but
     // not EDGE; discrete GPUs typically support both.
     TempSensor temp_sensor = probe_temp_sensor(gpu);
     if (temp_sensor.available) {
