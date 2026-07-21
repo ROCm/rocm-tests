@@ -25,6 +25,40 @@
             total_errors++;                                                     \
         }                                                                       \
     } while (0)
+
+// Returns true if `st` represents a sensor being absent on this topology
+// (NOT_SUPPORTED, NO_DATA), as opposed to a real driver or handle failure.
+static bool amdsmi_sensor_unavailable(amdsmi_status_t st) {
+    return st == AMDSMI_STATUS_NOT_SUPPORTED || st == AMDSMI_STATUS_NO_DATA;
+}
+
+struct TempSensor {
+    bool            available;
+    amdsmi_temperature_type_t type;
+    const char*     name;
+};
+
+// Probe HOTSPOT (JUNCTION) first — the primary sensor on MI300A/APU topologies.
+// Fall back to EDGE for discrete GPUs where HOTSPOT may not exist.
+// Returns {available=false} if neither sensor is present on this device.
+static TempSensor probe_temp_sensor(amdsmi_processor_handle gpu) {
+    static const struct { amdsmi_temperature_type_t type; const char* name; } candidates[] = {
+        { AMDSMI_TEMPERATURE_TYPE_HOTSPOT, "HOTSPOT" },
+        { AMDSMI_TEMPERATURE_TYPE_EDGE,    "EDGE"    },
+    };
+    for (auto& c : candidates) {
+        int64_t probe_val = 0;
+        amdsmi_status_t st = amdsmi_get_temp_metric(gpu, c.type, AMDSMI_TEMP_CURRENT, &probe_val);
+        if (st == AMDSMI_STATUS_SUCCESS) {
+            return { true, c.type, c.name };
+        }
+        if (!amdsmi_sensor_unavailable(st)) {
+            // Unexpected error on probe — still try next candidate.
+            fprintf(stderr, "[MONITOR] probe temp sensor %s: unexpected status %d\n", c.name, st);
+        }
+    }
+    return { false, AMDSMI_TEMPERATURE_TYPE_EDGE, "none" };
+}
 #endif
 
 // Exercises: AMD SMI (libamd_smi) → sysfs reads → amdgpu driver →
@@ -110,6 +144,19 @@ int run_monitor(const RoleConfig& config) {
     int total_errors = 0;
     int64_t total_queries = 0;
 
+    // Probe which temperature sensor is available on this GPU topology once,
+    // before the main loop. MI300A/APU devices expose HOTSPOT (JUNCTION) but
+    // not EDGE; discrete GPUs typically support both.
+    TempSensor temp_sensor = probe_temp_sensor(gpu);
+    if (temp_sensor.available) {
+        printf("[MONITOR] temperature sensor: %s\n", temp_sensor.name);
+    } else {
+        fprintf(stderr,
+                "[MONITOR] temperature sensor unavailable: neither HOTSPOT nor EDGE is supported "
+                "on this platform/topology; temp_c will be reported as 0.0 and this topology "
+                "absence is not counted as an error\n");
+    }
+
     std::string csv_path = config.results_dir + "/monitor_gpu" +
                            std::to_string(config.gpu_id) +
                            "_pid" + std::to_string(getpid()) + ".csv";
@@ -134,11 +181,23 @@ int run_monitor(const RoleConfig& config) {
         auto query_start = std::chrono::steady_clock::now();
 
         // --- Temperature ---
-        int64_t temp_val = 0;
-        amdsmi_status_t st = amdsmi_get_temp_metric(gpu,
-            AMDSMI_TEMPERATURE_TYPE_EDGE, AMDSMI_TEMP_CURRENT, &temp_val);
-        if (st != AMDSMI_STATUS_SUCCESS) total_errors++;
-        double temp_c = static_cast<double>(temp_val);
+        // Use the sensor probed at startup. If none is available on this topology,
+        // skip silently — absence of a sensor is not a monitor failure.
+        double temp_c = 0.0;
+        if (temp_sensor.available) {
+            int64_t temp_val = 0;
+            amdsmi_status_t st = amdsmi_get_temp_metric(gpu,
+                temp_sensor.type, AMDSMI_TEMP_CURRENT, &temp_val);
+            if (st == AMDSMI_STATUS_SUCCESS) {
+                temp_c = static_cast<double>(temp_val);
+            } else if (!amdsmi_sensor_unavailable(st)) {
+                // Unexpected failure (e.g. handle gone, driver error) — real error.
+                fprintf(stderr, "[MONITOR] temp query failed: status %d\n", st);
+                total_errors++;
+            }
+            // AMDSMI_STATUS_NOT_SUPPORTED / NO_DATA after a successful probe is
+            // treated as transient sensor absence — not counted as an error.
+        }
 
         // --- Clock speeds ---
         amdsmi_clk_info_t gfx_clk = {};

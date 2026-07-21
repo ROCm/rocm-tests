@@ -624,9 +624,10 @@ def _validate_python(
     disc = discovery or {}
     rock_dir = disc.get("rock_dir", "")
     python_libdir = disc.get("python_libdir", "")
-    ld_parts = [p for p in [rock_dir and str(pathlib.PurePosixPath(rock_dir) / "lib"), python_libdir] if p]
+    abs_rock_lib = str(pathlib.Path(rock_dir).resolve() / "lib") if rock_dir else ""
+    ld_parts = [p for p in [abs_rock_lib, python_libdir] if p]
     if ld_parts:
-        cmd = f"env LD_LIBRARY_PATH={_dq(':'.join(ld_parts))} {cmd}"
+        cmd = f"env LD_LIBRARY_PATH={_dq(':'.join(ld_parts))}:${{LD_LIBRARY_PATH}} {cmd}"
     result = _run(
         runner,
         cmd,
