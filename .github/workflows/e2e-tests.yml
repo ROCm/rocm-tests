@@ -59,6 +59,11 @@ on:
         required: false
         type: string
         default: 'true'
+      keyword_filter:
+        description: 'pytest -k keyword expression to further filter tests by name (e.g. "multiprocess")'
+        required: false
+        type: string
+        default: ''
 
   workflow_call:
     inputs:
@@ -98,6 +103,10 @@ on:
         required: false
         type: string
         default: 'true'
+      keyword_filter:
+        required: false
+        type: string
+        default: ''
 
 jobs:
   platform:
@@ -226,9 +235,14 @@ jobs:
           LD_LIBRARY_PATH: "${{ github.workspace }}/therock_build/lib:${LD_LIBRARY_PATH}"
           GPU_ARCH: ${{ inputs.gpu_arch }}
           TESTS_FILTERS: ${{ inputs.tests_filters }}
+          KEYWORD_FILTER: ${{ inputs.keyword_filter }}
         run: |
           source .venv/bin/activate
           export LD_LIBRARY_PATH="$(dirname ${PYTHON_LIB})/../lib:${GITHUB_WORKSPACE}/therock_build/lib:${LD_LIBRARY_PATH}"
+          KEYWORD_ARG=""
+          if [ -n "${KEYWORD_FILTER}" ]; then
+            KEYWORD_ARG="-k ${KEYWORD_FILTER}"
+          fi
           pytest tests/e2e/compiler/ \
             tests/e2e/hwq_heuristic/ \
             tests/e2e/hip_runtime/ \
@@ -243,7 +257,8 @@ jobs:
             --md-report-flavor gfm --md-report-output=md_summary.md --md-report-tee \
             --md-report-show-duration --tb=short \
             -v \
-            -m "${TESTS_FILTERS}"
+            -m "${TESTS_FILTERS}" \
+            ${KEYWORD_ARG}
 
       - name: Extract test counts
         if: always()
