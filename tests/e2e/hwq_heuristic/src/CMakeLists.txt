@@ -44,3 +44,15 @@ target_link_libraries(hwq_null_stream_protection_regr PRIVATE hip::host)
 add_executable(hwq_compute_copy_overlap_test hwq_compute_copy_overlap_test.cpp)
 target_compile_options(hwq_compute_copy_overlap_test PRIVATE -O3 "--offload-arch=${GPU_ARCH}")
 target_link_libraries(hwq_compute_copy_overlap_test PRIVATE hip::host)
+
+add_executable(hwq_robustness hwq_robustness.cpp)
+target_compile_options(hwq_robustness PRIVATE -O3 "--offload-arch=${GPU_ARCH}")
+target_link_libraries(hwq_robustness PRIVATE hip::host)
+
+add_executable(hwq_single_stream_no_regr hwq_single_stream_no_regr.cpp)
+target_compile_options(hwq_single_stream_no_regr PRIVATE -O3 "--offload-arch=${GPU_ARCH}")
+target_link_libraries(hwq_single_stream_no_regr PRIVATE hip::host)
+
+add_executable(hwq_per_device_independence_test hwq_per_device_independence_test.cpp)
+target_compile_options(hwq_per_device_independence_test PRIVATE -O3 "--offload-arch=${GPU_ARCH}")
+target_link_libraries(hwq_per_device_independence_test PRIVATE hip::host)
