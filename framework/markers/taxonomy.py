@@ -152,4 +152,14 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # UCX HPC communication library: third-party tarball build (configure/make) +
+    # filtered GoogleTest suite (``*rocm*``). Single-GPU by default; layer.math_lib
+    # matches the repo convention for communication libraries (cf. tests/e2e/rccl).
+    "tests/e2e/hpc/ucx": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
 }
