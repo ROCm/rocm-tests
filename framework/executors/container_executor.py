@@ -102,6 +102,13 @@ class ContainerExecutor(AbstractExecutor):
         runtime:         ``"docker"`` or ``"podman"`` (default ``"docker"``).
         use_amd_devices: Pass AMD KFD/DRI devices through to the container
                          (default ``True``).
+        ipc_host:        Run with ``--ipc=host`` so the container shares the host's
+                         ``/dev/shm`` (default ``True``). Required for NCCL/RCCL
+                         multi-rank tests: Docker's 64 MB default ``/dev/shm`` (and
+                         even a fixed ``--shm-size``) can be exhausted by the
+                         per-rank shared-memory segments, failing collectives with
+                         "No space left on device". Set ``False`` to keep the
+                         container's private IPC namespace.
         extra_run_flags: Additional flags forwarded verbatim to every
                          ``docker run`` invocation (e.g. ``"--network host"``).
     """
@@ -115,12 +122,14 @@ class ContainerExecutor(AbstractExecutor):
         gpu_index: int = 0,
         runtime: str = "docker",
         use_amd_devices: bool = True,
+        ipc_host: bool = True,
         extra_run_flags: str = "",
     ) -> None:
         self.image = image
         self.gpu_index = gpu_index
         self.runtime = runtime
         self.use_amd_devices = use_amd_devices
+        self.ipc_host = ipc_host
         self.extra_run_flags = extra_run_flags
         # Delegate all docker CLI invocations to CpuExecutor so they run as
         # real subprocesses without any GPU environment modifications.
@@ -205,6 +214,7 @@ class ContainerExecutor(AbstractExecutor):
             docker run --rm \
                 --device=/dev/kfd --device=/dev/dri \
                 --group-add=video \
+                --ipc=host \
                 --env=ROCR_VISIBLE_DEVICES=<gpu_index> \
                 <image> sh -c <command>
 
@@ -273,6 +283,12 @@ class ContainerExecutor(AbstractExecutor):
             A shell-safe string suitable for passing to ``CpuExecutor.run()``.
         """
         parts = [self.runtime, "run", "--rm"]
+
+        # Share the host IPC namespace (and thus /dev/shm) so NCCL/RCCL multi-rank
+        # collectives have room for their shared-memory segments — the default
+        # 64 MB container /dev/shm overflows with "No space left on device".
+        if self.ipc_host:
+            parts.append("--ipc=host")
 
         if self.use_amd_devices:
             platform = os_adapter_factory().get_platform_name()
