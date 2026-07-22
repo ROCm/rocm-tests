@@ -34,6 +34,11 @@ on:
         description: 'pytest -m filter expression (e.g. "ci.nightly and hw.gpu")'
         required: true
         type: string
+      test_keyword:
+        description: 'Optional pytest -k expression to isolate specific tests (e.g. "rocm_examples"). Empty = all -m matches.'
+        required: false
+        type: string
+        default: ''
       source_repo:
         description: 'GitHub repo to pull artifacts from (ROCm/TheRock or ROCm/rockrel)'
         required: false
@@ -226,9 +231,12 @@ jobs:
           LD_LIBRARY_PATH: "${{ github.workspace }}/therock_build/lib:${LD_LIBRARY_PATH}"
           GPU_ARCH: ${{ inputs.gpu_arch }}
           TESTS_FILTERS: ${{ inputs.tests_filters }}
+          TEST_KEYWORD: ${{ inputs.test_keyword }}
         run: |
           source .venv/bin/activate
           export LD_LIBRARY_PATH="$(dirname ${PYTHON_LIB})/../lib:${GITHUB_WORKSPACE}/therock_build/lib:${LD_LIBRARY_PATH}"
+          KFLAG=""
+          if [ -n "${TEST_KEYWORD}" ]; then KFLAG="-k ${TEST_KEYWORD}"; fi
           pytest tests/e2e/compiler/ \
             tests/e2e/hwq_heuristic/ \
             tests/e2e/hip_runtime/ \
@@ -244,7 +252,7 @@ jobs:
             --md-report-flavor gfm --md-report-output=md_summary.md --md-report-tee \
             --md-report-show-duration --tb=short \
             -v \
-            -m "${TESTS_FILTERS}"
+            -m "${TESTS_FILTERS}" ${KFLAG}
 
       - name: Extract test counts
         if: always()
