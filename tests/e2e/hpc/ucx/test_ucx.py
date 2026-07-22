@@ -2,19 +2,20 @@
 # SPDX-License-Identifier: MIT
 
 import logging
+import os
 
 import pytest
 
 from framework.rocm.libs.gtest import run_gtest
-from tests.e2e.hpc.ucx._workload import (
-    GTEST_FILTER,
-    GTEST_TIMEOUT,
-    NUM_SHARDS,
-    OMP_NUM_THREADS,
-    SHARD_IDS,
-)
 
 logger = logging.getLogger(__name__)
+
+GTEST_FILTER = os.environ.get("UCX_GTEST_FILTER", "*rocm*")
+NUM_SHARDS = max(1, int(os.environ.get("UCX_GTEST_SHARDS", "1")))
+SHARD_IDS = tuple(range(NUM_SHARDS))
+_OMP = os.environ.get("UCX_OMP_NUM_THREADS", "").strip()
+OMP_NUM_THREADS = int(_OMP) if _OMP.isdigit() else None
+GTEST_TIMEOUT = float(os.environ.get("UCX_GTEST_TIMEOUT", "1800"))
 
 
 @pytest.mark.runtime.medium
