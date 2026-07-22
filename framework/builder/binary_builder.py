@@ -1328,7 +1328,7 @@ def external_build_lock(build_dir: str, *, timeout: float = 7200.0):
 def _path_is_file(path: str, remote_executor) -> bool:
     """Return True when *path* is a file, transparently for local/remote nodes."""
     if remote_executor is not None:
-        return remote_executor.run(f"test -f {shlex.quote(path)}", timeout=30.0).ok
+        return bool(remote_executor.run(f"test -f {shlex.quote(path)}", timeout=30.0).ok)
     return os.path.isfile(path)
 
 
