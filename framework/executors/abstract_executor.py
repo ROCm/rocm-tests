@@ -32,12 +32,14 @@ class AbstractExecutor(abc.ABC):
     """
 
     @abc.abstractmethod
-    def run(self, command: str, timeout: float | None = None) -> ExecutionResult:
+    def run(self, command: str, timeout: float | None = None, *, stream: bool = False) -> ExecutionResult:
         """Execute *command* and return its result.
 
         Args:
             command: Shell command string to execute.
             timeout: Maximum seconds to wait (None = no limit).
+            stream:  When True, stream command output/progress live when the
+                     executor backend supports it.
 
         Returns:
             ExecutionResult with exit_code, stdout, stderr, duration.

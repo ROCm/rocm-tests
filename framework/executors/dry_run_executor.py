@@ -34,12 +34,13 @@ class DryRunExecutor(AbstractExecutor):
     - Mock testing of framework fixture logic
     """
 
-    def run(self, command: str, timeout: float | None = None) -> ExecutionResult:
+    def run(self, command: str, timeout: float | None = None, *, stream: bool = False) -> ExecutionResult:
         """Return a synthetic ExecutionResult without executing *command*.
 
         Args:
             command: Command that would have been executed (logged for traceability).
             timeout: Ignored in DryRun mode.
+            stream: Ignored in DryRun mode.
 
         Returns:
             ExecutionResult with exit_code=0, synthetic stdout, empty stderr.

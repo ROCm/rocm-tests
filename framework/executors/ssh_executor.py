@@ -751,8 +751,9 @@ class SshExecutor(AbstractExecutor):
         self,
         command: str,
         timeout: float | None = None,
-        env_overrides: dict | None = None,
+        *,
         stream: bool = False,
+        env_overrides: dict | None = None,
     ) -> ExecutionResult:
         """Execute *command* on the remote host and return the result.
 
@@ -768,6 +769,8 @@ class SshExecutor(AbstractExecutor):
             command:       Shell command string to execute on the remote host.
             timeout:       Maximum seconds to wait for the command to finish
                            (default 300 s).
+            stream:        When True, stream stdout/stderr and emit periodic
+                           heartbeat lines while the command is still running.
             env_overrides: Additional environment variables to export on the
                            remote shell before running *command*.
 
