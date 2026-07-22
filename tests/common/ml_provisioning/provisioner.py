@@ -450,6 +450,14 @@ def _discover(
     )
     python_version = py.stdout.strip().splitlines()[-1] if py.ok and py.stdout.strip() else ""
 
+    libdir = _run(
+        runner,
+        _py_cmd("python3", "import sysconfig; print(sysconfig.get_config_var('LIBDIR') or '')"),
+        log,
+        timeout=15.0,
+    )
+    python_libdir = libdir.stdout.strip().splitlines()[-1] if libdir.ok and libdir.stdout.strip() else ""
+
     rocm_version, rocm_source = _discover_rocm_version(runner, log, rock_dir=rock_dir, version_hint=version_hint)
 
     arch = gpu_arch or ""
@@ -478,6 +486,7 @@ def _discover(
 
     return {
         "python_version": python_version,
+        "python_libdir": python_libdir,
         "rocm_version": rocm_version,
         "rocm_source": rocm_source,
         "rock_dir": rock_dir or "",
@@ -612,9 +621,13 @@ def _validate_python(
     discovery: dict[str, str] | None = None,
 ) -> _Validation:
     cmd = _py_cmd(python, provider.sanity_snippet(spec))
-    rock_dir = (discovery or {}).get("rock_dir", "")
-    if rock_dir:
-        cmd = f"env LD_LIBRARY_PATH={_dq(str(pathlib.PurePosixPath(rock_dir) / 'lib'))} {cmd}"
+    disc = discovery or {}
+    rock_dir = disc.get("rock_dir", "")
+    python_libdir = disc.get("python_libdir", "")
+    abs_rock_lib = str(pathlib.Path(rock_dir).resolve() / "lib") if rock_dir else ""
+    ld_parts = [p for p in [abs_rock_lib, python_libdir] if p]
+    if ld_parts:
+        cmd = f"env LD_LIBRARY_PATH={_dq(':'.join(ld_parts))}:${{LD_LIBRARY_PATH}} {cmd}"
     result = _run(
         runner,
         cmd,
