@@ -152,4 +152,20 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # TorchVision P1 image-transform correctness UT suite (ML frameworks): clones
+    # the pinned ROCm/vision fork (URL + commit from the prebuilt-PyTorch image's
+    # related_commits manifest), builds the torchvision C++/HIP ops in-tree, then
+    # runs the cuda-tagged functional/transforms tensor UTs under pytest. Uses all
+    # GPUs by default (TORCHVISION_NUM_GPUS caps it); hw.gpu + hw.multi_gpu cover
+    # both the single- and multi-GPU profiles. Exercises the HIP runtime/compiler
+    # and the rocBLAS/MIOpen-style compute the image-transform ops rely on.
+    "tests/e2e/ml_frameworks/torchvision": [
+        "hw.gpu",
+        "hw.multi_gpu",
+        "layer.runtime",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
 }
