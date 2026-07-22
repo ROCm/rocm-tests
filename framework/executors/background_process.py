@@ -65,6 +65,9 @@ Usage (via executor.start_background() — not instantiated directly)::
 
 from __future__ import annotations
 
+import abc
+import collections
+from collections.abc import Iterator
 import contextlib
 import logging
 import os
@@ -75,10 +78,114 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Generic, TypeVar
 
 from framework.common.helpers import ExecutionResult
 
 logger = logging.getLogger(__name__)
+
+# Per-stream cap on captured output retained in memory by a background reader.
+# Long-running, high-volume roles (e.g. a 300 s+ profiler) would otherwise grow
+# ``stdout``/``stderr`` accumulation without bound.  The most recent bytes are
+# kept (verdict / "Exit code:" lines appear at the end); older bytes are dropped.
+_MAX_CAPTURE_BYTES = 16 * 1024 * 1024
+
+# Prepended to captured output when the bounded buffer had to evict older bytes.
+_CAP_MIB = _MAX_CAPTURE_BYTES >> 20
+_CAPTURE_TRUNCATED_NOTICE = f"[... output truncated: kept only the last {_CAP_MIB} MiB ...]\n"
+
+_ChunkT = TypeVar("_ChunkT", bytes, str)
+
+
+# ---------------------------------------------------------------------------
+# Public contract — all background-process handles must satisfy this ABC
+# ---------------------------------------------------------------------------
+
+
+class AbstractBackgroundProcess(abc.ABC):
+    """Shared contract for all background-process handles.
+
+    Concrete implementations:
+        ``BackgroundProcess``     — local subprocess (``LocalExecutor``, ``CpuExecutor``)
+        ``NoOpBackgroundProcess`` — dry-run stub (``DryRunExecutor``)
+        ``SshBackgroundProcess``  — detached remote process (``SshExecutor``)
+
+    Test code should type-annotate background handles as
+    ``AbstractBackgroundProcess`` so that mypy enforces the full API contract
+    across all executor backends.
+    """
+
+    #: ``ExecutionResult`` populated by ``stop()`` once the process terminates.
+    #: ``None`` until ``stop()`` is called.
+    stop_result: ExecutionResult | None
+
+    @property
+    @abc.abstractmethod
+    def pid(self) -> int:
+        """OS process ID (``-1`` when unavailable)."""
+
+    @property
+    @abc.abstractmethod
+    def is_alive(self) -> bool:
+        """``True`` while the background process is still running."""
+
+    @abc.abstractmethod
+    def poll(self) -> int | None:
+        """Non-blocking exit-code check; ``None`` while the process is running."""
+
+    @abc.abstractmethod
+    def stop(self, timeout: float = 30.0) -> ExecutionResult:
+        """Terminate the process (if running) and return its ``ExecutionResult``.
+
+        Idempotent: repeated calls return the same cached result.
+
+        Args:
+            timeout: Maximum seconds to wait for graceful termination before
+                     a hard kill is issued.
+
+        Returns:
+            ``ExecutionResult`` with exit code, captured stdout/stderr, and
+            wall-clock duration.
+        """
+
+    @abc.abstractmethod
+    def __enter__(self) -> AbstractBackgroundProcess:
+        """Support ``with executor.start_background(...) as bg:`` usage."""
+
+    def __exit__(self, *_) -> None:
+        self.stop()
+
+
+class _BoundedChunks(Generic[_ChunkT]):
+    """Append-only capture buffer that retains only the most recent ``max_bytes``.
+
+    Backs the reader-thread accumulation for both ``BackgroundProcess`` (bytes)
+    and ``SshBackgroundProcess`` (str).  When the running total exceeds the cap,
+    whole oldest chunks are evicted from the front so memory stays bounded for
+    long-running processes with high-volume output.  The tail is preserved
+    because completion markers appear at the end of a run.
+
+    Attributes:
+        truncated: ``True`` once any chunk has been evicted, so callers can flag
+                   that the captured output is a tail slice, not the full stream.
+    """
+
+    def __init__(self, max_bytes: int = _MAX_CAPTURE_BYTES) -> None:
+        self._chunks: collections.deque[_ChunkT] = collections.deque()
+        self._total = 0
+        self._max = max_bytes
+        self.truncated = False
+
+    def append(self, chunk: _ChunkT) -> None:
+        """Append *chunk*, evicting oldest chunks if the cap is exceeded."""
+        self._chunks.append(chunk)
+        self._total += len(chunk)
+        while self._total > self._max and len(self._chunks) > 1:
+            self._total -= len(self._chunks.popleft())
+            self.truncated = True
+
+    def __iter__(self) -> Iterator[_ChunkT]:
+        return iter(self._chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +234,8 @@ def _bg_graceful_kill(proc: subprocess.Popen, grace_secs: float = 30.0) -> None:
 
 def _reader_loop(
     proc: subprocess.Popen,
-    stdout_chunks: list,
-    stderr_chunks: list,
+    stdout_chunks: _BoundedChunks[bytes],
+    stderr_chunks: _BoundedChunks[bytes],
     stop_evt: threading.Event,
     log_fh,
     stdout_console,
@@ -190,7 +297,7 @@ def _reader_loop(
 # ---------------------------------------------------------------------------
 
 
-class BackgroundProcess:
+class BackgroundProcess(AbstractBackgroundProcess):
     """Handle for a subprocess started in the background by an executor.
 
     Obtained via ``executor.start_background(command)`` — not constructed
@@ -254,10 +361,10 @@ class BackgroundProcess:
         self._t0 = t0
         self.stop_result: ExecutionResult | None = None
 
-        # These lists are written by the reader thread and read by stop()
-        # after join() — no lock required (join provides the barrier).
-        self._stdout_chunks: list = reader_thread._stdout_chunks  # type: ignore[attr-defined]
-        self._stderr_chunks: list = reader_thread._stderr_chunks  # type: ignore[attr-defined]
+        # Bounded buffers written by the reader thread and read by stop() after
+        # join() — no lock required (join provides the barrier).
+        self._stdout_chunks: _BoundedChunks[bytes] = reader_thread._stdout_chunks  # type: ignore[attr-defined]
+        self._stderr_chunks: _BoundedChunks[bytes] = reader_thread._stderr_chunks  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     # Properties
@@ -336,6 +443,10 @@ class BackgroundProcess:
         duration = time.monotonic() - self._t0
         stdout = b"".join(self._stdout_chunks).decode(errors="replace").rstrip()
         stderr = b"".join(self._stderr_chunks).decode(errors="replace").rstrip()
+        if self._stdout_chunks.truncated:
+            stdout = _CAPTURE_TRUNCATED_NOTICE + stdout
+        if self._stderr_chunks.truncated:
+            stderr = _CAPTURE_TRUNCATED_NOTICE + stderr
 
         self.stop_result = ExecutionResult(
             exit_code=rc,
@@ -352,16 +463,13 @@ class BackgroundProcess:
     def __enter__(self) -> BackgroundProcess:
         return self
 
-    def __exit__(self, *_) -> None:
-        self.stop()
-
 
 # ---------------------------------------------------------------------------
 # NoOpBackgroundProcess — DryRun stub
 # ---------------------------------------------------------------------------
 
 
-class NoOpBackgroundProcess:
+class NoOpBackgroundProcess(AbstractBackgroundProcess):
     """Stub ``BackgroundProcess`` returned by ``DryRunExecutor.start_background()``.
 
     Implements the same public interface as ``BackgroundProcess`` but never
@@ -425,9 +533,6 @@ class NoOpBackgroundProcess:
 
     def __enter__(self) -> NoOpBackgroundProcess:
         return self
-
-    def __exit__(self, *_) -> None:
-        self.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -591,8 +696,8 @@ def _make_background_process(
     os.set_blocking(proc.stderr.fileno(), False)  # type: ignore[union-attr]
 
     stop_evt = threading.Event()
-    stdout_chunks: list = []
-    stderr_chunks: list = []
+    stdout_chunks: _BoundedChunks[bytes] = _BoundedChunks()
+    stderr_chunks: _BoundedChunks[bytes] = _BoundedChunks()
 
     stdout_console = sys.stdout.buffer if stream_stdout else None
     stderr_console = sys.stderr.buffer if stream_stderr else None
