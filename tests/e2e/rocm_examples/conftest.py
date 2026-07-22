@@ -36,10 +36,28 @@ def _install_system_deps() -> None:
         result = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=1800)
         if result.returncode != 0:
             logger.warning(
-                "rocm_examples system-deps install returned %d:\n%s", result.returncode, result.stderr[-2000:]
+                "rocm_examples system-deps install returned %d:\n%s",
+                result.returncode,
+                result.stderr[-2000:],
             )
     except Exception as exc:
         logger.warning("rocm_examples system-deps install failed: %s", exc)
+
+
+def _install_runtime_python_deps(rock_dir: str) -> None:
+    """Best-effort pip install of rocprofiler-compute requirements (needed by tools samples)."""
+    reqs = os.path.join(rock_dir, "libexec", "rocprofiler-compute", "requirements.txt")
+    if not os.path.isfile(reqs):
+        return
+    try:
+        subprocess.run(
+            ["bash", "-c", f"python3 -m pip install -q -r {reqs}"],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+    except Exception as exc:
+        logger.warning("rocm_examples runtime python-deps install failed: %s", exc)
 
 
 @pytest.fixture(scope="session")
@@ -55,6 +73,7 @@ def rocm_examples_repo(external_build, compiler_build_dir: str):
 def rocm_examples_build_dir(cmake_build_dir, rock_dir: str, rocm_examples_repo) -> str:
     """Configure and build the ROCm/rocm-examples CTest suite."""
     _install_system_deps()
+    _install_runtime_python_deps(rock_dir)
     return cmake_build_dir(
         src=str(rocm_examples_repo),
         subdir=_SUBDIR,
