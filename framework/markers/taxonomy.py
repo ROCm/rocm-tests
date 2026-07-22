@@ -152,4 +152,12 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # UCX HPC communication library: configure/make build + filtered *rocm* gtest suite.
+    "tests/e2e/hpc/ucx": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
 }

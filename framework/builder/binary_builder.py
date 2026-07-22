@@ -1113,6 +1113,226 @@ def make_build(
 
 
 # ---------------------------------------------------------------------------
+# Generic source-tarball download + autotools (configure/make/install) build.
+# ---------------------------------------------------------------------------
+# These mirror the CMake ``cmake_build`` and monorepo ``clone_repo`` primitives
+# for the many third-party suites (UCX, libfabric, ...) that ship an autotools
+# ``configure`` (or a project ``contrib/configure-*`` wrapper) plus a release
+# source tarball rather than a git-cloneable CMake project.  Both are
+# remote-transparent (local subprocess or ``SshExecutor``) and idempotent.
+
+
+def _run_stream_step(
+    cmd: str,
+    *,
+    remote_executor,
+    timeout: float,
+    label: str,
+    log_path: str | None = None,
+) -> None:
+    """Run one long build step, streaming output live and (locally) to *log_path*.
+
+    A buffered ``subprocess.run(capture_output=True)`` shows nothing until the
+    process exits, which is unusable for multi-minute configure/make steps. Remote
+    steps stream through the SSH executor's ``stream=True`` path; local steps use
+    the framework's shared streaming Popen runner and also append to *log_path*.
+
+    Args:
+        cmd:             Shell command to run.
+        remote_executor: ``SshExecutor`` for remote builds, or ``None`` for local.
+        timeout:         Wall-clock timeout in seconds.
+        label:           Human-readable step name used in the error message.
+        log_path:        Local-only persisted log file (``tail -f`` while it runs).
+
+    Raises:
+        RuntimeError: If the step exits non-zero.
+    """
+    logger.info("external-build %s -> streaming%s", label, f" to {log_path}" if log_path else "")
+    if remote_executor is not None:
+        result = remote_executor.run(cmd, timeout=timeout, stream=True)
+        if not result.ok:
+            raise RuntimeError(
+                f"external-build {label} failed on remote (exit={result.exit_code}):\n"
+                f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-2000:]}"
+            )
+        return
+    # Local import avoids a module-load cycle (executors import from builder).
+    from framework.executors.background_process import _blocking_stream_run
+
+    result = _blocking_stream_run(
+        command=cmd,
+        env=os.environ.copy(),
+        cwd=None,
+        timeout=timeout,
+        stream_stdout=True,
+        stream_stderr=True,
+        log_path=log_path,
+    )
+    if not result.ok:
+        detail = f" Full log: {log_path}" if log_path else ""
+        raise RuntimeError(
+            f"external-build {label} failed locally (exit={result.exit_code}).{detail}\n"
+            f"stdout tail: {result.stdout[-4000:]}\nstderr tail: {result.stderr[-2000:]}"
+        )
+
+
+def _abspath_for(path: str, remote_executor) -> str:
+    """Return an absolute path for *path*, transparently for local/remote nodes."""
+    if remote_executor is not None:
+        return _remote_abspath(pathlib.Path(path), remote_executor)
+    return str(pathlib.Path(path).resolve())
+
+
+def configure_make_build(
+    source_dir: str,
+    build_dir: str,
+    *,
+    configure_script: str = "./configure",
+    configure_args: list[str] | None = None,
+    bootstrap_script: str | None = None,
+    env_prefix: str = "",
+    make_install: bool = True,
+    make_args: list[str] | None = None,
+    jobs: int | None = None,
+    sentinel: str | None = None,
+    log_dir: str | None = None,
+    remote_executor=None,
+    use_lock: bool = True,
+    timeout: float = 7200.0,
+) -> str:
+    """Autotools [bootstrap→]configure→make→[install] out-of-tree; return *build_dir*.
+
+    Generic autotools counterpart to :func:`cmake_build`. Env is injected via an
+    ``env_prefix`` (never ``os.environ``); idempotent when *sentinel* exists.
+
+    Args:
+        source_dir:       Source tree (holds ``configure`` / bootstrap script).
+        build_dir:        Out-of-tree build dir (created if absent).
+        configure_script: Configure entry point, relative to *build_dir*.
+        configure_args:   Flags for the configure script.
+        bootstrap_script: Optional pre-configure step (e.g. ``./autogen.sh``) run in
+                          *source_dir*; needed for git checkouts.
+        env_prefix:       ``VAR=val ...`` exported for every step.
+        make_install:     Run ``make install`` after ``make``.
+        make_args:        Extra ``make`` arguments.
+        jobs:             Parallel jobs; auto-detected when None.
+        sentinel:         Artifact path (relative to *build_dir*) for the skip check.
+        log_dir:          Per-step local log dir.
+        remote_executor:  ``SshExecutor`` for remote builds, or None for local.
+        use_lock:         Acquire the internal build lock; set False under an outer
+                          :func:`external_build_lock` to avoid self-deadlock.
+        timeout:          Per-step wall-clock timeout in seconds.
+
+    Returns:
+        The *build_dir* path (absolute on the remote node when applicable).
+    """
+    jobs = resolve_parallel_jobs(jobs, remote_executor=remote_executor)
+    cfg_args = " ".join(configure_args or [])
+    mk_args = " ".join(make_args or [])
+    env_kw = f"env {env_prefix} " if env_prefix else ""
+
+    # configure_script is resolved relative to the build dir (e.g. "../configure"),
+    # so only the build dir needs an absolute path here.
+    abs_build = _abspath_for(build_dir, remote_executor)
+
+    def _sentinel_present() -> bool:
+        return sentinel is not None and _path_is_file(f"{abs_build}/{sentinel}", remote_executor)
+
+    # Fast path: an existing sentinel means a previous run already built this tree.
+    if _sentinel_present():
+        logger.info("external-build: sentinel %s present — skipping configure/make", sentinel)
+        return abs_build
+
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    def _log(step: str) -> str | None:
+        return os.path.join(log_dir, f"build-{step}.log") if (log_dir and remote_executor is None) else None
+
+    configure_cmd = (
+        f"mkdir -p {shlex.quote(abs_build)} && cd {shlex.quote(abs_build)} && {env_kw}{configure_script} {cfg_args}"
+    )
+    build_cmd = f"cd {shlex.quote(abs_build)} && {env_kw}make -j{jobs} {mk_args}"
+    steps = [("configure", configure_cmd), ("compile", build_cmd)]
+    if make_install:
+        steps.append(("install", f"cd {shlex.quote(abs_build)} && {env_kw}make -j{jobs} install"))
+    if bootstrap_script:
+        # Bootstrap (e.g. ./autogen.sh) runs in the source tree; resolve its absolute
+        # path only when needed (avoids an extra SSH round-trip on remote builds).
+        abs_source = _abspath_for(source_dir, remote_executor)
+        steps.insert(0, ("bootstrap", f"cd {shlex.quote(abs_source)} && {env_kw}{bootstrap_script}"))
+
+    def _run_steps() -> None:
+        if _sentinel_present():  # re-check under the lock
+            logger.info("external-build: sentinel %s present — skipping configure/make", sentinel)
+            return
+        for step, cmd in steps:
+            wrapped = f'bash -c "{cmd}"' if remote_executor is not None else cmd
+            _run_stream_step(
+                wrapped,
+                remote_executor=remote_executor,
+                timeout=timeout,
+                label=f"{step} ({os.path.basename(source_dir)})",
+                log_path=_log(step),
+            )
+
+    # Serialize concurrent xdist workers sharing one build tree (a local file lock
+    # works even for remote builds, which dispatch via SSH from this host).
+    if use_lock:
+        with external_build_lock(abs_build, timeout=timeout):
+            _run_steps()
+    else:
+        _run_steps()
+    return abs_build
+
+
+@contextlib.contextmanager
+def external_build_lock(build_dir: str, *, timeout: float = 7200.0):
+    """Exclusive cross-process ``fcntl`` lock keyed on *build_dir*.
+
+    Args:
+        build_dir: Build directory used only as the lock key.
+        timeout:   Max seconds to wait for the lock.
+
+    Yields:
+        None, while the lock is held.
+
+    Raises:
+        TimeoutError: If the lock is not acquired within *timeout*.
+    """
+    import tempfile
+
+    digest = hashlib.sha256(build_dir.encode("utf-8")).hexdigest()[:16]
+    lock_path = os.path.join(tempfile.gettempdir(), f"rocm-test-extbuild-{digest}.lock")
+    with open(lock_path, "w", encoding="utf-8") as lock_fh:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"external-build: could not acquire build lock for {build_dir!r} "
+                        f"within {timeout}s — another worker may be hung."
+                    ) from exc
+                time.sleep(5)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+
+
+def _path_is_file(path: str, remote_executor) -> bool:
+    """Return True when *path* is a file, transparently for local/remote nodes."""
+    if remote_executor is not None:
+        return bool(remote_executor.run(f"test -f {shlex.quote(path)}", timeout=30.0).ok)
+    return os.path.isfile(path)
+
+
+# ---------------------------------------------------------------------------
 # Build fingerprint helpers (formerly private to tests/e2e/hpc/conftest.py)
 # ---------------------------------------------------------------------------
 # A two-key SHA-256 fingerprint is written to ``<build_dir>/.cmake_fingerprint``

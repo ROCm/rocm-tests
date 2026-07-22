@@ -29,7 +29,9 @@ from framework.builder.binary_builder import (
     build_cache_action,
     clone_repo,
     cmake_build,
+    configure_make_build,
     detect_mpi_runtime,
+    external_build_lock,
     find_rocm_clangpp,
     make_build,
     provision_openmpi_runtime,
@@ -404,6 +406,25 @@ def external_build(compiler_build_dir: str, framework_config, cmake_executor):
                 timeout=timeout if timeout is not None else build_timeout,
                 remote_executor=cmake_executor,
             )
+
+        def configure_make_build(
+            self,
+            source_dir: str,
+            build_dir: str,
+            **kwargs,
+        ) -> str:
+            """Run an autotools configure/make/[install] build (local or remote)."""
+            kwargs.setdefault("timeout", build_timeout)
+            return configure_make_build(
+                source_dir,
+                build_dir,
+                remote_executor=cmake_executor,
+                **kwargs,
+            )
+
+        def build_lock(self, key: str, *, timeout: float | None = None):
+            """Cross-worker lock for a whole clone+build section (pair with use_lock=False)."""
+            return external_build_lock(key, timeout=timeout if timeout is not None else build_timeout)
 
         def assert_license_present(self, path) -> None:
             """Verify a cloned third-party tree carries a recognizable license."""
