@@ -4,8 +4,8 @@
 """
 gtest.py -- GoogleTest binary execution, sharding, and output parsing helpers.
 
-Many third-party ROCm test suites (UCX, rocPRIM, rocRAND, ...) ship a single
-GoogleTest binary that self-validates and exits non-zero on any failed case.
+Many third-party ROCm test suites ship a single GoogleTest binary that
+self-validates and exits non-zero on any failed case.
 This module provides a *generic*, executor-transparent way to:
 
     * run such a binary with a ``--gtest_filter`` and arbitrary env,

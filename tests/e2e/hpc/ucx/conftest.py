@@ -3,18 +3,19 @@
 
 import logging
 import os
+import pathlib
 
 import pytest
 
-from tests.e2e.hpc.ucx._workload import UCX_GIT_REF, UCX_GIT_URL
-
 logger = logging.getLogger(__name__)
 
+UCX_GIT_URL = os.environ.get("UCX_GIT_URL", "https://github.com/openucx/ucx")
+UCX_GIT_REF = os.environ.get("UCX_GIT_REF", "v1.21.x")
 _GTEST_REL = "test/gtest/gtest"
 
 
 @pytest.fixture(scope="session")
-def ucx_build(rock_dir, framework_config, external_build, cmake_executor) -> str:
+def ucx_build(rock_dir, compiler_build_dir, framework_config, external_build, cmake_executor) -> str:
     if not rock_dir:
         pytest.skip("UCX build requires a ROCm install; pass --rock-dir / set ROCK_DIR")
 
@@ -22,9 +23,10 @@ def ucx_build(rock_dir, framework_config, external_build, cmake_executor) -> str
     build_timeout = float(framework_config.therock.build_timeout_secs)
     env_prefix = f"ROCM_PATH={rocm_path} LD_LIBRARY_PATH={rocm_path}/lib:{rocm_path}/lib64:$LD_LIBRARY_PATH"
     log_dir = os.path.join(framework_config.framework.artifact_dir, "ucx")
+    dest = pathlib.Path(compiler_build_dir) / "hpc" / "ucx"
 
     with external_build.build_lock("hpc-ucx", timeout=build_timeout):
-        source_dir = os.path.realpath(str(external_build.clone_repo(UCX_GIT_URL, "ucx/ucx", ref=UCX_GIT_REF)))
+        source_dir = os.path.realpath(str(external_build.clone_repo(UCX_GIT_URL, dest, ref=UCX_GIT_REF)))
         external_build.assert_license_present(source_dir)
         build_dir = f"{source_dir}/build"
         configure_args = [
