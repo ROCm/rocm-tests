@@ -1200,39 +1200,27 @@ def configure_make_build(
     use_lock: bool = True,
     timeout: float = 7200.0,
 ) -> str:
-    """Configure/make/[install] an autotools project out-of-tree; return *build_dir*.
+    """Autotools [bootstrap→]configure→make→[install] out-of-tree; return *build_dir*.
 
-    Generic counterpart to :func:`cmake_build` for GNU autotools suites. The build
-    runs inside *build_dir*; ``configure_script`` is resolved relative to that dir
-    (e.g. ``"../configure"`` or a project wrapper like
-    ``"../contrib/configure-release"``). Build-environment variables are injected via
-    an ``env VAR=... `` prefix (``env_prefix``) rather than by mutating
-    ``os.environ`` — matching the rest of the framework's build primitives.
-
-    Idempotent: when *sentinel* (a path relative to *build_dir*) already exists, the
-    configure/make/install steps are skipped and *build_dir* is returned unchanged.
+    Generic autotools counterpart to :func:`cmake_build`. Env is injected via an
+    ``env_prefix`` (never ``os.environ``); idempotent when *sentinel* exists.
 
     Args:
-        source_dir:       Extracted source tree containing ``configure``.
-        build_dir:        Out-of-tree build directory (created if absent).
+        source_dir:       Source tree (holds ``configure`` / bootstrap script).
+        build_dir:        Out-of-tree build dir (created if absent).
         configure_script: Configure entry point, relative to *build_dir*.
-        configure_args:   Flags passed to the configure script.
-        bootstrap_script: Optional bootstrap step (e.g. ``"./autogen.sh"``) run in
-                          *source_dir* before configure. Required for autotools
-                          projects checked out from git (which ship no ``configure``);
-                          omit for release tarballs that are already bootstrapped.
-        env_prefix:       ``VAR=val VAR2=val2`` string exported for every step.
-        make_install:     Run ``make install`` after ``make`` when True.
-        make_args:        Extra ``make`` arguments (e.g. ``["V=1"]``).
-        jobs:             Parallel job count; auto-detected (``nproc``) when None.
-        sentinel:         Build-artifact path (relative to *build_dir*) used for the
-                          rebuild-skip check (e.g. ``"test/gtest/gtest"``).
-        log_dir:          Directory for per-step local logs (created if absent).
-        remote_executor:  ``SshExecutor`` for remote builds, or ``None`` for local.
-        use_lock:         Acquire the internal cross-worker build lock. Set False when
-                          the caller already holds an outer :func:`external_build_lock`
-                          around a larger critical section (e.g. clone + build), to
-                          avoid self-deadlocking on the same lock file.
+        configure_args:   Flags for the configure script.
+        bootstrap_script: Optional pre-configure step (e.g. ``./autogen.sh``) run in
+                          *source_dir*; needed for git checkouts.
+        env_prefix:       ``VAR=val ...`` exported for every step.
+        make_install:     Run ``make install`` after ``make``.
+        make_args:        Extra ``make`` arguments.
+        jobs:             Parallel jobs; auto-detected when None.
+        sentinel:         Artifact path (relative to *build_dir*) for the skip check.
+        log_dir:          Per-step local log dir.
+        remote_executor:  ``SshExecutor`` for remote builds, or None for local.
+        use_lock:         Acquire the internal build lock; set False under an outer
+                          :func:`external_build_lock` to avoid self-deadlock.
         timeout:          Per-step wall-clock timeout in seconds.
 
     Returns:
@@ -1275,9 +1263,7 @@ def configure_make_build(
         steps.insert(0, ("bootstrap", f"cd {shlex.quote(abs_source)} && {env_kw}{bootstrap_script}"))
 
     def _run_steps() -> None:
-        # Re-check under the lock: the worker that held the lock first may have just
-        # finished the build.
-        if _sentinel_present():
+        if _sentinel_present():  # re-check under the lock
             logger.info("external-build: sentinel %s present — skipping configure/make", sentinel)
             return
         for step, cmd in steps:
@@ -1290,15 +1276,8 @@ def configure_make_build(
                 log_path=_log(step),
             )
 
-    # Serialize concurrent pytest-xdist workers: each worker runs this session-scoped
-    # build once, but they share one build tree. Without a lock they would run
-    # configure/make into the same dir simultaneously and corrupt each other's
-    # intermediate files (e.g. autotools conftest.c/conftest.err collisions →
-    # "C compiler cannot create executables"). xdist workers are always local
-    # processes (even for remote builds they dispatch via SSH from this host), so a
-    # local file lock keyed on the build dir serializes them for both cases. When the
-    # caller already holds an outer lock (use_lock=False) we run the steps directly to
-    # avoid self-deadlocking on the same lock file.
+    # Serialize concurrent xdist workers sharing one build tree (a local file lock
+    # works even for remote builds, which dispatch via SSH from this host).
     if use_lock:
         with external_build_lock(abs_build, timeout=timeout):
             _run_steps()
@@ -1309,22 +1288,17 @@ def configure_make_build(
 
 @contextlib.contextmanager
 def external_build_lock(build_dir: str, *, timeout: float = 7200.0):
-    """Exclusive cross-process lock for an external build tree, keyed on *build_dir*.
-
-    xdist workers are local processes, so an ``fcntl`` lock on a local lock file (in
-    the system temp dir, named by a digest of the build path) serializes them whether
-    the build itself runs locally or over SSH. Mirrors the locking pattern used by
-    :meth:`BinaryBuilder.compile_binary`.
+    """Exclusive cross-process ``fcntl`` lock keyed on *build_dir*.
 
     Args:
-        build_dir: Absolute build directory the lock protects (used only as a key).
-        timeout:   Maximum seconds to wait for the lock before giving up.
+        build_dir: Build directory used only as the lock key.
+        timeout:   Max seconds to wait for the lock.
 
     Yields:
-        None, while the exclusive lock is held.
+        None, while the lock is held.
 
     Raises:
-        TimeoutError: If the lock cannot be acquired within *timeout* seconds.
+        TimeoutError: If the lock is not acquired within *timeout*.
     """
     import tempfile
 

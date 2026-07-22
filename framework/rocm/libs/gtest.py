@@ -1,41 +1,8 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""
-gtest.py -- GoogleTest binary execution, sharding, and output parsing helpers.
-
-Many third-party ROCm test suites ship a single GoogleTest binary that
-self-validates and exits non-zero on any failed case.
-This module provides a *generic*, executor-transparent way to:
-
-    * run such a binary with a ``--gtest_filter`` and arbitrary env,
-    * drive GoogleTest's built-in sharding
-      (``GTEST_TOTAL_SHARDS`` / ``GTEST_SHARD_INDEX``) so a large suite can be
-      split into N independent slices distributed across pytest workers / GPUs,
-    * parse the ``[==========] N tests ran`` / ``[  PASSED  ]`` / ``[  FAILED  ]``
-      summary into a structured result for assertions.
-
-Every helper delegates execution to the caller's executor, so the same code
-works under ``LocalExecutor``, ``SshExecutor`` (remote GPU), and
-``ContainerExecutor`` without change.
-
-Usage::
-
-    from framework.rocm.libs.gtest import run_gtest
-
-    def test_suite(target_executor):
-        res = run_gtest(
-            target_executor,
-            "build/test/gtest/gtest",
-            gtest_filter="*rocm*",
-            shard_index=0,
-            total_shards=4,
-            env={"LD_LIBRARY_PATH": ld},
-        )
-        assert res.ok, res.raw_output[-4000:]
-        assert res.failed == 0
-        assert res.total > 0
-"""
+"""Executor-transparent helpers to run a GoogleTest binary, drive its native
+sharding (``GTEST_TOTAL_SHARDS``/``GTEST_SHARD_INDEX``), and parse its summary."""
 
 from __future__ import annotations
 
@@ -70,17 +37,17 @@ _CRASH_MARKERS: tuple[str, ...] = (
 
 @dataclass
 class GtestResult:
-    """Structured outcome of a GoogleTest binary run.
+    """Parsed outcome of a GoogleTest run.
 
     Attributes:
-        ok:           True when the process exited 0 *and* no test reported FAILED.
-        exit_code:    Process exit code from the executor.
-        total:        Number of tests that ran (from the ``... ran`` banner).
-        passed:       Number of tests reported ``[  PASSED  ]``.
-        failed:       Number of tests reported ``[  FAILED  ]`` (0 when absent).
-        shard_index:  ``GTEST_SHARD_INDEX`` used for this run (``None`` if unsharded).
-        total_shards: ``GTEST_TOTAL_SHARDS`` used for this run (``None`` if unsharded).
-        raw_output:   Full combined stdout/stderr from the run.
+        ok:           Exit 0 and no FAILED case.
+        exit_code:    Process exit code.
+        total:        Tests that ran.
+        passed:       Tests reported PASSED.
+        failed:       Tests reported FAILED.
+        shard_index:  GTEST_SHARD_INDEX used (None if unsharded).
+        total_shards: GTEST_TOTAL_SHARDS used (None if unsharded).
+        raw_output:   Combined stdout/stderr.
     """
 
     ok: bool
@@ -94,25 +61,17 @@ class GtestResult:
 
 
 def gtest_shard_env(shard_index: int, total_shards: int) -> dict[str, str]:
-    """Return the GoogleTest sharding environment variables for one slice.
-
-    GoogleTest natively shards a single binary across ``total_shards`` invocations:
-    each process runs only the test cases whose stable index modulo the shard count
-    equals ``shard_index`` (see the GoogleTest ``GTEST_TOTAL_SHARDS`` /
-    ``GTEST_SHARD_INDEX`` protocol). Distribute the slices across pytest-xdist
-    workers (one GPU each) to parallelise a long suite.
+    """Return the GTEST shard env vars for one slice.
 
     Args:
-        shard_index:  Zero-based slice index, ``0 <= shard_index < total_shards``.
-        total_shards: Total number of slices. Values ``<= 1`` disable sharding and
-                      return an empty dict (the binary then runs every test).
+        shard_index:  Zero-based slice index.
+        total_shards: Slice count; <= 1 disables sharding.
 
     Returns:
-        ``{"GTEST_TOTAL_SHARDS": N, "GTEST_SHARD_INDEX": i}`` as strings, or an
-        empty dict when ``total_shards <= 1``.
+        ``{"GTEST_TOTAL_SHARDS", "GTEST_SHARD_INDEX"}`` (empty when total_shards <= 1).
 
     Raises:
-        ValueError: If ``shard_index`` is outside ``[0, total_shards)``.
+        ValueError: If shard_index is outside ``[0, total_shards)``.
     """
     if total_shards <= 1:
         return {}
@@ -132,21 +91,20 @@ def build_gtest_command(
     cwd: str | None = None,
     omp_num_threads: int | str | None = None,
 ) -> str:
-    """Assemble the shell command string for a GoogleTest binary run.
+    """Build the shell command for a gtest run.
 
-    Never sets any GPU device-selection env var (``ROCR_VISIBLE_DEVICES`` etc.) —
-    the executor injects those. Sharding and ``OMP_NUM_THREADS`` are merged into the
-    ``env VAR=... `` prefix so callers do not format the command by hand.
+    Merges sharding/OMP into an ``env VAR=...`` prefix; never sets GPU
+    device-selection env vars (the executor injects those).
 
     Args:
-        binary:          Path to the gtest binary (absolute, or relative to *cwd*).
-        gtest_filter:    Value for ``--gtest_filter`` (e.g. ``"*rocm*"``); omitted when None.
-        shard_index:     Zero-based shard index; combined with *total_shards*.
-        total_shards:    Total shard count; sharding is applied only when ``> 1``.
-        env:             Extra environment variables (e.g. ``LD_LIBRARY_PATH``).
-        extra_args:      Verbatim extra gtest flags appended after the filter.
-        cwd:             Working directory; wraps the command in ``cd <cwd> && ...``.
-        omp_num_threads: When set, exports ``OMP_NUM_THREADS`` for the run.
+        binary:          Path to the gtest binary.
+        gtest_filter:    ``--gtest_filter`` value.
+        shard_index:     Zero-based shard index (with *total_shards*).
+        total_shards:    Shard count; applied only when > 1.
+        env:             Extra environment variables.
+        extra_args:      Verbatim extra gtest flags.
+        cwd:             Working directory (wrapped as ``cd <cwd> && ...``).
+        omp_num_threads: Optional ``OMP_NUM_THREADS`` export.
 
     Returns:
         A ready-to-run shell command string.
@@ -183,25 +141,24 @@ def run_gtest(
     omp_num_threads: int | str | None = None,
     timeout: float = 1800.0,
 ) -> GtestResult:
-    """Run a GoogleTest binary on *executor* and return a parsed :class:`GtestResult`.
+    """Run a gtest binary on *executor* and return a parsed :class:`GtestResult`.
 
-    Delegates execution to ``executor.run()`` so it is transparent across local,
-    SSH (remote GPU), and container contexts.
+    Transparent across local, SSH (remote GPU), and container executors.
 
     Args:
-        executor:        Any executor / ``NodeExecutorGroup`` with a ``.run()`` method.
+        executor:        Executor / ``NodeExecutorGroup`` with ``.run()``.
         binary:          Path to the gtest binary.
-        gtest_filter:    ``--gtest_filter`` value (e.g. ``"*rocm*"``).
+        gtest_filter:    ``--gtest_filter`` value.
         shard_index:     Zero-based shard index (with *total_shards*).
-        total_shards:    Total shard count; sharding applies only when ``> 1``.
-        env:             Extra environment variables for the run.
+        total_shards:    Shard count; applied only when > 1.
+        env:             Extra environment variables.
         extra_args:      Verbatim extra gtest flags.
         cwd:             Working directory for the binary.
         omp_num_threads: Optional ``OMP_NUM_THREADS`` export.
         timeout:         Maximum seconds to wait.
 
     Returns:
-        A :class:`GtestResult` with the parsed summary and full ``raw_output``.
+        A :class:`GtestResult` with the parsed summary and ``raw_output``.
     """
     cmd = build_gtest_command(
         binary,
@@ -231,13 +188,13 @@ def run_gtest(
 
 
 def parse_gtest_summary(output: str) -> dict[str, int]:
-    """Parse the GoogleTest run summary from combined stdout/stderr.
+    """Parse the gtest summary from combined output.
 
     Args:
         output: Combined process output.
 
     Returns:
-        ``{"total": int, "passed": int, "failed": int}``; missing fields are 0.
+        ``{"total", "passed", "failed"}``; missing fields are 0.
     """
     ran = _RAN_RE.search(output)
     passed = _PASSED_RE.search(output)

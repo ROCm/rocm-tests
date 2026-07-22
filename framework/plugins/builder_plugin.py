@@ -423,13 +423,7 @@ def external_build(compiler_build_dir: str, framework_config, cmake_executor):
             )
 
         def build_lock(self, key: str, *, timeout: float | None = None):
-            """Cross-worker lock for a whole clone+build critical section.
-
-            Use to serialize concurrent pytest-xdist workers around a multi-step
-            external build (e.g. clone → autogen → configure → make) that shares one
-            workspace. Pair with ``configure_make_build(..., use_lock=False)`` inside
-            the ``with`` block to avoid double-locking.
-            """
+            """Cross-worker lock for a whole clone+build section (pair with use_lock=False)."""
             return external_build_lock(key, timeout=timeout if timeout is not None else build_timeout)
 
         def assert_license_present(self, path) -> None:
