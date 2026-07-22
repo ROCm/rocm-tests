@@ -57,7 +57,8 @@ def test_rocm_examples(
     )
     if "No tests were found" in (result.stdout + result.stderr):
         pytest.skip(f"rocm-examples category {category!r}: no matching tests in this build")
-    assert result.ok and "100% tests passed" in result.stdout, (
+    passed = result.ok and "100% tests passed" in result.stdout
+    assert passed, (
         f"rocm-examples category {category!r} CTest not fully green (exit={result.exit_code}):\n"
         f"{_ctest_summary(result.stdout)}"
     )
