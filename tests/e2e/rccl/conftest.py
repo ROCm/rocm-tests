@@ -15,6 +15,7 @@ import logging
 import os
 import pathlib
 import re
+import subprocess
 
 import pytest
 
@@ -38,6 +39,50 @@ _UNROLL_PERF_MATRIX_SRC = "tests/e2e/rccl/src/rccl_unroll_test/rccl_unroll_perf_
 
 # First-party MIT RCCL concurrent-collectives stress harness (concurrent_collectives).
 _CONCURRENT_COLLECTIVES_SRC = "tests/e2e/rccl/src/concurrent_collectives/concurrent_collectives.cpp"
+
+
+def _openssh_client_install_cmd() -> str:
+    """Return a distro-aware OpenSSH client install command."""
+    return (
+        "bash -lc '"
+        "set -e; "
+        "if command -v ssh >/dev/null 2>&1; then exit 0; fi; "
+        "if command -v apt-get >/dev/null 2>&1; then "
+        "  apt-get update && apt-get install -y openssh-client; "
+        "elif command -v dnf >/dev/null 2>&1; then "
+        "  dnf install -y openssh-clients; "
+        "elif command -v yum >/dev/null 2>&1; then "
+        "  yum install -y openssh-clients; "
+        "elif command -v zypper >/dev/null 2>&1; then "
+        "  zypper --non-interactive install openssh; "
+        "else "
+        '  echo "no supported package manager found to install OpenSSH client" >&2; exit 1; '
+        "fi; "
+        "command -v ssh >/dev/null 2>&1'"
+    )
+
+
+def _run_prereq_cmd(cmake_executor, command: str, timeout: float) -> tuple[bool, str, str]:
+    """Run a prerequisite command locally or on the active remote build host."""
+    if cmake_executor is not None:
+        result = cmake_executor.run(command, timeout=timeout)
+        return result.ok, result.stdout, result.stderr
+    result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout, check=False)
+    return result.returncode == 0, result.stdout, result.stderr
+
+
+def _ensure_openssh_client(cmake_executor) -> None:
+    """Ensure OpenMPI's default rsh launcher can find ``ssh`` on the execution host."""
+    ok, stdout, _stderr = _run_prereq_cmd(cmake_executor, "command -v ssh", 15.0)
+    if ok and stdout.strip():
+        return
+
+    logger.info("Installing OpenSSH client for RCCL MPI")
+    ok, stdout, stderr = _run_prereq_cmd(cmake_executor, _openssh_client_install_cmd(), 300.0)
+    if not ok:
+        pytest.fail(
+            "RCCL MPI needs ssh; OpenSSH client install failed.\n" f"stdout: {stdout[-1000:]}\nstderr: {stderr[-1000:]}"
+        )
 
 
 def _safe_ref_name(ref: str) -> str:
@@ -297,8 +342,9 @@ def require_rccl(rock_dir: str, cmake_executor):
 
 
 @pytest.fixture(scope="session")
-def mpi_runtime(external_build):
+def mpi_runtime(external_build, cmake_executor):
     """Return MPI launcher/env metadata, provisioning local OpenMPI if needed."""
+    _ensure_openssh_client(cmake_executor)
     runtime = external_build.detect_mpi_runtime()
     if runtime is not None:
         return runtime
