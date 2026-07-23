@@ -22,7 +22,9 @@ _DIRECTED = [
     ("hipMemPrefetchAsync_v2", r"^Unit_hipMemPrefetchAsync_v2"),
     ("hipMemAdvise_v2", r"^Unit_hipMemAdvise_v2_"),
     ("hipModuleGetFunctionCount", r"^Unit_hipModuleGetFunctionCount"),
-    ("hipModuleLoadFatBinary", r"^Unit_hipModuleLoadFatBinary"),
+    # hipModuleLoadFatBinary omitted: its positive test loads build-generated
+    # .code fatbins produced by add_custom_target(... ALL ...) steps that are not
+    # dependencies of the scoped ModuleTest executable build.
     ("hipMemcpy3DBatchAsync", r"^Unit_hipMemcpy3DBatchAsync"),
     ("hipMemcpy3DPeer", r"^Unit_hipMemcpy3DPeer"),
     ("hipMemcpyBatchAsync", r"^Unit_hipMemcpyBatchAsync"),
