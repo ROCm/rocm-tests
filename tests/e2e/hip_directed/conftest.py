@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 _ROCM_SYSTEMS_URL = "https://github.com/ROCm/rocm-systems"
 _SUBDIR = "hip_directed"
 
+# TheRock installs bundle their own copy of the OS build dependencies (including
+# libnuma + numa.h, which the catch2 memory unit requires) under this subdir, so
+# the suite needs no apt packages on the host / CI container.
+_SYSDEPS = "lib/rocm_sysdeps"
+
+
 # Only the catch2 executables that contain the directed tests are built (not the
 # whole ``build_tests`` meta-target). This keeps the build fast and skips modules
 # like ``coopGrpTest`` that require bleeding-edge HIP headers.
@@ -84,17 +90,34 @@ def hip_catch_repo(external_build, compiler_build_dir: str, rock_dir: str):
 
 
 @pytest.fixture(scope="session")
-def hip_catch_build_dir(cmake_build_dir, rock_dir: str, hip_catch_repo) -> str:
+def hip_catch_build_dir(cmake_build_dir, rock_dir: str, gpu_arch: str | None, hip_catch_repo) -> str:
     """Configure and build only the catch2 executables holding the directed tests."""
     catch_src = pathlib.Path(hip_catch_repo) / "projects" / "hip-tests" / "catch"
+    extra_args = ["-DHIP_PLATFORM=amd", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}"]
+    # Resolve libnuma / numa.h from the ROCm install's bundled sysdeps rather than
+    # requiring host apt packages (the memory unit does find_library(numa REQUIRED)
+    # + find_path(numa.h)).
+    sysdeps = pathlib.Path(rock_dir) / _SYSDEPS
+    if sysdeps.is_dir():
+        extra_args.append(f"-DCMAKE_LIBRARY_PATH={sysdeps / 'lib'}")
+        extra_args.append(f"-DCMAKE_INCLUDE_PATH={sysdeps / 'include'}")
+    # Pin the offload arch so CMake's HIP-compiler ABI check does not fall back to
+    # rocm_agent_enumerator (which reads sysfs, ignores ROCR_VISIBLE_DEVICES) and
+    # emit one duplicated --offload-arch per GPU on multi-GPU CI runners.
+    if gpu_arch:
+        extra_args.append(f"-DCMAKE_HIP_ARCHITECTURES={gpu_arch}")
     build_dir = ""
     with _single_visible_gpu():
         for target in _EXE_TARGETS:
             build_dir = cmake_build_dir(
                 src=str(catch_src),
                 subdir=_SUBDIR,
-                extra_cmake_args=["-DHIP_PLATFORM=amd", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}"],
-                compiler_mode="none",
+                extra_cmake_args=extra_args,
+                # cxx_hip sets CMAKE_HIP_COMPILER to the ROCm clang++ so the build
+                # uses the installed toolchain's device libraries (a bare system
+                # clang++ cannot find the ROCm device library).
+                compiler_mode="cxx_hip",
+                gpu_arch=gpu_arch,
                 gpu_arch_var="GPU_TARGETS",
                 target=target,
                 label=f"hip_directed_catch2:{target}",

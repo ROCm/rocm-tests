@@ -38,7 +38,9 @@ def test_hip_directed_catch2(
     target_executor, ld_path: dict, rock_dir: str, hip_catch_build_dir: str, name: str, pattern: str
 ):
     """Run one directed HIP catch2 unit test and assert it is green."""
-    ld = ld_path["LD_LIBRARY_PATH"]
+    # MemoryTest1 links the ROCm-bundled librocm_sysdeps_numa.so.1; make it
+    # resolvable at run time alongside the TheRock libs.
+    ld = f"{rock_dir}/lib/rocm_sysdeps/lib:" + ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld} ROCM_PATH={rock_dir} "
         f"ctest --test-dir {hip_catch_build_dir} --output-on-failure -R {pattern!r}",
