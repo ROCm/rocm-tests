@@ -18,6 +18,7 @@ Build output layout::
     output/test-binaries/hip_runtime/host_build/hip_invalid_codeobject_load_test
     output/test-binaries/hip_runtime/stream_build/multi_stream_serialization
     output/test-binaries/hip_runtime/split_barrier_stress/split_barrier_stress
+    output/test-binaries/hip_runtime/mps/rock_mps_test
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ import pytest
 logger = logging.getLogger(__name__)
 _SRC_DIR = "tests/e2e/hip_runtime/src"
 _SPLIT_BARRIER_SRC_DIR = "tests/e2e/hip_runtime/src/split_barrier_stress"
+_ROCK_MPS_SRC_DIR = "tests/e2e/hip_runtime/src/mps"
 
 # HIP samples upstream suite (ROCm/hip-tests "samples/" subtree).
 # Samples are the same sources published in ROCm/hip-tests.
@@ -92,6 +94,33 @@ def _split_barrier_stress_build_dir(gpu_arch: str | None, cmake_build_dir, requi
 
 
 @pytest.fixture(scope="session")
+def _rock_mps_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build the vendored ``rock_mps_test`` multi-process integration binary.
+
+    Self-contained CMake project under ``src/mps``; all sources are compiled
+    as HIP (cross-TU kernel launches), so ``--gpu-arch`` is required. Optional
+    LIBRARY/COMPILER/MONITOR roles link hipBLASLt/hipRTC/amd_smi when present.
+    """
+    require_gpu_arch_for("hip_runtime/mps")
+    return cmake_build_dir(
+        src=_ROCK_MPS_SRC_DIR,
+        subdir="hip_runtime/mps",
+        gpu_arch=gpu_arch,
+        compiler_mode="optional_cxx_hip",
+        label="hip_runtime/mps",
+        sync_dirs=[_ROCK_MPS_SRC_DIR],
+        artifact="rock_mps_test",
+        target="rock_mps_test",
+    )
+
+
+@pytest.fixture(scope="session")
+def rock_mps_binary(_rock_mps_build_dir: str, built_binary) -> str:
+    """Compiled ``rock_mps_test`` binary path."""
+    return built_binary(os.path.join(_rock_mps_build_dir, "rock_mps_test"), "rock_mps_test")
+
+
+@pytest.fixture(scope="session")
 def hip_invalid_codeobject_load_binary(_hip_host_cmake_build_dir: str, built_binary) -> str:
     """Compiled ``hip_invalid_codeobject_load_test`` binary path."""
     return built_binary(
@@ -149,6 +178,27 @@ def hip_sample_build(cmake_build_dir, hip_samples_repo: str, built_binary):
             compiler_mode="optional_cxx_hip",
             artifact=exec_name,
             label="hip_samples/" + sample_relpath,
+        )
+        return built_binary(os.path.join(build_dir, exec_name), exec_name)
+
+    return _build
+
+
+@pytest.fixture(scope="session")
+def hip_sample_spirv_build(cmake_build_dir, hip_samples_repo: str, built_binary):
+    """Return a factory that builds one HIP sample targeting SPIR-V."""
+
+    def _build(sample_relpath: str, exec_name: str) -> str:
+        sample_src = os.path.join(hip_samples_repo, *sample_relpath.split("/"))
+        subdir = "hip_runtime/hip_samples_spirv/" + sample_relpath.replace("/", "_")
+        build_dir = cmake_build_dir(
+            src=sample_src,
+            subdir=subdir,
+            gpu_arch=None,
+            extra_cmake_args=["-DCMAKE_HIP_ARCHITECTURES=amdgcnspirv"],
+            compiler_mode="optional_cxx_hip",
+            artifact=exec_name,
+            label="hip_samples_spirv/" + sample_relpath,
         )
         return built_binary(os.path.join(build_dir, exec_name), exec_name)
 
