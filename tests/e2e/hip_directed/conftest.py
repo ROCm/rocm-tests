@@ -5,20 +5,49 @@
 from __future__ import annotations
 
 import contextlib
+import json
+import logging
 import os
 import pathlib
 
 import pytest
 
+logger = logging.getLogger(__name__)
+
 _ROCM_SYSTEMS_URL = "https://github.com/ROCm/rocm-systems"
-_ROCM_SYSTEMS_REF = os.environ.get("ROCM_TEST_ROCM_SYSTEMS_REF", "develop")
 _SUBDIR = "hip_directed"
 
 # Only the catch2 executables that contain the directed tests are built (not the
 # whole ``build_tests`` meta-target). This keeps the build fast and skips modules
-# like ``coopGrpTest`` that require bleeding-edge HIP headers not present in every
-# ROCm install.
+# like ``coopGrpTest`` that require bleeding-edge HIP headers.
 _EXE_TARGETS = ("DeviceTest", "StreamTest", "MemoryTest1", "ModuleTest")
+
+
+def _resolve_rocm_systems_ref(rock_dir: str) -> str:
+    """Pick the rocm-systems ref to clone.
+
+    Order: explicit ``ROCM_TEST_ROCM_SYSTEMS_REF`` env override, else the exact
+    commit the installed ROCm was built from (TheRock manifest ``pin_sha``), else
+    ``develop``. Pinning to the manifest commit keeps the hip-tests source in sync
+    with the installed HIP headers (avoids version skew).
+    """
+    override = os.environ.get("ROCM_TEST_ROCM_SYSTEMS_REF")
+    if override:
+        return override
+    manifest = pathlib.Path(rock_dir) / "share" / "therock" / "therock_manifest.json"
+    try:
+        data = json.loads(manifest.read_text())
+        for sm in data.get("submodules", []):
+            name = sm.get("submodule_name", "")
+            url = sm.get("submodule_url", "")
+            if name == "rocm-systems" or "rocm-systems" in url:
+                sha = sm.get("pin_sha")
+                if sha:
+                    logger.info("hip_directed: pinning rocm-systems to manifest commit %s", sha)
+                    return sha
+    except (OSError, ValueError) as exc:
+        logger.warning("hip_directed: could not read TheRock manifest (%s); using develop", exc)
+    return "develop"
 
 
 @contextlib.contextmanager
@@ -45,10 +74,11 @@ def _single_visible_gpu():
 
 
 @pytest.fixture(scope="session")
-def hip_catch_repo(external_build, compiler_build_dir: str):
-    """Clone ROCm/rocm-systems once per session; return the checkout path."""
+def hip_catch_repo(external_build, compiler_build_dir: str, rock_dir: str):
+    """Clone ROCm/rocm-systems (at the ROCm's manifest-pinned commit) once per session."""
     dest = pathlib.Path(compiler_build_dir) / _SUBDIR / "rocm-systems"
-    repo = external_build.clone_repo(_ROCM_SYSTEMS_URL, dest, ref=_ROCM_SYSTEMS_REF)
+    ref = _resolve_rocm_systems_ref(rock_dir)
+    repo = external_build.clone_repo(_ROCM_SYSTEMS_URL, dest, ref=ref)
     external_build.assert_license_present(repo)
     return repo
 
