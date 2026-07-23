@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import pathlib
+import subprocess
 
 import pytest
 
@@ -16,6 +17,27 @@ logger = logging.getLogger(__name__)
 
 _ROCM_SYSTEMS_URL = "https://github.com/ROCm/rocm-systems"
 _SUBDIR = "hip_directed"
+
+# The catch2 memory unit does find_library(numa REQUIRED). Bare CI containers
+# lack it; install best-effort before configure (container runs as root).
+_SYSTEM_DEPS = "libnuma-dev"
+
+
+def _install_system_deps() -> None:
+    """Best-effort apt install of hip-tests catch2 system build dependencies."""
+    sudo = "" if os.geteuid() == 0 else "sudo "
+    cmd = f"{sudo}apt-get update && {sudo}apt-get install -y --no-install-recommends {_SYSTEM_DEPS}"
+    try:
+        result = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=1800)
+        if result.returncode != 0:
+            logger.warning(
+                "hip_directed system-deps install returned %d:\n%s",
+                result.returncode,
+                result.stderr[-2000:],
+            )
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("hip_directed system-deps install failed: %s", exc)
+
 
 # Only the catch2 executables that contain the directed tests are built (not the
 # whole ``build_tests`` meta-target). This keeps the build fast and skips modules
@@ -93,6 +115,7 @@ def hip_catch_build_dir(cmake_build_dir, rock_dir: str, gpu_arch: str | None, hi
     # emit one duplicated --offload-arch per GPU on multi-GPU CI runners.
     if gpu_arch:
         extra_args.append(f"-DCMAKE_HIP_ARCHITECTURES={gpu_arch}")
+    _install_system_deps()
     build_dir = ""
     with _single_visible_gpu():
         for target in _EXE_TARGETS:
