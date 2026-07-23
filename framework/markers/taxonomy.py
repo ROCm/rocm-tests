@@ -119,6 +119,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # KFD (Kernel Fusion Driver) — lowest layer of the ROCm stack, exercised via
+    # the libhsakmt kfdtest GTest suite. layer.runtime because KFD is the kernel
+    # driver / thunk layer under the HIP runtime.
+    "tests/e2e/kfd": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # RCCL collective / error-handling ports (Tier 4). rccl_error_handling is
     # single-GPU and overrides hw.multi_gpu -> hw.gpu at the function level.
     "tests/e2e/rccl": [
