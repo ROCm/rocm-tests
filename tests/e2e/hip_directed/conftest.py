@@ -84,17 +84,27 @@ def hip_catch_repo(external_build, compiler_build_dir: str, rock_dir: str):
 
 
 @pytest.fixture(scope="session")
-def hip_catch_build_dir(cmake_build_dir, rock_dir: str, hip_catch_repo) -> str:
+def hip_catch_build_dir(cmake_build_dir, rock_dir: str, gpu_arch: str | None, hip_catch_repo) -> str:
     """Configure and build only the catch2 executables holding the directed tests."""
     catch_src = pathlib.Path(hip_catch_repo) / "projects" / "hip-tests" / "catch"
+    extra_args = ["-DHIP_PLATFORM=amd", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}"]
+    # Pin the offload arch so CMake's HIP-compiler ABI check does not fall back to
+    # rocm_agent_enumerator (which reads sysfs, ignores ROCR_VISIBLE_DEVICES) and
+    # emit one duplicated --offload-arch per GPU on multi-GPU CI runners.
+    if gpu_arch:
+        extra_args.append(f"-DCMAKE_HIP_ARCHITECTURES={gpu_arch}")
     build_dir = ""
     with _single_visible_gpu():
         for target in _EXE_TARGETS:
             build_dir = cmake_build_dir(
                 src=str(catch_src),
                 subdir=_SUBDIR,
-                extra_cmake_args=["-DHIP_PLATFORM=amd", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}"],
-                compiler_mode="none",
+                extra_cmake_args=extra_args,
+                # cxx_hip sets CMAKE_HIP_COMPILER to the ROCm clang++ so the build
+                # uses the installed toolchain's device libraries (a bare system
+                # clang++ cannot find the ROCm device library).
+                compiler_mode="cxx_hip",
+                gpu_arch=gpu_arch,
                 gpu_arch_var="GPU_TARGETS",
                 target=target,
                 label=f"hip_directed_catch2:{target}",
