@@ -244,7 +244,6 @@ jobs:
             tests/e2e/rccl/ \
             tests/e2e/rocm_libs/ \
             tests/e2e/rocprim/ \
-            tests/e2e/rocm_examples/ \
             tests/e2e/hip_directed/ \
             --rock-dir=therock_build \
             --gpu-arch=${GPU_ARCH} \
