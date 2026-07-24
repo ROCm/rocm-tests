@@ -91,7 +91,7 @@ class CpuExecutor(AbstractExecutor):
         self.suppress_output_log = suppress_output_log
         self.test_logger = test_logger
 
-    def run(self, command: str, timeout: float | None = None) -> ExecutionResult:
+    def run(self, command: str, timeout: float | None = None, *, stream: bool = False) -> ExecutionResult:
         """Execute *command* in a subprocess without modifying GPU-related variables.
 
         The full ``os.environ`` is inherited, then ``env_overrides`` are merged on top.
@@ -102,6 +102,7 @@ class CpuExecutor(AbstractExecutor):
         Args:
             command: Shell command string to execute.
             timeout: Maximum seconds before ``TimeoutError`` is raised (default: 300 s).
+            stream:  When True, stream stdout live for this command.
 
         Returns:
             ExecutionResult with exit_code, stdout, stderr, and wall-clock duration.
@@ -125,7 +126,7 @@ class CpuExecutor(AbstractExecutor):
                 env=proc_env,
                 cwd=self.working_dir,
                 timeout=effective_timeout if t is None else t,
-                stream_stdout=self.stream_stdout,
+                stream_stdout=stream or self.stream_stdout,
                 stream_stderr=stream_stderr,
                 log_path=self.log_path,
             )
