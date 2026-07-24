@@ -77,15 +77,15 @@ def _split_barrier_stress_build_dir(gpu_arch: str | None, cmake_build_dir, requi
 
     The sample ships its own self-contained ``CMakeLists.txt`` and is built in
     its own subdirectory independent of the shared ``hip_runtime`` CMake project.
-    Inject the TheRock HIP compiler to avoid CMake falling back to system LLVM
-    runtime libraries in CI containers.
+    Require the TheRock/ROCm HIP compiler because this test exercises HIP
+    cooperative groups and must not silently fall back to a system compiler.
     """
     require_gpu_arch_for("hip_runtime/split_barrier_stress")
     return cmake_build_dir(
         src=_SPLIT_BARRIER_SRC_DIR,
         subdir="hip_runtime/split_barrier_stress",
         gpu_arch=gpu_arch,
-        compiler_mode="optional_cxx_hip",
+        compiler_mode="cxx_hip",
         label="hip_runtime/split_barrier_stress",
         sync_dirs=[_SPLIT_BARRIER_SRC_DIR],
         artifact="split_barrier_stress",
