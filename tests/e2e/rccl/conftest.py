@@ -15,7 +15,8 @@ import logging
 import os
 import pathlib
 import re
-import subprocess
+import shutil
+import subprocess  # nosec B404
 
 import pytest
 
@@ -42,7 +43,7 @@ _CONCURRENT_COLLECTIVES_SRC = "tests/e2e/rccl/src/concurrent_collectives/concurr
 
 
 def _openssh_client_install_cmd() -> str:
-    """Return a distro-aware OpenSSH client install command."""
+    """Return a distro-aware OpenSSH client install command for remote executors."""
     return (
         "bash -lc '"
         "set -e; "
@@ -62,23 +63,54 @@ def _openssh_client_install_cmd() -> str:
     )
 
 
-def _run_prereq_cmd(cmake_executor, command: str, timeout: float) -> tuple[bool, str, str]:
-    """Run a prerequisite command locally or on the active remote build host."""
-    if cmake_executor is not None:
-        result = cmake_executor.run(command, timeout=timeout)
-        return result.ok, result.stdout, result.stderr
-    result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout, check=False)
+def _local_openssh_client_install_cmds() -> list[list[str]] | None:
+    """Return ordered local OpenSSH client install commands, if supported."""
+    package_managers = (
+        ("apt-get", [["apt-get", "update"], ["apt-get", "install", "-y", "openssh-client"]]),
+        ("dnf", [["dnf", "install", "-y", "openssh-clients"]]),
+        ("yum", [["yum", "install", "-y", "openssh-clients"]]),
+        ("zypper", [["zypper", "--non-interactive", "install", "openssh"]]),
+    )
+    for binary, commands in package_managers:
+        if shutil.which(binary):
+            return commands
+    return None
+
+
+def _run_local_install_cmd(command: list[str], timeout: float) -> tuple[bool, str, str]:
+    """Run a local package-manager install command without shell expansion."""
+    # command is selected from a hard-coded package-manager allowlist.
+    result = subprocess.run(  # nosec B603
+        command,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
     return result.returncode == 0, result.stdout, result.stderr
 
 
 def _ensure_openssh_client(cmake_executor) -> None:
     """Ensure OpenMPI's default rsh launcher can find ``ssh`` on the execution host."""
-    ok, stdout, _stderr = _run_prereq_cmd(cmake_executor, "command -v ssh", 15.0)
-    if ok and stdout.strip():
-        return
+    if cmake_executor is not None:
+        probe = cmake_executor.run("command -v ssh", timeout=15.0)
+        if probe.ok and probe.stdout.strip():
+            return
+        logger.info("Installing OpenSSH client for RCCL MPI")
+        result = cmake_executor.run(_openssh_client_install_cmd(), timeout=300.0)
+        ok, stdout, stderr = result.ok, result.stdout, result.stderr
+    else:
+        if shutil.which("ssh"):
+            return
+        install_cmds = _local_openssh_client_install_cmds()
+        if install_cmds is None:
+            pytest.fail("RCCL MPI needs ssh; no supported package manager found to install OpenSSH client.")
+        logger.info("Installing OpenSSH client for RCCL MPI")
+        for install_cmd in install_cmds:
+            ok, stdout, stderr = _run_local_install_cmd(install_cmd, 300.0)
+            if not ok:
+                break
 
-    logger.info("Installing OpenSSH client for RCCL MPI")
-    ok, stdout, stderr = _run_prereq_cmd(cmake_executor, _openssh_client_install_cmd(), 300.0)
     if not ok:
         pytest.fail(
             "RCCL MPI needs ssh; OpenSSH client install failed.\n" f"stdout: {stdout[-1000:]}\nstderr: {stderr[-1000:]}"
