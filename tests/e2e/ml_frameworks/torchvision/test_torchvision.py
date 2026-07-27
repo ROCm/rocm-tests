@@ -15,6 +15,9 @@ and transforms tensor suites, comparing GPU output against CPU/PIL references. A
 matches its reference within tolerance, confirming the image-transform pipeline
 behaves correctly on a given ROCm GPU software stack.
 
+Each suite file is run as its own independent test (parametrized below), so a
+failure in one suite never prevents the other from running.
+
 ROCm stack components exercised:
     KFD + amdgpu kernel driver, ROCr + HIP runtime, the HIP device API and the
     hipcc compiler / hipify (the in-tree ``build_ext`` compiles the torchvision
@@ -29,7 +32,7 @@ Supported OS / environment profiles:
     SLES 15.7; bare-metal and container profiles.
 
 Environment profiles:
-    The source checkout, in-tree ops build, and the two pytest UT suites are
+    Per suite, the source checkout, in-tree ops build, and the pytest UT run are
     performed in a single command via ``target_executor`` so the same test runs
     unchanged on a local bare-metal node, a remote SSH node, or inside a
     Docker/Podman container (``--container-mode``). On bare-metal the installed
@@ -37,16 +40,14 @@ Environment profiles:
     mode the ROCm stack and PyTorch shipped in the image are used as-is. Single-
     and multi-GPU on a single node; nightly cadence.
 
-TorchVision repo URL + commit ("related commit"):
-    Unlike Apex, which reads only a commit, TorchVision derives BOTH the repo URL
-    and the commit from the pinned ``related_commits`` manifest -- field 6 is the
-    fork URL (e.g. a ROCm/vision fork) and field 5 is the commit id -- so the
-    clone always matches the exact downstream fork the image was built for. On
-    bare-metal (no prebuilt PyTorch / manifest) the commit must be supplied via
-    ``TORCHVISION_COMMIT`` and the URL defaults to the ROCm/vision repository
-    (override with ``TORCHVISION_URL``). In a prebuilt-PyTorch container both are
-    read from the manifest; ``TORCHVISION_COMMIT`` / ``TORCHVISION_URL`` always
-    override the manifest lookup. See ``_workload.py`` for all env knobs.
+Repo URL + commit ("related commit"):
+    Both the fork URL and the commit are read from the pinned ``related_commits``
+    manifest inside the prebuilt-PyTorch container -- field 6 is the fork URL and
+    field 5 is the commit id -- so the clone matches the exact downstream fork the
+    image was built for. On bare-metal (no prebuilt PyTorch / manifest) the commit
+    must be supplied via ``TORCHVISION_COMMIT`` and the URL defaults to the
+    ROCm/vision repository (override with ``TORCHVISION_URL``). ``TORCHVISION_COMMIT``
+    / ``TORCHVISION_URL`` always override the manifest lookup.
 
 GPU count:
     By default the suite exposes EVERY GPU the node/container exposes. Set
@@ -55,55 +56,82 @@ GPU count:
     the executor otherwise pins one GPU -- visibility is set via
     ``ROCR_VISIBLE_DEVICES`` in the run command.
 
-Markers:
-    Injected by the CATEGORY_PROFILES entry for
-    ``tests/e2e/ml_frameworks/torchvision`` in taxonomy.py -- hw.gpu +
-    hw.multi_gpu (single- and multi-GPU profiles), layer.runtime + layer.math_lib
-    (HIP runtime/compiler and the rocBLAS/MIOpen-style compute the transform ops
-    use), ci.nightly, e2e.stack, os.linux.
+Build directory:
+    The checkout + ops build live under the framework-managed build dir
+    (``<compiler_build_dir>/ml_frameworks/torchvision/<suite>``, default base
+    ``output/test-binaries/``) so the build state is reviewable; override with
+    ``TORCHVISION_WORK_DIR``.
 
-    Declared on the test function (profiles never inject these):
-        gpu_count(all|N) -- acquire all GPUs (default) or N when
-                            TORCHVISION_NUM_GPUS set
-        runtime.soak     -- the in-tree ops build plus the two UT suites run for a
-                            long time; scheduled nightly for the ML-framework cadence
+Markers:
+    hw.multi_gpu / layer.math_lib / ci.nightly / e2e.stack / os.linux are injected
+    by the CATEGORY_PROFILES entry for this directory in taxonomy.py. gpu_count and
+    runtime.fast (the suite completes in a few minutes) are declared on the test.
 """
 
 import logging
+import os
 import re
 
 import pytest
 
-from tests.e2e.ml_frameworks.torchvision._result_parser import parse_pytest_output
-from tests.e2e.ml_frameworks.torchvision._workload import (
-    GPU_COUNT_ARG,
-    PYTEST_SELECTOR,
-    RELATED_COMMITS_PATH,
-    RUN_TIMEOUT,
-    TEST_FILES,
-    TORCHVISION_COMMIT,
-    TORCHVISION_NUM_GPUS,
-    TORCHVISION_URL,
-    TORCHVISION_URL_OVERRIDE,
-    WORK_DIR,
-)
+from tests.e2e.ml_frameworks.torchvision._result_parser import parse_junit_xml
 
 logger = logging.getLogger(__name__)
 
-# A git ref safe to interpolate into a shell command (no metacharacters).
+# ---------------------------------------------------------------------------
+# Run parameters (env-configurable). See the module docstring for semantics.
+# ---------------------------------------------------------------------------
+
+# Default public torchvision source tree, used when no manifest URL is available.
+_DEFAULT_TORCHVISION_URL = "https://github.com/ROCm/vision"
+
+# Raw, user-supplied URL override (empty when unset); wins over the manifest URL.
+TORCHVISION_URL_OVERRIDE = os.environ.get("TORCHVISION_URL", "").strip()
+TORCHVISION_URL = TORCHVISION_URL_OVERRIDE or _DEFAULT_TORCHVISION_URL
+
+# User-supplied commit id. Required on bare-metal; overrides the manifest in a container.
+TORCHVISION_COMMIT = os.environ.get("TORCHVISION_COMMIT", "").strip()
+
+# Optional explicit path to the related_commits manifest inside the container.
+RELATED_COMMITS_PATH = os.environ.get("TORCHVISION_RELATED_COMMITS", "").strip()
+
+# GPUs to use on one node: None -> every GPU exposed; an integer caps the count.
+_NUM_GPUS_RAW = os.environ.get("TORCHVISION_NUM_GPUS", "").strip()
+TORCHVISION_NUM_GPUS = int(_NUM_GPUS_RAW) if _NUM_GPUS_RAW else None
+
+# Argument for @pytest.mark.gpu_count: an explicit int, else the "all" sentinel.
+GPU_COUNT_ARG = TORCHVISION_NUM_GPUS if TORCHVISION_NUM_GPUS is not None else "all"
+
+# Optional override for the checkout + build scratch dir (else compiler_build_dir).
+WORK_DIR_OVERRIDE = os.environ.get("TORCHVISION_WORK_DIR", "").strip()
+
+# The GPU UT suite files, restricted to the cuda-tagged cases via ``-k cuda``. Each
+# runs as an independent test (parametrized below).
+TEST_FILES = (
+    "test/test_functional_tensor.py",
+    "test/test_transforms_tensor.py",
+)
+PYTEST_SELECTOR = "cuda"
+
+# Whole-workflow wall-clock cap (seconds) per suite: clone + ops build + one UT run.
+RUN_TIMEOUT = float(os.environ.get("TORCHVISION_RUN_TIMEOUT", "14400"))
+
+# Sentinels bracketing the JUnit XML report catted onto stdout after the run.
+_JUNIT_START = "__TV_JUNIT_START__"
+_JUNIT_END = "__TV_JUNIT_END__"
+
+# A git ref/URL/path safe to interpolate into a shell command.
 _SAFE_REF_RE = re.compile(r"^[0-9A-Za-z._/-]+$")
-# A git URL safe to interpolate into a shell command.
 _SAFE_URL_RE = re.compile(r"^https?://[0-9A-Za-z._~:/?#@!$&'()*+,;=%-]+$")
-# A commit id as validated by the source test: 7-40 hex chars.
 _COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
-# A filesystem path safe to interpolate into the related_commits lookup snippet.
 _SAFE_PATH_RE = re.compile(r"^[0-9A-Za-z._/-]+$")
+
 # Seconds allowed for the (trivial) in-container related_commits lookup.
 _RESOLVE_TIMEOUT = 120.0
 
-# Hard-crash signatures. If any appears in the runner output the suite aborted
-# mid-run (the process died before finishing), so the run is a failure regardless
-# of how many sub-tests were parsed as passing.
+# Hard-crash signatures. If any appears in the output the run aborted mid-way (the
+# process died before writing its report), so the run is a failure regardless of
+# how many cases were recorded.
 _CRASH_MARKERS = (
     "Memory access fault",
     "core dumped",
@@ -113,12 +141,11 @@ _CRASH_MARKERS = (
     "Fatal Python error",
 )
 
-# Shell snippet run inside a prebuilt-PyTorch container to read the torchvision
-# repo URL (field 6) and commit (field 5) from its ``related_commits`` manifest.
-# It locates the manifest (explicit path, then well-known locations, then a
-# bounded find), greps the torchvision line for this OS (distro id from
-# /etc/os-release), and prints both fields. Sentinel markers on stdout let the
-# caller distinguish "not found" from "no torchvision entry".
+# Shell snippet run inside a prebuilt-PyTorch container to read the torchvision repo
+# URL (field 6) and commit (field 5) from its related_commits manifest. It locates
+# the manifest (explicit path, then well-known locations, then a bounded find),
+# greps the torchvision line for this OS, and prints both fields with sentinels so
+# the caller can distinguish "not found" from "no torchvision entry".
 _RELATED_COMMITS_LOOKUP = r"""
 f="{explicit}"
 if [ -z "$f" ]; then
@@ -147,27 +174,14 @@ echo "__TV_URL__:$url"
 echo "__TV_COMMIT__:$commit"
 """
 
-# The hw.* / layer.* / ci.* / e2e.* / os.* markers are injected by the
-# CATEGORY_PROFILES entry for ``tests/e2e/ml_frameworks/torchvision`` in
-# taxonomy.py (both hw.gpu and hw.multi_gpu, so the suite covers the single- and
-# multi-GPU profiles). Only the parametric ``gpu_count`` and the ``runtime.*``
-# weight -- which profiles intentionally never inject -- are declared on the test.
-
 
 def _visible_devices_prefix(request) -> str:
     """Return a command prefix that exposes the right number of GPUs, or ``""``.
 
-    Only meaningful in container mode. ``target_executor``'s container path pins a
-    single GPU (``ROCR_VISIBLE_DEVICES=0``) regardless of ``gpu_count``, so GPU
-    visibility for the UT run is controlled here instead:
-
-        * ``TORCHVISION_NUM_GPUS`` unset -> drop the restriction so every GPU
-          passed into the container (via ``--device``) is visible.
-        * ``TORCHVISION_NUM_GPUS=k``     -> expose exactly GPUs ``0..k-1``.
-
-    On bare-metal / SSH this returns ``""`` -- ``target_executor`` owns the real
-    ``ROCR_VISIBLE_DEVICES`` allocation from the acquired ``gpu_count`` slots, and
-    the test must not override it.
+    Only meaningful in container mode, where ``target_executor`` pins a single GPU:
+    unset ``TORCHVISION_NUM_GPUS`` drops the restriction so every passed-in GPU is
+    visible; an integer ``k`` exposes GPUs ``0..k-1``. On bare-metal / SSH this
+    returns ``""`` -- ``target_executor`` owns the real ``ROCR_VISIBLE_DEVICES``.
     """
     if not request.config.getoption("--container-mode", default=False):
         return ""
@@ -180,15 +194,10 @@ def _visible_devices_prefix(request) -> str:
 def _rocm_env_prefix(request) -> str:
     """Return the ``env VAR=... `` prefix for the UT runner, or ``""``.
 
-    In container mode the ROCm stack and PyTorch shipped inside the image are used
-    as-is -- injecting host paths would point the build at a tree that does not
-    exist in the container. On bare-metal / SSH the installed ROCm tree
-    (``rock_dir``) and its ``LD_LIBRARY_PATH`` are injected so the ops build and
-    the ROCm compute libraries resolve against the intended stack.
-
-    ``rock_dir`` / ``ld_path`` are resolved lazily (they ``pytest.fail`` when no
-    ROCm path is configured) so container runs need neither ``--rock-dir`` nor a
-    host ROCm install.
+    In container mode the ROCm stack and PyTorch in the image are used as-is. On
+    bare-metal / SSH the installed ROCm tree (``rock_dir``) and its
+    ``LD_LIBRARY_PATH`` are injected so the ops build and compute libraries resolve
+    against the intended stack. ``rock_dir`` / ``ld_path`` are resolved lazily.
     """
     if request.config.getoption("--container-mode", default=False):
         return ""
@@ -219,9 +228,8 @@ def _lookup_in_container(target_executor) -> tuple[str, str]:
     """Read the torchvision repo URL + commit from the container's manifest.
 
     Runs the lookup snippet inside the (prebuilt-PyTorch) container and interprets
-    its sentinel output, returning ``(url, commit)``. Fails with actionable
-    guidance when the manifest is absent or carries no torchvision entry -- the two
-    states the caller must distinguish.
+    its sentinel output, returning ``(url, commit)``. Fails with actionable guidance
+    when the manifest is absent or carries no torchvision entry.
     """
     explicit = RELATED_COMMITS_PATH
     if explicit and not _SAFE_PATH_RE.match(explicit):
@@ -266,14 +274,11 @@ def _lookup_in_container(target_executor) -> tuple[str, str]:
 def _resolve_url_and_commit(request, target_executor) -> tuple[str, str]:
     """Determine the torchvision repo URL and commit to check out.
 
-    Resolution order:
-        1. ``TORCHVISION_COMMIT`` supplied by the user -- honored in every profile.
-           The URL then comes from ``TORCHVISION_URL`` (default ROCm/vision).
-        2. Container mode only: field 6 (URL) and field 5 (commit) of the
-           torchvision entry in the image's ``related_commits`` manifest. A
-           user-supplied ``TORCHVISION_URL`` still overrides the manifest URL.
-        3. Otherwise (bare-metal, no commit) fail with guidance -- bare-metal has
-           no prebuilt PyTorch / related_commits file, so the commit is required.
+    Resolution order: (1) a user-supplied ``TORCHVISION_COMMIT`` (URL from
+    ``TORCHVISION_URL``, default ROCm/vision); (2) container mode only -- field 6
+    (URL) and field 5 (commit) of the image's related_commits manifest, with a
+    user URL override winning; (3) otherwise fail with guidance (bare-metal has no
+    manifest, so the commit is required).
     """
     if TORCHVISION_COMMIT:
         logger.info("torchvision commit supplied by user (TORCHVISION_COMMIT): %s", TORCHVISION_COMMIT)
@@ -281,8 +286,6 @@ def _resolve_url_and_commit(request, target_executor) -> tuple[str, str]:
 
     if request.config.getoption("--container-mode", default=False):
         manifest_url, manifest_commit = _lookup_in_container(target_executor)
-        # A user-supplied URL override wins; otherwise use field 6, falling back to
-        # the default ROCm/vision repo if the manifest omitted it.
         url = TORCHVISION_URL_OVERRIDE or manifest_url or TORCHVISION_URL
         return _validate_url(url), _validate_ref(manifest_commit)
 
@@ -295,104 +298,111 @@ def _resolve_url_and_commit(request, target_executor) -> tuple[str, str]:
     return "", ""  # unreachable -- pytest.fail raises
 
 
-@pytest.mark.gpu_count(GPU_COUNT_ARG)
-@pytest.mark.runtime.soak
-def test_torchvision_p1_ut_suite(request, target_executor):
-    """Clone torchvision, build the ops, run the GPU UT suites, and assert they pass.
+def _extract_junit(text: str) -> str:
+    """Return the JUnit XML report bracketed by the sentinels in *text*, or ``""``."""
+    start = text.find(_JUNIT_START)
+    end = text.find(_JUNIT_END)
+    if start == -1 or end == -1 or end < start:
+        return ""
+    return text[start + len(_JUNIT_START) : end].strip()
 
-    The repo URL and commit are resolved first (user-supplied
-    ``TORCHVISION_COMMIT`` / ``TORCHVISION_URL``, else the container image's
-    ``related_commits`` manifest -- URL from field 6, commit from field 5). The
+
+@pytest.mark.gpu_count(GPU_COUNT_ARG)
+@pytest.mark.runtime.fast
+@pytest.mark.parametrize("test_file", TEST_FILES, ids=lambda f: os.path.basename(f)[len("test_") : -len(".py")])
+def test_torchvision_p1_ut_suite(request, target_executor, compiler_build_dir, test_file):
+    """Clone torchvision, build the ops, run one cuda-tagged UT suite, assert it passes.
+
+    The repo URL and commit are resolved first (user-supplied ``TORCHVISION_COMMIT``
+    / ``TORCHVISION_URL``, else the container image's related_commits manifest). The
     checkout, first-run in-tree ops build (``build_ext --inplace``), a
-    ``torchvision::nms`` import check, and the two cuda-tagged pytest UT suites
-    then execute in a single ``target_executor`` command so the workflow is
-    identical on bare-metal, remote SSH, and container profiles -- the source tree
-    is always created wherever the GPU command runs. All GPUs are exposed by
-    default (``TORCHVISION_NUM_GPUS`` caps the count). The verbose pytest output is
-    parsed per case so the assertion can name any failing or erroring case.
+    ``torchvision::nms`` import check, and the cuda-tagged pytest UT run for
+    ``test_file`` then execute in a single ``target_executor`` command so the workflow
+    is identical on bare-metal, remote SSH, and container profiles. pytest writes a
+    JUnit XML report which is parsed per case so the assertion can name any failing or
+    erroring case.
     """
     url, commit = _resolve_url_and_commit(request, target_executor)
     vis_prefix = _visible_devices_prefix(request)
     env_prefix = _rocm_env_prefix(request)
-    src_dir = f"{WORK_DIR}/src"
+    run_prefix = f"{vis_prefix}{env_prefix}"
+
+    suite = os.path.basename(test_file)[len("test_") : -len(".py")]
+    work_dir = WORK_DIR_OVERRIDE or os.path.join(compiler_build_dir, "ml_frameworks", "torchvision", suite)
+    src_dir = f"{work_dir}/src"
+    junit_xml = f"{work_dir}/junit.xml"
     short = commit[:7]
 
-    run_prefix = f"{vis_prefix}{env_prefix}"
-    # The two GPU UT suites, restricted to cuda-tagged cases. ``|| true`` is
-    # intentionally NOT used: a non-zero pytest exit is a real signal, cross-checked
-    # against the parsed per-case outcomes and the crash markers below.
-    suite_cmds = " && ".join(
-        f"{run_prefix}python -m pytest {test_file} -v -k {PYTEST_SELECTOR}" for test_file in TEST_FILES
-    )
-
     # A fresh checkout each run avoids stale build state. ``build_ext --inplace``
-    # compiles the torchvision C++/HIP ops so ``torch.ops.torchvision.nms`` (and
-    # the transform ops) resolve; the nms import gates the UT run. ``vis_prefix``
-    # sets GPU visibility in container mode (bare-metal leaves ROCR to the executor).
+    # compiles the torchvision C++/HIP ops so ``torch.ops.torchvision.nms`` (and the
+    # transform ops) resolve; the nms import gates the UT run. ``set -e`` fails fast
+    # on any setup step; ``set +e`` around pytest lets us capture its exit code and
+    # always emit the JUnit report (even on failure) for parsing.
     nms_check = "import torch, torchvision; torch.ops.torchvision.nms; print('torchvision_nms_ok')"
-    cmd = (
-        "set -e; "
-        f"rm -rf {WORK_DIR}; mkdir -p {WORK_DIR}; "
-        f"git clone {url} {src_dir}; "
-        f"cd {src_dir} && git checkout {commit}; "
-        f'git log -1 --format="HEAD is now at %h" | grep -q "HEAD is now at {short}"; '
-        f"{run_prefix}python setup.py build_ext --inplace; "
-        f'{run_prefix}python -c "{nms_check}" | grep -q torchvision_nms_ok; '
-        f"cd {src_dir} && {suite_cmds}"
+    cmd = "\n".join(
+        (
+            "set -e",
+            f"rm -rf {work_dir}; mkdir -p {work_dir}",
+            f"git clone {url} {src_dir}",
+            f"cd {src_dir} && git checkout {commit}",
+            f'git log -1 --format="HEAD is now at %h" | grep -q "HEAD is now at {short}"',
+            f"{run_prefix}python setup.py build_ext --inplace",
+            f'{run_prefix}python -c "{nms_check}" | grep -q torchvision_nms_ok',
+            "set +e",
+            f"cd {src_dir} && {run_prefix}python -m pytest {test_file} -v -k {PYTEST_SELECTOR} "
+            f"--junitxml={junit_xml} -p no:cacheprovider",
+            "rc=$?",
+            f"echo {_JUNIT_START}",
+            f"cat {junit_xml} 2>/dev/null",
+            f"echo {_JUNIT_END}",
+            "exit $rc",
+        )
     )
 
     gpu_label = "all" if TORCHVISION_NUM_GPUS is None else TORCHVISION_NUM_GPUS
     logger.info(
-        "TorchVision P1 UT suite starting in %s (url=%s, commit=%s, num_gpus=%s)",
-        src_dir,
+        "TorchVision P1 UT suite starting: file=%s (url=%s, commit=%s, num_gpus=%s, work_dir=%s)",
+        test_file,
         url,
         commit,
         gpu_label,
+        work_dir,
     )
     result = target_executor.run(cmd, timeout=RUN_TIMEOUT)
 
-    # pytest writes its verbose result lines to stdout; parse both streams so a
-    # crash trace on stderr is still seen.
     combined = f"{result.stdout}\n{result.stderr}"
-    summary = parse_pytest_output(combined)
-
+    summary = parse_junit_xml(_extract_junit(combined))
     crash_markers = [m for m in _CRASH_MARKERS if m in combined]
 
     logger.info(
-        "TorchVision UT results: passed=%d skipped=%d failed=%d errored=%d unresolved=%d "
-        "(ran_total=%d, exit=%s, crash_markers=%s)",
+        "TorchVision UT results [%s]: passed=%d skipped=%d failed=%d errored=%d " "(exit=%s, crash_markers=%s)",
+        test_file,
         summary.passed,
         summary.skipped,
         summary.failed,
         summary.errored,
-        len(summary.unresolved_names),
-        summary.ran_total,
         result.exit_code,
         crash_markers or "none",
     )
 
-    # No parsed results at all means the workflow never reached the suites (clone,
-    # checkout, ops build, or the nms import check failed) -- surface that.
-    assert summary.total > 0 or summary.ran_total > 0, (
-        f"TorchVision UT suite produced no test results (exit={result.exit_code}); "
-        f"the clone, ops build, nms import check, or runner likely failed to start:\n"
+    # No parsed results at all means the workflow never produced a report (clone,
+    # checkout, ops build, nms import check, or the runner failed to start / crashed).
+    assert summary.total > 0, (
+        f"TorchVision UT suite produced no test results for {test_file} (exit={result.exit_code}); "
+        f"the clone, ops build, nms import check, or runner likely failed to start or crashed:\n"
         f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-4000:]}"
     )
 
-    # A clean run requires: no failed/errored/unresolved cases, a zero exit code,
-    # and no GPU crash signature. exit_code and crash_markers are essential
-    # backstops -- a fault that aborts pytest mid-case (memory-access fault, core
-    # dump) can leave the last case without an outcome, and must never be reported
-    # as a pass.
+    # A clean run requires no failed/errored cases, a zero exit code, and no GPU
+    # crash signature -- exit_code and crash_markers are essential backstops so a
+    # fault that aborts pytest mid-run can never be reported as a pass.
     completed_cleanly = summary.is_clean and result.exit_code == 0 and not crash_markers
     assert completed_cleanly, (
-        f"TorchVision UT suite did not complete cleanly "
+        f"TorchVision UT suite did not complete cleanly for {test_file} "
         f"(exit={result.exit_code}, crash_markers={crash_markers or 'none'}, "
         f"failed={summary.failed}, errored={summary.errored}, "
-        f"unresolved={len(summary.unresolved_names)}, "
         f"passed={summary.passed}, skipped={summary.skipped}):\n"
         f"failed: {summary.failed_names[:50]}\n"
         f"errored: {summary.errored_names[:50]}\n"
-        f"unresolved (crashed mid-test): {summary.unresolved_names[:50]}\n"
         f"stdout tail: {result.stdout[-3000:]}\nstderr tail: {result.stderr[-3000:]}"
     )
