@@ -70,10 +70,10 @@ Markers:
 
 import logging
 import os
-import re
 
 import pytest
 
+from tests.common.git_clone import clone_and_checkout_cmd, validate_path
 from tests.e2e.ml_frameworks.torchvision._result_parser import parse_junit_xml
 
 logger = logging.getLogger(__name__)
@@ -119,12 +119,6 @@ RUN_TIMEOUT = float(os.environ.get("TORCHVISION_RUN_TIMEOUT", "14400"))
 # Sentinels bracketing the JUnit XML report catted onto stdout after the run.
 _JUNIT_START = "__TV_JUNIT_START__"
 _JUNIT_END = "__TV_JUNIT_END__"
-
-# A git ref/URL/path safe to interpolate into a shell command.
-_SAFE_REF_RE = re.compile(r"^[0-9A-Za-z._/-]+$")
-_SAFE_URL_RE = re.compile(r"^https?://[0-9A-Za-z._~:/?#@!$&'()*+,;=%-]+$")
-_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
-_SAFE_PATH_RE = re.compile(r"^[0-9A-Za-z._/-]+$")
 
 # Seconds allowed for the (trivial) in-container related_commits lookup.
 _RESOLVE_TIMEOUT = 120.0
@@ -206,24 +200,6 @@ def _rocm_env_prefix(request) -> str:
     return f"env ROCM_PATH={rock_dir} PATH={rock_dir}/bin:$PATH LD_LIBRARY_PATH={ld}:$LD_LIBRARY_PATH "
 
 
-def _validate_ref(ref: str) -> str:
-    """Return *ref* if it is safe to interpolate into a shell command, else fail."""
-    if not _SAFE_REF_RE.match(ref):
-        pytest.fail(f"torchvision commit id contains unsafe characters: {ref!r}")
-    if not _COMMIT_RE.match(ref):
-        pytest.fail(f"torchvision commit id is not a valid 7-40 char hex sha: {ref!r}")
-    return ref
-
-
-def _validate_url(url: str) -> str:
-    """Return *url* if it is a safe http(s) git URL, else fail."""
-    if not url.startswith("http"):
-        pytest.fail(f"torchvision repo URL is not an http(s) URL: {url!r}")
-    if not _SAFE_URL_RE.match(url):
-        pytest.fail(f"torchvision repo URL contains unsafe characters: {url!r}")
-    return url
-
-
 def _lookup_in_container(target_executor) -> tuple[str, str]:
     """Read the torchvision repo URL + commit from the container's manifest.
 
@@ -232,8 +208,8 @@ def _lookup_in_container(target_executor) -> tuple[str, str]:
     when the manifest is absent or carries no torchvision entry.
     """
     explicit = RELATED_COMMITS_PATH
-    if explicit and not _SAFE_PATH_RE.match(explicit):
-        pytest.fail(f"TORCHVISION_RELATED_COMMITS path contains unsafe characters: {explicit!r}")
+    if explicit:
+        validate_path(explicit, subject="TORCHVISION_RELATED_COMMITS path")
 
     result = target_executor.run(_RELATED_COMMITS_LOOKUP.format(explicit=explicit), timeout=_RESOLVE_TIMEOUT)
     out = f"{result.stdout}\n{result.stderr}"
@@ -282,12 +258,12 @@ def _resolve_url_and_commit(request, target_executor) -> tuple[str, str]:
     """
     if TORCHVISION_COMMIT:
         logger.info("torchvision commit supplied by user (TORCHVISION_COMMIT): %s", TORCHVISION_COMMIT)
-        return _validate_url(TORCHVISION_URL), _validate_ref(TORCHVISION_COMMIT)
+        return TORCHVISION_URL, TORCHVISION_COMMIT
 
     if request.config.getoption("--container-mode", default=False):
         manifest_url, manifest_commit = _lookup_in_container(target_executor)
         url = TORCHVISION_URL_OVERRIDE or manifest_url or TORCHVISION_URL
-        return _validate_url(url), _validate_ref(manifest_commit)
+        return url, manifest_commit
 
     pytest.fail(
         "A torchvision commit id is required on bare-metal, where no prebuilt PyTorch / "
@@ -329,25 +305,17 @@ def test_torchvision_p1_ut_suite(request, target_executor, compiler_build_dir, t
 
     suite = os.path.basename(test_file)[len("test_") : -len(".py")]
     work_dir = WORK_DIR_OVERRIDE or os.path.join(compiler_build_dir, "ml_frameworks", "torchvision", suite)
-    short = commit[:7]
 
-    # A fresh checkout each run avoids stale build state. ``build_ext --inplace``
-    # compiles the torchvision C++/HIP ops so ``torch.ops.torchvision.nms`` (and the
-    # transform ops) resolve; the nms import gates the UT run. ``set -e`` fails fast
-    # on any setup step; ``set +e`` around pytest lets us capture its exit code and
-    # always emit the JUnit report (even on failure) for parsing. ``work`` is resolved
-    # to an absolute path up front (``compiler_build_dir`` may be relative) so paths
-    # stay valid after ``cd`` into the checkout.
+    # Fresh checkout, in-tree ops build, nms import gate, then the UT run. ``set -e``
+    # fails fast on setup; ``set +e`` around pytest keeps its exit code and always
+    # emits the JUnit report. ``work`` is absolute so paths survive the ``cd``.
     nms_check = "import torch, torchvision; torch.ops.torchvision.nms; print('torchvision_nms_ok')"
     cmd = "\n".join(
         (
             "set -e",
             f'work="$(pwd)/{work_dir}"',
             'rm -rf "$work"; mkdir -p "$work"',
-            "git clone " + url + ' "$work/src"',
-            'cd "$work/src"',
-            f"git checkout {commit}",
-            f'git log -1 --format="HEAD is now at %h" | grep -q "HEAD is now at {short}"',
+            clone_and_checkout_cmd(url, commit, '"$work/src"', subject="torchvision"),
             f"{run_prefix}python setup.py build_ext --inplace",
             f'{run_prefix}python -c "{nms_check}" | grep -q torchvision_nms_ok',
             "set +e",
