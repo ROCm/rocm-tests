@@ -329,31 +329,33 @@ def test_torchvision_p1_ut_suite(request, target_executor, compiler_build_dir, t
 
     suite = os.path.basename(test_file)[len("test_") : -len(".py")]
     work_dir = WORK_DIR_OVERRIDE or os.path.join(compiler_build_dir, "ml_frameworks", "torchvision", suite)
-    src_dir = f"{work_dir}/src"
-    junit_xml = f"{work_dir}/junit.xml"
     short = commit[:7]
 
     # A fresh checkout each run avoids stale build state. ``build_ext --inplace``
     # compiles the torchvision C++/HIP ops so ``torch.ops.torchvision.nms`` (and the
     # transform ops) resolve; the nms import gates the UT run. ``set -e`` fails fast
     # on any setup step; ``set +e`` around pytest lets us capture its exit code and
-    # always emit the JUnit report (even on failure) for parsing.
+    # always emit the JUnit report (even on failure) for parsing. ``work`` is resolved
+    # to an absolute path up front (``compiler_build_dir`` may be relative) so paths
+    # stay valid after ``cd`` into the checkout.
     nms_check = "import torch, torchvision; torch.ops.torchvision.nms; print('torchvision_nms_ok')"
     cmd = "\n".join(
         (
             "set -e",
-            f"rm -rf {work_dir}; mkdir -p {work_dir}",
-            f"git clone {url} {src_dir}",
-            f"cd {src_dir} && git checkout {commit}",
+            f'work="$(pwd)/{work_dir}"',
+            'rm -rf "$work"; mkdir -p "$work"',
+            "git clone " + url + ' "$work/src"',
+            'cd "$work/src"',
+            f"git checkout {commit}",
             f'git log -1 --format="HEAD is now at %h" | grep -q "HEAD is now at {short}"',
             f"{run_prefix}python setup.py build_ext --inplace",
             f'{run_prefix}python -c "{nms_check}" | grep -q torchvision_nms_ok',
             "set +e",
-            f"cd {src_dir} && {run_prefix}python -m pytest {test_file} -v -k {PYTEST_SELECTOR} "
-            f"--junitxml={junit_xml} -p no:cacheprovider",
+            f"{run_prefix}python -m pytest {test_file} -v -k {PYTEST_SELECTOR} "
+            f'--junitxml="$work/junit.xml" -p no:cacheprovider',
             "rc=$?",
             f"echo {_JUNIT_START}",
-            f"cat {junit_xml} 2>/dev/null",
+            'cat "$work/junit.xml" 2>/dev/null',
             f"echo {_JUNIT_END}",
             "exit $rc",
         )
