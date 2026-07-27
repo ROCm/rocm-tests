@@ -152,4 +152,15 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # ML framework unit-test (JAX, vLLM, ...). These drive a framework's
+    # own pytest/UT harness against a checkout on the execution node; the ROCm
+    # runtime is the stack layer under test, so layer.runtime. Tests may override
+    # hw.gpu -> hw.multi_gpu (e.g. JAX multi-GPU sub-suite) at the function level.
+    "tests/e2e/frameworks": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
 }
