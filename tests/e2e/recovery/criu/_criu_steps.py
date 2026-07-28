@@ -46,9 +46,15 @@ def criu_restore(executor, criu: str, workdir: str, log: str = "restore.log", ti
     return executor.run(poll, timeout=timeout + 60)
 
 
-def attach_criu_log(executor, workdir: str, log: str) -> str:
-    """Read a root-owned CRIU log and attach it to the Allure report; return its text."""
-    text = executor.run(f"sudo -n cat {workdir}/{log} 2>/dev/null").stdout or ""
+def attach_criu_log(executor, workdir: str, log: str, full: bool = False) -> str:
+    """Read a root-owned CRIU log, attach it to Allure, and return its text.
+
+    Reads the whole file when *full* (e.g. under ``pytest -s``); otherwise only the tail, so the
+    verbose CRIU log does not flood captured console output. The complete file always remains at
+    ``workdir/<log>``.
+    """
+    reader = "cat" if full else "tail -c 20000"
+    text = executor.run(f"sudo -n {reader} {workdir}/{log} 2>/dev/null").stdout or ""
     attach_text(text, name=log)
     return text
 

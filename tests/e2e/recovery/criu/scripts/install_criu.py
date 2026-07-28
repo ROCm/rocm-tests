@@ -60,6 +60,8 @@ _PREREQS = {
         "libgnutls28-dev",
         "pkg-config",
         "libdrm-dev",
+        "asciidoc",
+        "xmlto",
     ],
     "dnf": [
         "git",
@@ -77,6 +79,8 @@ _PREREQS = {
         "gnutls-devel",
         "pkgconfig",
         "libdrm-devel",
+        "asciidoc",
+        "xmlto",
     ],
     "zypper": [
         "git",
@@ -92,6 +96,8 @@ _PREREQS = {
         "libgnutls-devel",
         "pkg-config",
         "libdrm-devel",
+        "asciidoc",
+        "xmlto",
     ],
 }
 
