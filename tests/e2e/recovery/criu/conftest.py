@@ -1,42 +1,15 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""
-conftest.py -- Build and environment fixtures for tests/e2e/recovery/criu/.
+"""Build and environment fixtures for the CRIU cuda_memtest suite.
 
-Ported from: an external AMD test framework (criu_cuda_memtest_stressTest.py +
-CRIU/utils.py) that used ``execution_APIs.test`` / ``platforms.BareMetal`` /
-``get_rocm_utils`` -- none of which exist in rocm-tests. This conftest re-expresses
-the setup phase (clone + hipify + patch + hipcc build) and the CRIU environment
-precondition (``criu check`` + ``amdgpu_plugin.so`` + passwordless sudo) using
-only rocm-tests fixtures.
+``cuda_memtest_build`` (session): clone cuda_memtest at a pinned commit, hipify + patch the
+sources, and build the HIP binary with ``hipcc`` on the node the tests run on; skips when the
+ROCm toolchain is absent.
 
-Fixtures
---------
-``cuda_memtest_build`` (session)
-    Clones ComputationalRadiationPhysics/cuda_memtest, pins the upstream commit,
-    hipifies the CUDA sources with ``hipify-perl``, applies the
-    ``hipHostGetDevicePointer`` cast patch, and compiles the HIP binary with
-    ``hipcc -DENABLE_NVML=0 ... -lpthread`` on the SAME node the tests run on
-    (the remote SSH node when ``--remote-node`` is set, else localhost). Skips
-    when ``hipcc`` / ``hipify-perl`` are unavailable.
-
-``criu_runtime`` (session)
-    Ensures CRIU + amdgpu_plugin are available on the test node, mirroring the
-    source's ``check_criu_installed``: probes the amdgpu plugin and ``criu check``
-    and, when either is missing, AUTO-INSTALLS by running scripts/install_criu.py
-    on that node (the remote SSH node when ``--remote-node`` is set, else
-    localhost), then re-verifies. Returns the ``sudo -n env PATH=... criu`` prefix.
-    Auto-install requires passwordless sudo; set ``ROCM_TEST_CRIU_AUTO_INSTALL=0``
-    to opt out (skip instead) and ``ROCM_TEST_CRIU_VERSION`` to pick the CRIU tag.
-
-Privilege note
---------------
-``criu dump`` / ``criu restore`` (and the source-from-scratch install) require
-root. rocm-tests executors expose no privilege API (see framework/executors/), so
-CRIU is invoked through a ``sudo -n`` (non-interactive) prefix. ``sudo -n`` never
-blocks on a password prompt over SSH -- if passwordless sudo is not configured the
-probe fails and the suite skips cleanly (it can neither install nor run CRIU).
+``criu_runtime`` (session): ensure CRIU + amdgpu_plugin are ready (``criu check`` + plugin file),
+auto-installing via scripts/install_criu.py when missing, and return the ``sudo -n env PATH=... criu``
+prefix. CRIU needs root; passwordless ``sudo -n`` is required or the suite skips cleanly.
 """
 
 from __future__ import annotations
@@ -54,7 +27,9 @@ from framework.executors.cpu_executor import CpuExecutor
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Upstream cuda_memtest source (pinned for reproducibility, per the manual steps)
+# Upstream cuda_memtest repo (pinned commit for reproducibility)
+# cuda_memtest (NCSA) and CRIU (GPL-2.0) are fetched/built at runtime, not vendored.
+# See NOTICES.md in this directory for licenses and obligations.
 # ---------------------------------------------------------------------------
 
 _CUDA_MEMTEST_URL = os.environ.get(
@@ -68,9 +43,6 @@ _CUDA_MEMTEST_REF = os.environ.get(
 
 _SUBDIR = "recovery/cuda_memtest"
 
-# Shell-safe gfx arch pattern (interpolated into the hipcc --offload-arch flag).
-_GFX_RE = re.compile(r"^gfx[0-9a-fA-F]+$")
-
 # ---------------------------------------------------------------------------
 # CRIU invocation prefix
 # ---------------------------------------------------------------------------
@@ -80,7 +52,7 @@ _GFX_RE = re.compile(r"^gfx[0-9a-fA-F]+$")
 _CRIU_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin"
 CRIU = f'sudo -n env "PATH={_CRIU_PATH}" criu'
 
-# Absolute path (per the manual steps) where the amdgpu CRIU plugin is installed.
+# Path where the amdgpu CRIU plugin is installed.
 _AMDGPU_PLUGIN = "/usr/lib/criu/amdgpu_plugin.so"
 
 _INSTALL_HINT = (
@@ -91,7 +63,7 @@ _INSTALL_HINT = (
     "access; you can also run install_criu.py manually on the node beforehand."
 )
 
-# CRIU git tag to build when auto-installing (mirrors the source's ``criu_branch``).
+# CRIU git tag to build when auto-installing.
 _DEFAULT_CRIU_VERSION = "v4.1"
 # Shell-safe git ref (tag/branch) pattern -- validated before interpolation.
 _CRIU_VERSION_RE = re.compile(r"^[A-Za-z0-9._/\-]+$")
@@ -136,23 +108,12 @@ def _resolve_dest(cmake_executor, compiler_build_dir: str) -> str:
 
 
 @pytest.fixture(scope="session")
-def cuda_memtest_build(
-    cmake_executor, rock_dir: str, gpu_arch: str | None, compiler_build_dir: str, framework_config
-) -> CudaMemtestBuild:
+def cuda_memtest_build(cmake_executor, rock_dir: str, compiler_build_dir: str, framework_config) -> CudaMemtestBuild:
     """Clone, hipify, patch, and compile cuda_memtest once per session.
 
-    Mirrors the manual setup steps exactly:
-        git clone <repo> && git reset --hard <sha>
-        cp cuda_memtest.cu cuda_memtest.cu.tmp            # original backup
-        ls cuda_memtest.* misc.* tests.cu | xargs ... hipify-perl
-        sed -i 's/hipHostGetDevicePointer(&ptr,.../((void **)&ptr,.../'
-        hipcc -DENABLE_NVML=0 cuda_memtest.cu misc.cpp tests.cu -o cuda_memtest -lpthread
-
-    Skips (never fails) when the ROCm toolchain (``hipcc`` / ``hipify-perl``) is
-    absent, so a node without a compiler degrades gracefully.
-
-    Returns:
-        CudaMemtestBuild with the binary path and working directory.
+    Runs: git clone + reset to the pinned commit, ``hipify-perl`` on the sources, the
+    ``hipHostGetDevicePointer`` cast patch, then ``hipcc -DENABLE_NVML=0 ... -lpthread``.
+    Skips (never fails) when ``hipcc`` / ``hipify-perl`` are absent. Returns a CudaMemtestBuild.
     """
     build_exec = _build_executor(cmake_executor, rock_dir)
     hipcc = f"{rock_dir}/bin/hipcc"
@@ -163,23 +124,22 @@ def cuda_memtest_build(
         f"(command -v {hipify} >/dev/null 2>&1 || command -v hipify-perl >/dev/null 2>&1) && echo TOOLS_OK"
     )
     if "TOOLS_OK" not in (tool_check.stdout or ""):
-        pytest.skip(
-            f"hipcc / hipify-perl not found under {rock_dir}/bin or on PATH -- "
-            "cannot build cuda_memtest for the CRIU stress suite."
-        )
+        pytest.skip(f"hipcc / hipify-perl not found under {rock_dir}/bin or on PATH -- cannot build cuda_memtest.")
 
     dest = _resolve_dest(cmake_executor, compiler_build_dir)
-    offload = ""
-    if gpu_arch:
-        if not _GFX_RE.match(gpu_arch):
-            pytest.fail(f"--gpu-arch {gpu_arch!r} is not a valid gfx target for --offload-arch")
-        offload = f"--offload-arch={gpu_arch} "
 
     # hipify-perl cannot re-process an already-hipified tree, so the checkout is
     # wiped and re-cloned each session to keep the build deterministic.
+    #
+    # ROCM_PATH / HIP_PATH are exported so hipcc/hipify-perl resolve their internal
+    # toolchain (clang++, rocm_agent_enumerator) under --rock-dir. Without this
+    # hipcc falls back to a stale default (e.g. /opt/rocm-<ver>) and fails with
+    # "clang++: No such file or directory" when rock_dir is a non-default install.
     script = "\n".join(
         (
             "set -e",
+            f"export ROCM_PATH={rock_dir}",
+            f"export HIP_PATH={rock_dir}",
             f"rm -rf {dest}",
             f"mkdir -p {os.path.dirname(dest)}",
             f"git clone {_CUDA_MEMTEST_URL} {dest}",
@@ -189,11 +149,11 @@ def cuda_memtest_build(
             "ls cuda_memtest.* misc.* tests.cu | " f"xargs -t -I % sh -c '{hipify} % > hip_%; rm %; mv hip_% %;'",
             r"sed -i 's/hipHostGetDevicePointer(&ptr,mappedHostPtr,0);/"
             r"hipHostGetDevicePointer((void **)\&ptr,mappedHostPtr,0);/' cuda_memtest.cu",
-            f"{hipcc} -DENABLE_NVML=0 {offload}cuda_memtest.cu misc.cpp tests.cu -o cuda_memtest -lpthread",
+            f"{hipcc} -DENABLE_NVML=0 cuda_memtest.cu misc.cpp tests.cu -o cuda_memtest -lpthread",
             "test -x cuda_memtest && echo BUILD_OK",
         )
     )
-    logger.info("Building cuda_memtest for CRIU stress suite in %s", dest)
+    logger.info("Building cuda_memtest in %s", dest)
     result = build_exec.run(script, timeout=float(framework_config.therock.build_timeout_secs))
     if "BUILD_OK" not in (result.stdout or ""):
         pytest.fail(
@@ -204,12 +164,7 @@ def cuda_memtest_build(
 
 
 def _criu_ready(probe_exec) -> tuple[bool, str]:
-    """Return ``(ready, diagnostic)`` for CRIU + amdgpu_plugin on the node.
-
-    Ready means the amdgpu plugin file exists and ``criu check`` reports
-    "Looks good" -- the same two conditions the source's ``check_criu_installed``
-    used to decide CRIU was already installed.
-    """
+    """Return ``(ready, diagnostic)``: ready when the amdgpu plugin exists and ``criu check`` says "Looks good"."""
     if not probe_exec.run(f"test -f {_AMDGPU_PLUGIN}").ok:
         return False, f"amdgpu plugin not found at {_AMDGPU_PLUGIN}"
     check = probe_exec.run(f"{CRIU} check")
@@ -222,9 +177,8 @@ def _criu_ready(probe_exec) -> tuple[bool, str]:
 def _install_criu(probe_exec, is_remote: bool, version: str, timeout: float):
     """Run scripts/install_criu.py on the test node; return its ExecutionResult.
 
-    Local runs execute the checked-in script directly. Remote runs base64-transfer
-    the script to ``/tmp`` on the SSH node first (the repo may not be checked out
-    there), then run it -- keeping the installer a single source of truth.
+    Local runs execute the script directly; remote runs base64-transfer it to ``/tmp`` on the
+    SSH node first (the repo may not be checked out there), then run it.
     """
     local_script = os.path.join(os.path.dirname(__file__), "scripts", "install_criu.py")
     if is_remote:
@@ -244,15 +198,9 @@ def _install_criu(probe_exec, is_remote: bool, version: str, timeout: float):
 def criu_runtime(cmake_executor, framework_config) -> str:
     """Ensure CRIU + amdgpu_plugin are ready on the test node; auto-install if not.
 
-    Mirrors the source's ``check_criu_installed``: if ``criu check`` already reports
-    "Looks good" and the amdgpu plugin is present, use it as-is; otherwise install
-    CRIU from source via scripts/install_criu.py on the same node the tests run on
-    (the remote SSH node when ``--remote-node`` is set, else localhost) and
-    re-verify. Auto-install can be disabled with ``ROCM_TEST_CRIU_AUTO_INSTALL=0``
-    and the CRIU tag chosen with ``ROCM_TEST_CRIU_VERSION`` (default ``v4.1``).
-
-    Returns the ``sudo -n env PATH=... criu`` prefix used to invoke
-    ``criu dump`` / ``criu restore``.
+    Uses CRIU as-is when ``criu check`` says "Looks good" and the plugin is present; otherwise
+    installs via scripts/install_criu.py and re-verifies. Disable with ``ROCM_TEST_CRIU_AUTO_INSTALL=0``;
+    pick the tag with ``ROCM_TEST_CRIU_VERSION`` (default ``v4.1``). Returns the ``sudo -n ... criu`` prefix.
     """
     is_remote = cmake_executor is not None
     probe_exec = cmake_executor if is_remote else CpuExecutor(suppress_output_log=True)

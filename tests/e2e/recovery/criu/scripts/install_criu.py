@@ -4,14 +4,10 @@
 
 """install_criu.py -- Reusable installer for CRIU + the AMD amdgpu CRIU plugin.
 
-This is the environment-provisioning companion to the CRIU checkpoint/restore
-stress suite in ``tests/e2e/recovery/criu/``. The pytest suite treats CRIU as a
-PRECONDITION and never installs anything with sudo from inside a test; run this
-script manually (or from your fleet provisioning) on each GPU node first. The
-suite's ``criu_runtime`` fixture skips cleanly until ``criu check`` reports
-"Looks good" and ``/usr/lib/criu/amdgpu_plugin.so`` exists.
+Provisions CRIU on a GPU node so the ``criu_runtime`` fixture finds it ready. Run manually or
+from fleet provisioning; the fixture also invokes it on demand.
 
-What it does (matching the authoritative manual steps):
+What it does:
     1. Install CRIU build prerequisites (apt / dnf / zypper auto-detected).
     2. git clone CRIU at the requested tag (default v4.1).
     3. ``make -j`` && ``sudo make install``            (installs to /usr/local/sbin).
@@ -36,7 +32,7 @@ import subprocess
 import sys
 
 # ---------------------------------------------------------------------------
-# Defaults (overridable via CLI arg or environment, matching the manual steps)
+# Defaults (overridable via CLI arg or environment)
 # ---------------------------------------------------------------------------
 
 DEFAULT_VERSION = "v4.1"
@@ -47,7 +43,7 @@ CRIU_PLUGIN_DIR = os.environ.get("CRIU_PLUGIN_DIR", "/usr/lib/criu")
 # /usr/local/sbin must be on PATH for the elevated `criu` process (sudo resets env).
 CRIU_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin"
 
-# Prerequisite package sets per package manager (mirrors install_prereqs in the manual steps).
+# Prerequisite package sets per package manager.
 _PREREQS = {
     "apt-get": [
         "git",
