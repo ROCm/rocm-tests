@@ -6,27 +6,36 @@ test_rocblas.py -- rocBLAS GTest client (``rocblas-test``) coverage-tier suite.
 
 Validates:
     Runs the prebuilt ``rocblas-test`` GTest binary shipped with ROCm/TheRock,
-    selecting cases per CI gate via ``--gtest_filter``
+    selecting cases per CI gate via ``--gtest_filter``.
     The rocBLAS gtest binary self-validates: it exits non-zero on any failing case
     and prints ``[  PASSED  ] N tests.`` on success.
 
-Markers auto-injected by CATEGORY_PROFILES for tests/e2e/rocm_libs/:
-    hw.gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux
+Markers:
+    None are declared on the test functions. They are applied from
+    ``tests/e2e/rocm_libs/conftest.py``:
+      - hw.gpu / layer.math_lib / e2e.stack / os.linux and the default ci.nightly
+        come from the rocm_libs CATEGORY_PROFILE (``framework/markers/taxonomy.py``).
+      - The per-test ci.* overrides (ci.pr / ci.weekly), runtime.* durations, and
+        the ``rocblas_library_guard`` fixture are attached by the conftest
+        ``pytest_collection_modifyitems`` hook, keyed on the test function name.
 
-Explicit markers per function override the injected ci.* dimension where needed
-(ci.pr / ci.weekly) and always declare runtime.*.
-
+Coverage tiers mirror ``executeRocBlas.py``'s ``Coverage_Map`` (gtest filter form
+``include1:include2-exclude1:exclude2``):
+      - PR / nightly -> source SANITY == NIGHTLY: ``*quick*`` + ``*pre_checkin*``,
+        excluding ``*stress*`` and ``*known_bugs*``.
+      - weekly       -> source stress-mode WEEKLY: ``*stress*`` only, excluding
+        ``*known_bugs*`` (the rocBLAS_stress coverage).
+      - HMM          -> ``*HMM*`` managed-memory cases, excluding ``*known_bugs*``.
 """
 
-import pytest
-
-# Negative filter applied to every tier: known-bug cases are quarantined upstream.
+# Negative filters. known_bugs cases are quarantined upstream in every tier;
+# stress cases are excluded from the PR/nightly gates and run only in weekly.
 _EXCLUDE_KNOWN_BUGS = "*known_bugs*"
-# Stress cases are excluded from the fast/nightly gates and run only in ci.weekly.
 _EXCLUDE_STRESS = "*stress*"
 
-# gtest_filter syntax: "<positive1:positive2>-<negative1:negative2>"
-_FILTER_PR = f"*quick*-{_EXCLUDE_STRESS}:{_EXCLUDE_KNOWN_BUGS}"
+# gtest_filter syntax: "<positive1:positive2>-<negative1:negative2>".
+# PR and nightly are identical, matching source SANITY == NIGHTLY (non-stress mode).
+_FILTER_PR = f"*quick*:*pre_checkin*-{_EXCLUDE_STRESS}:{_EXCLUDE_KNOWN_BUGS}"
 _FILTER_NIGHTLY = f"*quick*:*pre_checkin*-{_EXCLUDE_STRESS}:{_EXCLUDE_KNOWN_BUGS}"
 _FILTER_WEEKLY = f"*stress*-{_EXCLUDE_KNOWN_BUGS}"
 _FILTER_HMM = f"*HMM*-{_EXCLUDE_KNOWN_BUGS}"
@@ -52,25 +61,24 @@ def _assert_gtest_passed(result, label: str) -> None:
     assert "PASSED" in result.stdout, f"{label}: GTest pass token not found in stdout:\n{result.stdout[:3000]}"
 
 
-@pytest.mark.ci.pr
-@pytest.mark.runtime.fast
-@pytest.mark.usefixtures("rocblas_library_guard")
 def test_rocblas_pr_quick(
     target_executor,
     ld_path: dict,
     rocblas_test_binary: str,
 ):
-    """PR gate: fast rocBLAS ``*quick*`` smoke subset (stress/known-bugs excluded)."""
+    """PR gate: rocBLAS ``*quick*`` + ``*pre_checkin*`` (stress/known-bugs excluded).
+
+    Matches source SANITY (identical to NIGHTLY). ci.pr / runtime.medium are applied
+    by the conftest hook.
+    """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld} {rocblas_test_binary} --gtest_filter={_FILTER_PR}",
-        timeout=600.0,  # runtime.fast cap: < 5 min
+        timeout=1800.0,  # runtime.medium cap: 30 min
     )
     _assert_gtest_passed(result, "rocblas_pr_quick")
 
 
-@pytest.mark.runtime.medium
-@pytest.mark.usefixtures("rocblas_library_guard")
 def test_rocblas_nightly(
     target_executor,
     ld_path: dict,
@@ -78,7 +86,8 @@ def test_rocblas_nightly(
 ):
     """Nightly gate: rocBLAS ``*quick*`` + ``*pre_checkin*`` (stress/known-bugs excluded).
 
-    ci.nightly is auto-injected by the rocm_libs CATEGORY_PROFILE.
+    ci.nightly comes from the rocm_libs CATEGORY_PROFILE; runtime.medium is applied
+    by the conftest hook.
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
@@ -88,9 +97,6 @@ def test_rocblas_nightly(
     _assert_gtest_passed(result, "rocblas_nightly")
 
 
-@pytest.mark.ci.weekly
-@pytest.mark.runtime.soak
-@pytest.mark.usefixtures("rocblas_library_guard")
 def test_rocblas_weekly_stress(
     target_executor,
     ld_path: dict,
@@ -98,8 +104,8 @@ def test_rocblas_weekly_stress(
 ):
     """Weekly gate: rocBLAS stress-oriented ``*stress*`` cases (known-bugs excluded).
 
-    Overrides the injected ci.nightly with ci.weekly; these cases can run for a long
-    time and are scheduled only in the weekly gate (runtime.soak).
+    Mirrors source stress-mode WEEKLY. ci.weekly / runtime.soak are applied by the
+    conftest hook; these cases can run for a long time and are scheduled only weekly.
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
@@ -109,14 +115,15 @@ def test_rocblas_weekly_stress(
     _assert_gtest_passed(result, "rocblas_weekly_stress")
 
 
-@pytest.mark.runtime.medium
-@pytest.mark.usefixtures("rocblas_library_guard")
 def test_rocblas_hmm(
     target_executor,
     ld_path: dict,
     rocblas_test_binary: str,
 ):
-    """rocBLAS HMM (managed-memory) cases: ``*HMM*`` filter (known-bugs excluded)."""
+    """rocBLAS HMM (managed-memory) cases: ``*HMM*`` filter (known-bugs excluded).
+
+    runtime.medium is applied by the conftest hook.
+    """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld} {rocblas_test_binary} --gtest_filter={_FILTER_HMM}",
