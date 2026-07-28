@@ -43,6 +43,12 @@ def _ctest_summary(out: str) -> str:
     return "\n".join(keep[-40:]) or out[-1500:]
 
 
+# Binaries the "tools" bucket (rocgdb/rocprof/rocprofv3 samples) invokes. They
+# ship only when the ROCm install carries the debugger + profiler artifact,
+# which the nightly install (COMMON_FLAGS in e2e-tests.yml) does not pull today.
+_TOOLS_BINARIES = ("rocgdb", "rocprof", "rocprofv3")
+
+
 @pytest.mark.runtime.medium
 @pytest.mark.parametrize(("category", "pattern"), _CATEGORIES, ids=[c[0] for c in _CATEGORIES])
 def test_rocm_examples(
@@ -50,8 +56,30 @@ def test_rocm_examples(
 ):
     """Run one rocm-examples CTest category and assert it is fully green."""
     ld = ld_path["LD_LIBRARY_PATH"]
+    rocm_bin = f"{rock_dir}/bin"
+
+    # Gate the env-dependent "tools" bucket: run it only when the debugger/
+    # profiler binaries are actually present in the ROCm artifact, otherwise skip
+    # with a message naming the artifact to add -- so it is a documented gate,
+    # not a permanent red. Enable it by installing the rocgdb + rocprofiler
+    # component (extend COMMON_FLAGS in .github/workflows/e2e-tests.yml).
+    if category == "tools":
+        probe = target_executor.run(
+            f"export PATH={rocm_bin}:$PATH; "
+            + "; ".join(f"command -v {b} >/dev/null 2>&1 || exit 1" for b in _TOOLS_BINARIES),
+            timeout=60,
+        )
+        if not probe.ok:
+            pytest.skip(
+                "rocm-examples 'tools' bucket needs "
+                + "/".join(_TOOLS_BINARIES)
+                + " from the ROCm debugger+profiler artifact (not in this install); add the "
+                "rocgdb/rocprofiler component to COMMON_FLAGS in .github/workflows/e2e-tests.yml "
+                "to enable it."
+            )
+
     result = target_executor.run(
-        f"env LD_LIBRARY_PATH={ld} ROCM_PATH={rock_dir} "
+        f"env PATH={rocm_bin}:$PATH LD_LIBRARY_PATH={ld} ROCM_PATH={rock_dir} "
         f"ctest --test-dir {rocm_examples_build_dir} --output-on-failure -R {pattern!r}",
         timeout=7200,
     )
