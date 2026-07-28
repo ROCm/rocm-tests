@@ -66,6 +66,7 @@ markers = [
     "layer.driver: tests the amdgpu kernel driver layer",
     "layer.runtime: tests the HIP runtime layer",
     "layer.math_lib: tests compute libraries (rocBLAS, RCCL, ...)",
+    "layer.packaging: tests ROCm package/artifact distribution (tarball/pip/deb/rpm)",
     "layer.ml_framework: tests third-party ML frameworks on ROCm",
     "layer.debug_stack: tests the ROCm debug/profiling stack",
     # Expected duration
