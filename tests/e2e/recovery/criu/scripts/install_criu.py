@@ -10,7 +10,7 @@ from fleet provisioning; the fixture also invokes it on demand.
 What it does:
     1. Install CRIU build prerequisites (apt / dnf / zypper auto-detected).
     2. git clone CRIU at the requested tag (default v4.1).
-    3. ``make -j`` && ``sudo make install``            (installs to /usr/local/sbin).
+    3. ``make -j`` && ``sudo make install-criu``       (installs binary to /usr/local/sbin; no man pages).
     4. ``sudo make amdgpu_plugin``.
     5. ``sudo mkdir -p /usr/lib/criu`` && copy ``amdgpu_plugin.so`` there.
     6. ``sudo criu check``  (should print "Looks good").
@@ -58,10 +58,9 @@ _PREREQS = {
         "libcap-dev",
         "libbsd-dev",
         "libgnutls28-dev",
+        "uuid-dev",
         "pkg-config",
         "libdrm-dev",
-        "asciidoc",
-        "xmlto",
     ],
     "dnf": [
         "git",
@@ -77,10 +76,9 @@ _PREREQS = {
         "libcap-devel",
         "libbsd-devel",
         "gnutls-devel",
+        "libuuid-devel",
         "pkgconfig",
         "libdrm-devel",
-        "asciidoc",
-        "xmlto",
     ],
     "zypper": [
         "git",
@@ -94,10 +92,9 @@ _PREREQS = {
         "libcap-devel",
         "libbsd-devel",
         "libgnutls-devel",
+        "libuuid-devel",
         "pkg-config",
         "libdrm-devel",
-        "asciidoc",
-        "xmlto",
     ],
 }
 
@@ -113,18 +110,23 @@ def _run(cmd: list[str], cwd: str | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
+# Elevated commands drop the ``sudo`` prefix when already running as root (e.g. inside a container,
+# where ``sudo`` is frequently not installed). ``os.geteuid`` is Linux-only, which is all this runs on.
+_SUDO: list[str] = [] if os.geteuid() == 0 else ["sudo"]
+
+
 def install_prereqs() -> None:
     """Install CRIU build prerequisites with the first available package manager."""
     if shutil.which("apt-get"):
         _log("Installing prerequisites with apt-get (Ubuntu/Debian)")
-        _run(["sudo", "apt-get", "update"])
-        _run(["sudo", "apt-get", "install", "-y", *_PREREQS["apt-get"]])
+        _run([*_SUDO, "apt-get", "update"])
+        _run([*_SUDO, "apt-get", "install", "-y", *_PREREQS["apt-get"]])
     elif shutil.which("dnf"):
         _log("Installing prerequisites with dnf (RHEL/CentOS/Fedora)")
-        _run(["sudo", "dnf", "install", "-y", *_PREREQS["dnf"]])
+        _run([*_SUDO, "dnf", "install", "-y", *_PREREQS["dnf"]])
     elif shutil.which("zypper"):
         _log("Installing prerequisites with zypper (SLES/openSUSE)")
-        _run(["sudo", "zypper", "--non-interactive", "install", *_PREREQS["zypper"]])
+        _run([*_SUDO, "zypper", "--non-interactive", "install", *_PREREQS["zypper"]])
     else:
         _log("WARNING: no supported package manager (apt/dnf/zypper) found.")
         _log("Install CRIU build prerequisites manually, then re-run.")
@@ -140,20 +142,23 @@ def build_and_install(version: str) -> None:
     _log("Building CRIU (make -j)")
     _run(["make", f"-j{os.cpu_count() or 1}"], cwd=CRIU_SRC_DIR)
 
-    _log("Installing CRIU (sudo make install -> /usr/local/sbin)")
-    _run(["sudo", "make", "install"], cwd=CRIU_SRC_DIR)
+    # 'install-criu' installs just the criu binary (+ plugins) to /usr/local/sbin and skips the
+    # 'install-man' target, which rebuilds man pages via the asciidoc Python module -- often absent
+    # in container venvs (e.g. /opt/venv) and not needed to run CRIU.
+    _log("Installing CRIU (sudo make install-criu -> /usr/local/sbin)")
+    _run([*_SUDO, "make", "install-criu"], cwd=CRIU_SRC_DIR)
 
     _log("Building the amdgpu CRIU plugin (sudo make amdgpu_plugin)")
-    _run(["sudo", "make", "amdgpu_plugin"], cwd=CRIU_SRC_DIR)
+    _run([*_SUDO, "make", "amdgpu_plugin"], cwd=CRIU_SRC_DIR)
 
     _log(f"Installing amdgpu_plugin.so into {CRIU_PLUGIN_DIR}")
-    _run(["sudo", "mkdir", "-p", CRIU_PLUGIN_DIR])
+    _run([*_SUDO, "mkdir", "-p", CRIU_PLUGIN_DIR])
 
     plugin_so = _find_plugin_so()
     if not plugin_so:
         _log("ERROR: amdgpu_plugin.so was not produced by the build.")
         sys.exit(1)
-    _run(["sudo", "cp", plugin_so, os.path.join(CRIU_PLUGIN_DIR, "amdgpu_plugin.so")])
+    _run([*_SUDO, "cp", plugin_so, os.path.join(CRIU_PLUGIN_DIR, "amdgpu_plugin.so")])
 
 
 def _find_plugin_so() -> str | None:
@@ -169,7 +174,7 @@ def verify() -> None:
     """Run ``sudo criu check`` (with /usr/local/sbin on PATH); exit 1 on failure."""
     _log("Verifying installation with 'sudo criu check'")
     result = subprocess.run(
-        ["sudo", "env", f"PATH={CRIU_PATH}", "criu", "check"],
+        [*_SUDO, "env", f"PATH={CRIU_PATH}", "criu", "check"],
         check=False,
     )
     if result.returncode == 0:

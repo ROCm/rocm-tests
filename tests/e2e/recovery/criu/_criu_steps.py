@@ -21,6 +21,9 @@ def criu_dump(executor, criu: str, workdir: str, pid: str, log: str = "dump.log"
     """Checkpoint *pid*; the result carries an ``OK`` and a ``PID_GONE``/``PID_ALIVE`` sentinel."""
     cmd = (
         f"cd {workdir} && {criu} dump -t {pid} -j -vvv -o {log} --link-remap --file-lock && echo OK; "
+        # criu SIGKILLs the tree after dumping; wait briefly for init to reap it (teardown of a
+        # heavyweight GPU process is not instant) before reporting, so it is not mis-flagged alive.
+        f"for _ in $(seq 1 20); do ps -p {pid} >/dev/null 2>&1 || break; sleep 0.5; done; "
         f"if ps -p {pid} >/dev/null 2>&1; then echo PID_ALIVE; else echo PID_GONE; fi"
     )
     return executor.run(cmd, timeout=timeout)
