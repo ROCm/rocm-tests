@@ -13,10 +13,10 @@ from __future__ import annotations
 import logging
 
 import pytest
+from tests.e2e.recovery.criu.test_criu_cuda_memtest import _checkpoint, _restore
 
 from framework.reporting.allure_reporter import step
 from tests.e2e.recovery.criu import _criu_steps as criu
-from tests.e2e.recovery.criu.test_criu_cuda_memtest import _checkpoint, _restore
 
 logger = logging.getLogger(__name__)
 
