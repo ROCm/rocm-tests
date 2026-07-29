@@ -64,7 +64,9 @@ def _unzip_checkpoint(executor, tarball: str, dest: str) -> None:
         )
         out = result.stdout or ""
         assert "UNZIP_OK" in out, f"tar -xvf into {dest} failed:\n{out[-1500:]}\n{result.stderr[-1500:]}"
-        count = next((int(m.group(1)) for line in out.splitlines() if (m := re.match(r"IMG_COUNT=(\d+)", line.strip()))), 0)
+        count = next(
+            (int(m.group(1)) for line in out.splitlines() if (m := re.match(r"IMG_COUNT=(\d+)", line.strip()))), 0
+        )
         assert count > 0, f"No CRIU .img files found in the untarred destination {dest}:\n{out[-1500:]}"
         report_metric("CRIU_RESTORE_IMG_COUNT", float(count))
         logger.info("Checkpoint image extracted to %s (%d .img files)", dest, count)
