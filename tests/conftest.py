@@ -24,6 +24,7 @@ import os
 import pytest
 
 from tests.common.factories import fake_execution_result, fake_gpu_info
+from tests.common.ml_provisioning.fixtures import ensure_pytorch_env, torch_python as _torch_python
 
 _VALID_WORKLOAD_SCALES = ("smoke", "full")
 
@@ -83,6 +84,63 @@ def requested_gpu_count(request: pytest.FixtureRequest, target_executor) -> int:
             return int(getattr(target_executor, "visible_gpu_count", 1))
         return int(raw_count)
     return 2
+
+
+# ---------------------------------------------------------------------------
+# PyTorch provisioning fixtures — available to every test.
+# Backed by tests/common/ml_provisioning/; provisions per execution node via
+# --pre-install pytorch=... or lazily here (auto channel: multiarch -> family).
+# Never set ROCR_VISIBLE_DEVICES or hardcode an index in tests.
+#
+# Scope rationale: pytorch_env and torch_python are function-scoped even though
+# provisioning is expensive. The session-level sanity cache
+# (config._framework_sanity_ok, written by ensure_pytorch_env only after a
+# successful install + sanity check) makes every call after the first a near-
+# zero-cost dict lookup. Function scope gives transient-failure retry semantics:
+# if a lazy install fails on test N, test N+1 re-attempts rather than being
+# permanently blocked. With --pre-install (Path B), the pre-install result is
+# promoted into the sanity cache on first fixture access, so all subsequent
+# tests share it via Phase 1 — no re-install occurs.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def pytorch_env(request, target_executor, framework_config):
+    """Return a pre-installed or lazily provisioned PyTorch environment.
+
+    Function-scoped with a session-level sanity cache (``config._framework_sanity_ok``).
+    pytest invokes this fixture per test, but after the first successful provision
+    the cache hit in Phase 1 makes subsequent calls O(1) with no subprocess.
+
+    Two paths:
+
+    * **No** ``--pre-install``: lazy install from ``rocm-test.toml`` channels on
+      first request; result cached only after sanity passes; retried on failure.
+    * **With** ``--pre-install pytorch=...``: pre-install result promoted to the
+      sanity cache on first fixture access; all tests share it via Phase 1.
+    """
+    return ensure_pytorch_env(request, target_executor, framework_config)
+
+
+@pytest.fixture
+def torch_python(pytorch_env) -> str:
+    """Return the Python executable for the provisioned PyTorch environment."""
+    return _torch_python(pytorch_env)
+
+
+@pytest.fixture
+def require_torch(pytorch_env) -> None:
+    """Fail the test when PyTorch (ROCm) installation did not succeed on the execution node."""
+    if not pytorch_env.ok:
+        pytest.fail(pytorch_env.skip_reason())
+
+
+@pytest.fixture
+def require_torch_tunableop(require_torch, pytorch_env, target_executor) -> None:
+    """Skip when the PyTorch build lacks TunableOp support (implies ``require_torch``)."""
+    python = _torch_python(pytorch_env)
+    if not target_executor.run(f'{python} -c "import torch.cuda.tunable"').ok:
+        pytest.skip("PYTORCH_TUNABLEOP not supported in this PyTorch build")
 
 
 @pytest.fixture(scope="session")
