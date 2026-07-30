@@ -250,6 +250,7 @@ jobs:
             tests/e2e/rccl/ \
             tests/e2e/rocm_libs/ \
             tests/e2e/rocprim/ \
+            tests/e2e/rocm_examples/ \
             --rock-dir=therock_build \
             --gpu-arch=${GPU_ARCH} \
             --html=nightly_report.html --self-contained-html \
