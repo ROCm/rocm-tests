@@ -209,6 +209,7 @@ jobs:
               --flatten \
               '_dev' \
               'hiptensor_lib' \
+              'rocalution_lib' \
               'hipify_run'
           fi
 
