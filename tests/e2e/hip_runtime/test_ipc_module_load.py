@@ -33,13 +33,13 @@ The authoritative pass token is ``RESULT PASS`` in the binary's stderr.
 Exit code 77 from the binary maps to ``pytest.skip()`` (insufficient GPUs).
 
 GPU architecture gate:
-    Runs on gfx90a/gfx942/gfx950. The arch guard skips on other families 
+    Runs on gfx90a/gfx942/gfx950. The arch guard skips on other families
     so regressions on unrelated GPUs do not generate false alerts.
 """
 
 import pytest
 
-# Tests are targeted for below GPU families 
+# Tests are targeted for below GPU families
 _SUPPORTED_ARCHS = {"gfx90a", "gfx942", "gfx950"}
 
 # Watchdog timeouts from the original run.sh wrappers, plus a 60-second
