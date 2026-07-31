@@ -4,9 +4,16 @@
 
 The full CTest suite is bucketed into a few stable categories (by test-name
 prefix) and each runs as its own parametrized test, so a failure isolates to an
-area (e.g. env-dependent tools) instead of reddening the whole suite. No
-exclusions -- environment-dependent samples are left to fail visibly.
+area (e.g. env-dependent tools) instead of reddening the whole suite.
+
+A sample whose binary was never built -- because it needs a ROCm component the
+install does not ship (e.g. Applications/monte_carlo_pi needs hipCUB, absent
+from the nightly split-artifact install) -- shows up in CTest as "Not Run". Such
+a category is reported as SKIPPED ("binary not available") rather than FAILED, so
+missing infrastructure is distinguished from a sample that ran and failed.
 """
+
+import re
 
 import pytest
 
@@ -41,6 +48,30 @@ def _ctest_summary(out: str) -> str:
         )
     ]
     return "\n".join(keep[-40:]) or out[-1500:]
+
+
+# CTest lists each failure as "<num> - <name> (<status>)". A status of "Not Run"
+# means CTest could not find the sample's executable -- i.e. the binary was not
+# built because a required ROCm component is absent -- as opposed to a sample that
+# ran and failed ("Failed", "Timeout", "Subprocess aborted", "SEGFAULT", ...).
+_FAILED_LINE = re.compile(r"^\s*\d+\s*-\s*(?P<name>\S+)\s*\((?P<status>[^)]+)\)\s*$")
+_NOT_AVAILABLE_STATUS = "not run"
+
+
+def _partition_ctest_failures(out: str) -> tuple[list[str], list[str]]:
+    """Split CTest failure lines into (not-available, real-failure) name lists."""
+    not_available: list[str] = []
+    real_failures: list[str] = []
+    for line in out.splitlines():
+        m = _FAILED_LINE.match(line)
+        if not m:
+            continue
+        entry = f"{m.group('name')} ({m.group('status').strip()})"
+        if m.group("status").strip().lower() == _NOT_AVAILABLE_STATUS:
+            not_available.append(entry)
+        else:
+            real_failures.append(entry)
+    return not_available, real_failures
 
 
 # Binaries the "tools" bucket (rocgdb/rocprof/rocprofv3 samples) invokes. They
@@ -83,10 +114,28 @@ def test_rocm_examples(
         f"ctest --test-dir {rocm_examples_build_dir} --output-on-failure -R {pattern!r}",
         timeout=7200,
     )
-    if "No tests were found" in (result.stdout + result.stderr):
+    combined = result.stdout + result.stderr
+    if "No tests were found" in combined:
         pytest.skip(f"rocm-examples category {category!r}: no matching tests in this build")
-    passed = result.ok and "100% tests passed" in result.stdout
-    assert passed, (
+
+    if result.ok and "100% tests passed" in result.stdout:
+        return
+
+    # Not fully green. Separate samples whose binary was never built (component
+    # not shipped -> "Not Run") from samples that ran and failed. Real failures
+    # still fail the test; a category red *only* because of missing binaries is a
+    # skip ("binary not available"), so absent infrastructure never masquerades as
+    # a product defect and never blocks the suite.
+    not_available, real_failures = _partition_ctest_failures(result.stdout)
+    if not real_failures and not_available:
+        pytest.skip(
+            f"rocm-examples category {category!r}: "
+            f"{len(not_available)} sample binary(ies) not available in this install "
+            f"(required ROCm component not shipped): {', '.join(not_available)}"
+        )
+    fully_green = result.ok and "100% tests passed" in result.stdout
+    assert fully_green, (
         f"rocm-examples category {category!r} CTest not fully green (exit={result.exit_code}):\n"
-        f"{_ctest_summary(result.stdout)}"
+        + (f"binaries not available (skipped-if-alone): {', '.join(not_available)}\n" if not_available else "")
+        + _ctest_summary(result.stdout)
     )
