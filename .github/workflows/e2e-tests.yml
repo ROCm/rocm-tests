@@ -208,6 +208,8 @@ jobs:
               --output-dir ../therock_build \
               --flatten \
               '_dev' \
+              'hipfile_lib' \
+              'hipfile_run' \
               'hiptensor_lib' \
               'rocalution_lib' \
               'hipify_run'
