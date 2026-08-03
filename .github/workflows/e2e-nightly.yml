@@ -30,6 +30,10 @@ on:
   schedule:
     - cron: '0 11 * * *'   # 11:00 AM UTC daily
 
+  push:
+    branches:
+      - users/mparamas/runners-check
+
   workflow_call:
     inputs:
       source_repo:
@@ -75,6 +79,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   setup_matrix:
@@ -121,23 +126,113 @@ jobs:
 
       - name: Build test matrix from Test Configuration
         id: testplan
+        env:
+          GITHUB_TOKEN: ${{ secrets.RUNNER_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         shell: python
         run: |
-          import os, configparser, json
+          import configparser
+          import json
+          import os
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
+
+          def _append_output(**kwargs):
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  for key, value in kwargs.items():
+                      f.write(f'{key}={json.dumps(value)}\n')
+
+          def _load_runners():
+              """Return self-hosted runners visible to this repository."""
+              token = os.environ.get('GITHUB_TOKEN', '')
+              repo = os.environ['GITHUB_REPOSITORY']
+              if not token:
+                  raise RuntimeError('GITHUB_TOKEN/RUNNER_READ_TOKEN is empty')
+
+              runners = []
+              url = f'https://api.github.com/repos/{repo}/actions/runners?per_page=100'
+              while url:
+                  req = Request(url, headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                  })
+                  with urlopen(req) as resp:
+                      data = json.loads(resp.read())
+                      runners.extend(data.get('runners', []))
+                      link = resp.headers.get('Link', '')
+                  url = ''
+                  for part in link.split(','):
+                      if 'rel="next"' in part:
+                          url = part.split(';', 1)[0].strip()[1:-1]
+                          break
+              return runners
+
+          def _runner_state(runners, required_label):
+              matching = []
+              online_idle = []
+              online_busy = []
+              for runner in runners:
+                  labels = {label.get('name', '') for label in runner.get('labels', [])}
+                  if required_label not in labels:
+                      continue
+                  matching.append(runner)
+                  if runner.get('status') == 'online':
+                      if runner.get('busy'):
+                          online_busy.append(runner)
+                      else:
+                          online_idle.append(runner)
+              return {
+                  'matching': len(matching),
+                  'online_idle': len(online_idle),
+                  'online_busy': len(online_busy),
+              }
+
           conf = configparser.ConfigParser()
           conf.read('testplan.ini')
+
+          runner_check_error = ''
+          try:
+              runners = _load_runners()
+              print(f'runner inventory: {len(runners)} runner(s) visible')
+          except (HTTPError, URLError, RuntimeError, TimeoutError) as exc:
+              runners = []
+              runner_check_error = f'{type(exc).__name__}: {exc}'
+              print(f'WARNING: runner inventory check failed: {runner_check_error}')
+
           all_targets = []
           skipped     = []
           for section in conf.sections():
               entry = {'name': section, **dict(conf.items(section))}
-              all_targets.append(entry)
               if entry.get('target_available', 'true').strip().lower() == 'false':
-                  skipped.append(section)
+                  entry['target_available'] = 'false'
+                  entry['skip_reason'] = 'Target disabled in testplan.ini'
+                  skipped.append({'name': section, 'reason': entry['skip_reason']})
+              elif runner_check_error:
+                  entry['target_available'] = 'false'
+                  entry['skip_reason'] = f'Runner availability check failed: {runner_check_error}'
+                  skipped.append({'name': section, 'reason': entry['skip_reason']})
+              else:
+                  runs_on = entry.get('runs_on', '').strip()
+                  state = _runner_state(runners, runs_on)
+                  if state['online_idle'] == 0:
+                      entry['target_available'] = 'false'
+                      if state['matching'] == 0:
+                          reason = f'No self-hosted runner has label {runs_on!r}'
+                      elif state['online_busy'] > 0:
+                          reason = f'Runner label {runs_on!r} has no idle online runner ({state["online_busy"]} busy)'
+                      else:
+                          reason = f'Runner label {runs_on!r} has no online runner'
+                      entry['skip_reason'] = reason
+                      skipped.append({'name': section, 'reason': reason})
+                  else:
+                      entry['target_available'] = 'true'
+                      entry['skip_reason'] = ''
+              all_targets.append(entry)
+
           print(f'all targets: {repr(all_targets)}')
           print(f'skipped:     {repr(skipped)}')
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f'targets={json.dumps(all_targets)}\n')
-              f.write(f'skipped_targets={json.dumps(skipped)}\n')
+          _append_output(targets=all_targets, skipped_targets=skipped)
 
   e2e_nightly:
     name: "${{ matrix.target.name }}"
@@ -188,7 +283,7 @@ jobs:
                   print(f"Skipping {counts_file}: {e}")
 
           raw = os.environ.get("SKIPPED_TARGETS", "").strip()
-          skipped_names = json.loads(raw) if raw else []
+          skipped_targets = json.loads(raw) if raw else []
 
           summary_path = os.environ["GITHUB_STEP_SUMMARY"]
           has_skip = any(r.get("skipped", 0) > 0 for r in rows)
@@ -225,11 +320,17 @@ jobs:
               total_fail += r["failed"]
               total_err  += r["error"]
 
-          for name in skipped_names:
-              if has_skip:
-                  lines.append(f"| {name} | — | — | — | — | — | ⏭ Skipped — platform not available |")
+          for item in skipped_targets:
+              if isinstance(item, dict):
+                  name = item.get("name", "unknown")
+                  reason = item.get("reason", "platform not available")
               else:
-                  lines.append(f"| {name} | — | — | — | — | ⏭ Skipped — platform not available |")
+                  name = str(item)
+                  reason = "platform not available"
+              if has_skip:
+                  lines.append(f"| {name} | — | — | — | — | — | ⏭ Skipped — {reason} |")
+              else:
+                  lines.append(f"| {name} | — | — | — | — | ⏭ Skipped — {reason} |")
 
           if rows:
               if has_skip:
