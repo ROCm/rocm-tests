@@ -179,7 +179,7 @@ jobs:
           cd TheRock
           python3 -m pip install --root-user-action=ignore -r requirements-test.txt
 
-          COMMON_FLAGS="--artifact-group ${ARTIFACT_GROUP} --amdgpu-targets ${GPU_ARCH} --tests --blas --fft --hipdnn --miopen --miopenprovider --rocdecode --rocjpeg --rocprofiler-compute --rocprofiler-systems --prim --rand --rocwmma --hipblasltprovider --libhipcxx --rccl --output-dir ../therock_build"
+          COMMON_FLAGS="--artifact-group ${ARTIFACT_GROUP} --amdgpu-targets ${GPU_ARCH} --tests --blas --fft --hipdnn --miopen --miopenprovider --rocdecode --rocjpeg --rocprofiler-compute --rocprofiler-sdk --rocprofiler-systems --prim --rand --rocwmma --hipblasltprovider --libhipcxx --rccl --output-dir ../therock_build"
 
           if [ "${SOURCE_REPO}" = "ROCm/rockrel" ]; then
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \

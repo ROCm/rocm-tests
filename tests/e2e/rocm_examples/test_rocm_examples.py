@@ -26,10 +26,13 @@ _CATEGORIES = [
     (
         "libraries",
         r"^(rocblas|rocsparse|rocsolver|rocfft|rocrand|rocprim|rocthrust|rocwmma|rocalution|"
-        r"rocjpeg|rocdecode|rocprofiler|hipblas|hipblaslt|hipfft|hipsolver|hipsparse|"
+        r"rocjpeg|rocdecode|hipblas|hipblaslt|hipfft|hipsolver|hipsparse|"
         r"hipsparselt|hiprand|hipcub|hipdnn|hiptensor|rccl|composable)([_-]|$)",
     ),
     ("tutorials", r"^(reduction|programming)([_-]|$)"),
+    # rocprofiler-sdk API samples need the profiler runtime data (metrics
+    # config.yaml + aqlprofile) from the --rocprofiler-sdk artifact; gated below.
+    ("profiler_sdk", r"^rocprofiler([_-]|$)"),
     ("tools", r"^(rocgdb|rocprofv3|rocprof)-"),
 ]
 
@@ -79,6 +82,12 @@ def _partition_ctest_failures(out: str) -> tuple[list[str], list[str]]:
 # which the nightly install (COMMON_FLAGS in e2e-tests.yml) does not pull today.
 _TOOLS_BINARIES = ("rocgdb", "rocprof", "rocprofv3")
 
+# The rocprofiler-sdk API samples abort at runtime unless the profiler runtime
+# data is installed -- specifically the metrics config that ships with the
+# --rocprofiler-sdk artifact (rocprofiler-sdk + aqlprofile + rocprofiler-sdk_run).
+# Probe for this file to gate the "profiler_sdk" bucket.
+_PROFILER_SDK_RUNTIME_FILE = "share/rocprofiler-sdk/config.yaml"
+
 
 @pytest.mark.runtime.medium
 @pytest.mark.parametrize(("category", "pattern"), _CATEGORIES, ids=[c[0] for c in _CATEGORIES])
@@ -106,6 +115,20 @@ def test_rocm_examples(
                 + "/".join(_TOOLS_BINARIES)
                 + " from the ROCm debugger+profiler artifact (not in this install); add the "
                 "rocgdb/rocprofiler component to COMMON_FLAGS in .github/workflows/e2e-tests.yml "
+                "to enable it."
+            )
+
+    # Gate the profiler_sdk bucket: the rocprofiler-sdk samples build fine but
+    # abort at runtime ("Metric file 'config.yaml' not found") unless the
+    # profiler runtime data is installed. Skip (documented gate) when it is
+    # absent; run and enforce when present.
+    if category == "profiler_sdk":
+        probe = target_executor.run(f"test -f {rock_dir}/{_PROFILER_SDK_RUNTIME_FILE}", timeout=60)
+        if not probe.ok:
+            pytest.skip(
+                f"rocm-examples 'profiler_sdk' bucket needs the rocprofiler-sdk runtime data "
+                f"({_PROFILER_SDK_RUNTIME_FILE}) from the --rocprofiler-sdk artifact (not in this "
+                "install); add --rocprofiler-sdk to COMMON_FLAGS in .github/workflows/e2e-tests.yml "
                 "to enable it."
             )
 
