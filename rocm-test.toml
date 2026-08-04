@@ -64,6 +64,26 @@ allure_results_dir = "output/artifacts/allure-results/"
 # Number of historical runs to keep for trend reports
 history_depth = 5
 
+[frameworks]
+# PyTorch provisioning defaults. These move install-channel defaults out of
+# test/provisioner code. Override per run via env (ROCM_TEST_FRAMEWORKS_*) or
+# --pre-install pytorch=...
+#
+# mode=auto walks the production wheel path: multiarch -> family. The first
+# wheel channel that validates wins. An explicit --pre-install
+# pytorch=mode=multiarch,... (or index=...) bypasses the order.
+default_mode    = "auto"
+
+# multiarch: single index, GPU selected via pip extras torch[device-gfxNNN].
+multiarch_index   = "https://rocm.nightlies.amd.com/whl-multi-arch/"
+# family: per-arch v2 tree, e.g. <base>/gfx94X-dcgpu/.
+family_index_base = "https://rocm.nightlies.amd.com/v2"
+# staging: pre-promotion multi-arch index (opt-in).
+staging_index     = "https://rocm.nightlies.amd.com/whl-staging-multi-arch/"
+
+# Ancillary deps (never torch itself) installed after the framework wheels.
+requirements_pytorch = "tests/common/ml_provisioning/requirements-pytorch.txt"
+
 [therock]
 # Path to a TheRock/ROCm installation (provides bin/hipcc, lib/libamdhip64, etc.).
 # Override priority (highest → lowest):
@@ -73,4 +93,14 @@ history_depth = 5
 #   This file: rock_dir = "/path/to/therock_build"
 # Leave empty here; set at runtime via CLI or env.
 rock_dir  = ""
+
+# Optional ROCm version hint in nightly date format (e.g. "7.14.0a20260624").
+# Set this when the build tree's hipconfig reports only a build-number version
+# (e.g. "7.14.60850") that cannot be date-matched to PyPI wheel suffixes.
+# The provisioner uses this to select the correct torch+rocm wheel and skip
+# the build-number → date-format ambiguity entirely.
+# Leave empty to rely on auto-detection from rock_dir files and hipconfig.
+# Also settable via: ROCM_TEST_THEROCK_ROCM_VERSION=7.14.0a20260624
+rocm_version = ""
+
 build_dir = "output/test-binaries/"

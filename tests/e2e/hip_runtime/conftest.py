@@ -18,6 +18,7 @@ Build output layout::
     output/test-binaries/hip_runtime/host_build/hip_invalid_codeobject_load_test
     output/test-binaries/hip_runtime/stream_build/multi_stream_serialization
     output/test-binaries/hip_runtime/split_barrier_stress/split_barrier_stress
+    output/test-binaries/hip_runtime/mps/rock_mps_test
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ import pytest
 logger = logging.getLogger(__name__)
 _SRC_DIR = "tests/e2e/hip_runtime/src"
 _SPLIT_BARRIER_SRC_DIR = "tests/e2e/hip_runtime/src/split_barrier_stress"
+_ROCK_MPS_SRC_DIR = "tests/e2e/hip_runtime/src/mps"
 
 # HIP samples upstream suite (ROCm/hip-tests "samples/" subtree).
 # Samples are the same sources published in ROCm/hip-tests.
@@ -75,20 +77,47 @@ def _split_barrier_stress_build_dir(gpu_arch: str | None, cmake_build_dir, requi
 
     The sample ships its own self-contained ``CMakeLists.txt`` and is built in
     its own subdirectory independent of the shared ``hip_runtime`` CMake project.
-    Inject the TheRock HIP compiler to avoid CMake falling back to system LLVM
-    runtime libraries in CI containers.
+    Require the TheRock/ROCm HIP compiler because this test exercises HIP
+    cooperative groups and must not silently fall back to a system compiler.
     """
     require_gpu_arch_for("hip_runtime/split_barrier_stress")
     return cmake_build_dir(
         src=_SPLIT_BARRIER_SRC_DIR,
         subdir="hip_runtime/split_barrier_stress",
         gpu_arch=gpu_arch,
-        compiler_mode="optional_cxx_hip",
+        compiler_mode="cxx_hip",
         label="hip_runtime/split_barrier_stress",
         sync_dirs=[_SPLIT_BARRIER_SRC_DIR],
         artifact="split_barrier_stress",
         target="split_barrier_stress",
     )
+
+
+@pytest.fixture(scope="session")
+def _rock_mps_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build the vendored ``rock_mps_test`` multi-process integration binary.
+
+    Self-contained CMake project under ``src/mps``; all sources are compiled
+    as HIP (cross-TU kernel launches), so ``--gpu-arch`` is required. Optional
+    LIBRARY/COMPILER/MONITOR roles link hipBLASLt/hipRTC/amd_smi when present.
+    """
+    require_gpu_arch_for("hip_runtime/mps")
+    return cmake_build_dir(
+        src=_ROCK_MPS_SRC_DIR,
+        subdir="hip_runtime/mps",
+        gpu_arch=gpu_arch,
+        compiler_mode="optional_cxx_hip",
+        label="hip_runtime/mps",
+        sync_dirs=[_ROCK_MPS_SRC_DIR],
+        artifact="rock_mps_test",
+        target="rock_mps_test",
+    )
+
+
+@pytest.fixture(scope="session")
+def rock_mps_binary(_rock_mps_build_dir: str, built_binary) -> str:
+    """Compiled ``rock_mps_test`` binary path."""
+    return built_binary(os.path.join(_rock_mps_build_dir, "rock_mps_test"), "rock_mps_test")
 
 
 @pytest.fixture(scope="session")
