@@ -30,7 +30,9 @@ Usage (via ``container_executor`` fixture — not instantiated directly in tests
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import itertools
 import logging
+import os
 import shlex
 
 from framework.common.helpers import ExecutionResult
@@ -39,6 +41,10 @@ from framework.executors.cpu_executor import CpuExecutor
 from framework.os_adapter import os_adapter_factory
 
 logger = logging.getLogger(__name__)
+
+# Monotonic suffix for unique persistent-container names (Date/random are unavailable
+# and would break reproducibility anyway; PID + counter is unique per session).
+_NAME_COUNTER = itertools.count(1)
 
 
 @dataclass
@@ -95,22 +101,29 @@ class ContainerExecutor(AbstractExecutor):
     *gpu_index* so ROCm sees the correct GPU even when multiple cards are
     present in the host.
 
+    Two usage modes:
+        * One-shot (default): each ``run()`` is an independent ``docker run --rm``.
+        * Persistent: call ``start()`` once (``docker run -d ... sleep infinity``);
+          every subsequent ``run()`` is a ``docker exec`` into that same container,
+          so state (background processes, checkpoints) survives across calls. Call
+          ``stop()`` to remove it. Used by ``target_executor`` for ``@pytest.mark.container``.
+
     Args:
         image:           Full container image reference (e.g. ``"rocm/pytorch:6.3"``).
         gpu_index:       AMD GPU ordinal injected as ``ROCR_VISIBLE_DEVICES`` inside
-                         the container (default 0).
+                         the container (default 0). Ignored when *gpu_indices* is set.
+        gpu_indices:     Explicit list of GPU ordinals to expose as
+                         ``ROCR_VISIBLE_DEVICES`` (multi-GPU); overrides *gpu_index*.
         runtime:         ``"docker"`` or ``"podman"`` (default ``"docker"``).
         use_amd_devices: Pass AMD KFD/DRI devices through to the container
                          (default ``True``).
-        ipc_host:        Run with ``--ipc=host`` so the container shares the host's
-                         ``/dev/shm`` (default ``True``). Required for NCCL/RCCL
-                         multi-rank tests: Docker's 64 MB default ``/dev/shm`` (and
-                         even a fixed ``--shm-size``) can be exhausted by the
-                         per-rank shared-memory segments, failing collectives with
-                         "No space left on device". Set ``False`` to keep the
-                         container's private IPC namespace.
+        ipc:             Value for ``--ipc`` (e.g. ``"host"``); omitted when empty.
+        privileged:      Add ``--privileged`` (required by CRIU checkpoint/restore).
         extra_run_flags: Additional flags forwarded verbatim to every
                          ``docker run`` invocation (e.g. ``"--network host"``).
+        host_executor:   Executor that runs the docker CLI itself. Defaults to a
+                         local ``CpuExecutor``; pass an ``SshExecutor`` to run the
+                         container on a remote node.
     """
 
     _KFD_DEVICE = "/dev/kfd"
@@ -122,18 +135,27 @@ class ContainerExecutor(AbstractExecutor):
         gpu_index: int = 0,
         runtime: str = "docker",
         use_amd_devices: bool = True,
-        ipc_host: bool = True,
         extra_run_flags: str = "",
+        *,
+        gpu_indices: list[int] | None = None,
+        ipc: str = "",
+        privileged: bool = False,
+        host_executor: AbstractExecutor | None = None,
     ) -> None:
         self.image = image
         self.gpu_index = gpu_index
+        self.gpu_indices = gpu_indices
         self.runtime = runtime
         self.use_amd_devices = use_amd_devices
-        self.ipc_host = ipc_host
+        self.ipc = ipc
+        self.privileged = privileged
         self.extra_run_flags = extra_run_flags
-        # Delegate all docker CLI invocations to CpuExecutor so they run as
-        # real subprocesses without any GPU environment modifications.
-        self._host = CpuExecutor()
+        # Delegate docker CLI invocations to the host executor (local CpuExecutor by
+        # default, or an SshExecutor for a remote node) so the container runs where
+        # the GPUs were acquired. No GPU env is injected into the docker client.
+        self._host = host_executor or CpuExecutor()
+        # Name of the running persistent container, or None in one-shot mode.
+        self._container: str | None = None
 
     # ------------------------------------------------------------------
     # Runtime environment probe
@@ -206,7 +228,7 @@ class ContainerExecutor(AbstractExecutor):
     # AbstractExecutor contract — one-shot container execution
     # ------------------------------------------------------------------
 
-    def run(self, command: str, timeout: float | None = None) -> ExecutionResult:
+    def run(self, command: str, timeout: float | None = None, *, stream: bool = False) -> ExecutionResult:
         """Run *command* in a one-shot container with AMD GPU device passthrough.
 
         Equivalent to::
@@ -214,7 +236,6 @@ class ContainerExecutor(AbstractExecutor):
             docker run --rm \
                 --device=/dev/kfd --device=/dev/dri \
                 --group-add=video \
-                --ipc=host \
                 --env=ROCR_VISIBLE_DEVICES=<gpu_index> \
                 <image> sh -c <command>
 
@@ -227,14 +248,73 @@ class ContainerExecutor(AbstractExecutor):
             command: Shell command string to execute inside the container.
             timeout: Maximum seconds before the container is force-killed
                      (default 300 s).
+            stream:  When True, request live stdout streaming from the host
+                     executor for this container command.
 
         Returns:
             ExecutionResult with exit_code, stdout, stderr, and wall-clock
             duration, forwarded from the host subprocess.
         """
+        # Persistent mode: exec into the container started by start() so state
+        # (background PIDs, checkpoints) survives across calls.
+        if self._container is not None:
+            return self.exec_in(self._container, command, timeout=timeout)
         cli = self._assemble_run_command(command)
         logger.debug("ContainerExecutor.run: %s", cli)
-        return self._host.run(cli, timeout=timeout or 300.0)
+        return self._host.run(cli, timeout=timeout or 300.0, stream=stream)
+
+    # ------------------------------------------------------------------
+    # Persistent container lifecycle (start once, exec many, stop)
+    # ------------------------------------------------------------------
+
+    def start(self, name: str | None = None, timeout: float = 120.0, pull_timeout: float = 1800.0) -> str:
+        """Start a detached long-lived container and return its name.
+
+        Pulls the image if absent (large ROCm images can exceed the short detached-run timeout
+        when pulled inline), then runs ``docker run -d ... <image> sleep infinity`` (idempotent).
+        After this, ``run()`` execs into this container instead of spawning a one-shot one.
+        """
+        if self._container is not None:
+            return self._container
+        container_name = name or f"rocmtest_{os.getpid()}_{next(_NAME_COUNTER)}"
+
+        # Pre-pull separately so the (potentially long) image download gets its own generous
+        # timeout, leaving the detached run quick. Skipped when the image is already local.
+        pull = self._host.run(
+            f"{self.runtime} image inspect {self.image} >/dev/null 2>&1 || {self.runtime} pull {self.image}",
+            timeout=pull_timeout,
+        )
+        if not pull.ok:
+            raise RuntimeError(
+                f"Failed to pull container image {self.image!r} "
+                f"(exit={pull.exit_code}): {(pull.stderr or pull.stdout)[-1000:]}"
+            )
+
+        # --init runs a real init (tini) as PID 1 that reaps zombies. Without it, PID 1 is
+        # `sleep infinity` (never wait()s), so a process killed inside the container -- e.g. the
+        # workload SIGKILLed by `criu dump` -- lingers forever as a zombie, holding its PID and
+        # breaking `criu restore`, which recreates the process at that same PID.
+        parts = [self.runtime, "run", "-d", "--init", "--name", container_name, *self._common_run_flags()]
+        parts += [self.image, "sleep", "infinity"]
+        cli = " ".join(parts)
+        logger.debug("ContainerExecutor.start: %s", cli)
+        result = self._host.run(cli, timeout=timeout)
+        if not result.ok:
+            raise RuntimeError(
+                f"Failed to start container from image {self.image!r} "
+                f"(exit={result.exit_code}): {(result.stderr or result.stdout)[-1000:]}"
+            )
+        self._container = container_name
+        logger.info("Started persistent container %s from %s", container_name, self.image)
+        return container_name
+
+    def stop(self, timeout: float = 60.0) -> None:
+        """Force-remove the persistent container started by ``start()`` (no-op otherwise)."""
+        if self._container is None:
+            return
+        self._host.run(f"{self.runtime} rm -f {self._container}", timeout=timeout)
+        logger.info("Removed persistent container %s", self._container)
+        self._container = None
 
     # ------------------------------------------------------------------
     # Exec into a running container
@@ -282,13 +362,28 @@ class ContainerExecutor(AbstractExecutor):
         Returns:
             A shell-safe string suitable for passing to ``CpuExecutor.run()``.
         """
-        parts = [self.runtime, "run", "--rm"]
+        parts = [self.runtime, "run", "--rm", *self._common_run_flags()]
+        parts.append(self.image)
+        parts += ["sh", "-c", shlex.quote(user_command)]
+        return " ".join(parts)
 
-        # Share the host IPC namespace (and thus /dev/shm) so NCCL/RCCL multi-rank
-        # collectives have room for their shared-memory segments — the default
-        # 64 MB container /dev/shm overflows with "No space left on device".
-        if self.ipc_host:
-            parts.append("--ipc=host")
+    def _rocr_value(self) -> str:
+        """Return the ``ROCR_VISIBLE_DEVICES`` value (multi-index list or single index)."""
+        if self.gpu_indices:
+            return ",".join(str(i) for i in self.gpu_indices)
+        return str(self.gpu_index)
+
+    def _common_run_flags(self) -> list[str]:
+        """Return the ``docker run`` flags shared by one-shot and persistent modes.
+
+        Covers ``--ipc``, ``--privileged``, AMD device passthrough + ``ROCR_VISIBLE_DEVICES``
+        (Linux), and any caller-supplied ``extra_run_flags``.
+        """
+        parts: list[str] = []
+        if self.ipc:
+            parts.append(f"--ipc={self.ipc}")
+        if self.privileged:
+            parts.append("--privileged")
 
         if self.use_amd_devices:
             platform = os_adapter_factory().get_platform_name()
@@ -301,12 +396,8 @@ class ContainerExecutor(AbstractExecutor):
                 ]
             # Windows: GPU access is managed by the ROCm Windows driver stack;
             # device passthrough flags are not applicable.
-            parts.append(f"--env=ROCR_VISIBLE_DEVICES={self.gpu_index}")
+            parts.append(f"--env=ROCR_VISIBLE_DEVICES={self._rocr_value()}")
 
         if self.extra_run_flags:
             parts.append(self.extra_run_flags)
-
-        parts.append(self.image)
-        parts += ["sh", "-c", shlex.quote(user_command)]
-
-        return " ".join(parts)
+        return parts
