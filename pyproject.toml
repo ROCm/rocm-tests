@@ -169,7 +169,8 @@ show_error_codes    = true
 
 [[tool.mypy.overrides]]
 module = ["allure", "allure.*", "paramiko", "paramiko.*",
-          "pexpect", "pexpect.*", "yaml", "tomli", "tomllib", "xdist", "xdist.*"]
+          "pexpect", "pexpect.*", "yaml", "tomli", "tomllib", "xdist", "xdist.*",
+          "clickhouse_connect", "clickhouse_connect.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

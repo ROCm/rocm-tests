@@ -30,6 +30,10 @@ on:
   schedule:
     - cron: '0 11 * * *'   # 11:00 AM UTC daily
 
+  push:
+    branches:
+      - users/mparamas/db
+
   workflow_call:
     inputs:
       source_repo:
@@ -48,6 +52,10 @@ on:
           For ROCm/rockrel: Download _dev artifacts needed for test binary compilation.
         type: boolean
         default: true
+      results_db:
+        description: 'Results database backend to update after the nightly run (clickhouse or none)'
+        type: string
+        default: clickhouse
 
   workflow_dispatch:
     inputs:
@@ -72,6 +80,13 @@ on:
           For ROCm/rockrel: Download _dev artifacts needed for test binary compilation.
         type: boolean
         default: true
+      results_db:
+        description: 'Results database backend to update after the nightly run'
+        type: choice
+        options:
+          - clickhouse
+          - none
+        default: clickhouse
 
 permissions:
   contents: read
@@ -249,3 +264,48 @@ jobs:
 
           with open(summary_path, "a") as f:
               f.write("\n".join(lines) + "\n")
+
+  upload_results:
+    name: "Upload Nightly Results — ${{ inputs.results_db || 'clickhouse' }}"
+    needs: [setup_matrix, e2e_nightly, report]
+    if: ${{ always() && (inputs.results_db || 'clickhouse') == 'clickhouse' }}
+    runs-on: ubuntu-latest
+    environment: clickhouse-ingest
+    steps:
+      - name: Checkout rocm-tests
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Download all platform counts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          pattern: test-counts-*
+          path: all-counts
+          merge-multiple: false
+
+      - name: Set up Python for results upload
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: 3.12
+
+      - name: Install ClickHouse results backend dependencies
+        run: python -m pip install --root-user-action=ignore clickhouse-connect certifi
+
+      - name: Upload nightly results to ClickHouse
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLICKHOUSE_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+          CLICKHOUSE_PORT: ${{ secrets.CLICKHOUSE_PORT }}
+          CLICKHOUSE_USERNAME: ${{ secrets.CLICKHOUSE_USERNAME }}
+          CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          CLICKHOUSE_DATABASE: ${{ secrets.CLICKHOUSE_DATABASE }}
+          CLICKHOUSE_SECURE: ${{ secrets.CLICKHOUSE_SECURE }}
+        run: |
+          python -m framework.results.backends.clickhouse \
+            --run-id "${{ github.run_id }}" \
+            --github-repo "${{ github.repository }}" \
+            --source-repo "${{ inputs.source_repo || 'ROCm/rockrel' }}" \
+            --artifact-source "${{ inputs.artifact_source || 'multi_arch_release.yml' }}" \
+            --testplan testplan.ini \
+            --counts-dir all-counts
