@@ -80,6 +80,14 @@ def int_or_zero(value: Any) -> int:
         return 0
 
 
+def str_or_empty(value: Any) -> str:
+    """Convert nullable GitHub metadata fields to ClickHouse-safe strings."""
+
+    if value is None:
+        return ""
+    return str(value)
+
+
 def default_ca_cert() -> str | None:
     """Return certifi's CA bundle path when certifi is installed."""
 
@@ -237,22 +245,41 @@ def fetch_run_metadata(repo: str, run_id: int) -> dict[str, Any]:
     return fetch_json(f"https://api.github.com/repos/{repo}/actions/runs/{run_id}")
 
 
-def fetch_artifact_source_run_id(repo: str, run_id: int) -> int | None:
-    """Parse the resolved artifact-source run id from the summary job name."""
+def fetch_workflow_jobs(repo: str, run_id: int) -> list[dict[str, Any]]:
+    """Fetch GitHub workflow jobs for the run."""
 
     jobs_url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs"
     try:
-        jobs = paged_github_items(jobs_url, "jobs")
+        return paged_github_items(jobs_url, "jobs")
     except (HTTPError, URLError, TimeoutError) as exc:
         print(f"WARNING: could not fetch workflow jobs: {exc}", flush=True)
-        return None
+        return []
+
+
+def fetch_artifact_source_run_id(jobs: list[dict[str, Any]]) -> int | None:
+    """Parse the resolved artifact-source run id from the summary job name."""
 
     for job in jobs:
-        name = str(job.get("name", ""))
+        name = str_or_empty(job.get("name"))
         match = re.search(r"Nightly Test Summary\s+—\s+(\d+)", name)
         if match:
             return int(match.group(1))
     return None
+
+
+def build_platform_job_urls(jobs: list[dict[str, Any]]) -> dict[str, str]:
+    """Map platform names from the matrix to their GitHub Actions job URLs."""
+
+    job_urls: dict[str, str] = {}
+    suffix = " / e2e tests"
+    for job in jobs:
+        name = str_or_empty(job.get("name"))
+        if not name.endswith(suffix):
+            continue
+        url = str_or_empty(job.get("html_url") or job.get("url"))
+        if url:
+            job_urls[name[: -len(suffix)]] = url
+    return job_urls
 
 
 def create_table(client, table: str) -> None:
@@ -309,11 +336,13 @@ def build_insert_rows(
     artifact_source_run_id: int | None,
     counts_rows: list[tuple[PlatformCounts, str, str]],
     targets: dict[str, TargetConfig],
+    platform_job_urls: dict[str, str],
     include_total_row: bool,
 ) -> tuple[list[str], list[list[Any]]]:
     """Transform GitHub workflow data into ClickHouse insert rows."""
 
     run_id = int(run_metadata["id"])
+    run_url = str_or_empty(run_metadata.get("html_url") or f"https://github.com/{github_repo}/actions/runs/{run_id}")
     source_url = (
         f"https://github.com/{source_repo}/actions/runs/{artifact_source_run_id}" if artifact_source_run_id else ""
     )
@@ -353,8 +382,9 @@ def build_insert_rows(
     ]
 
     rows: list[list[Any]] = []
-    for counts, artifact_name, artifact_url in counts_rows:
+    for counts, artifact_name, counts_path in counts_rows:
         target = resolve_target(counts.platform, targets)
+        artifact_url = platform_job_urls.get(counts.platform, counts_path)
         result_status = "passed" if counts.failed == 0 and counts.error == 0 and counts.total > 0 else "failed"
         raw_counts_json = json.dumps(
             {
@@ -373,17 +403,17 @@ def build_insert_rows(
                 source_repo,
                 artifact_source,
                 artifact_source_run_id,
-                run_metadata.get("name", ""),
+                str_or_empty(run_metadata.get("name")),
                 int_or_zero(run_metadata.get("run_number")),
                 int_or_zero(run_metadata.get("run_attempt")),
-                run_metadata.get("html_url", f"https://github.com/{github_repo}/actions/runs/{run_id}"),
+                run_url,
                 source_url,
                 github_repo,
-                run_metadata.get("head_branch", ""),
-                run_metadata.get("head_sha", ""),
-                run_metadata.get("event", ""),
-                run_metadata.get("status", ""),
-                run_metadata.get("conclusion", ""),
+                str_or_empty(run_metadata.get("head_branch")),
+                str_or_empty(run_metadata.get("head_sha")),
+                str_or_empty(run_metadata.get("event")),
+                str_or_empty(run_metadata.get("status")),
+                str_or_empty(run_metadata.get("conclusion")),
                 parse_iso_datetime(run_metadata.get("run_started_at"))
                 or parse_iso_datetime(run_metadata.get("created_at"))
                 or datetime.now(timezone.utc),
@@ -437,7 +467,7 @@ def build_insert_rows(
         set_total_value("artifact_group", "all")
         set_total_value("tests_filters", "")
         set_total_value("artifact_name", "computed-total")
-        set_total_value("artifact_url", "")
+        set_total_value("artifact_url", run_url)
         set_total_value("tests_pass", total_pass)
         set_total_value("tests_fail", total_fail)
         set_total_value("tests_error", total_error)
@@ -499,7 +529,9 @@ def main() -> bool:
         print(f"Loaded {len(counts_rows)} platform count row(s) from {args.counts_dir}", flush=True)
 
         run_metadata = fetch_run_metadata(args.github_repo, args.run_id)
-        artifact_source_run_id = fetch_artifact_source_run_id(args.github_repo, args.run_id)
+        workflow_jobs = fetch_workflow_jobs(args.github_repo, args.run_id)
+        artifact_source_run_id = fetch_artifact_source_run_id(workflow_jobs)
+        platform_job_urls = build_platform_job_urls(workflow_jobs)
         columns, rows = build_insert_rows(
             github_repo=args.github_repo,
             source_repo=args.source_repo,
@@ -508,6 +540,7 @@ def main() -> bool:
             artifact_source_run_id=artifact_source_run_id,
             counts_rows=counts_rows,
             targets=targets,
+            platform_job_urls=platform_job_urls,
             include_total_row=not args.no_total_row,
         )
 
