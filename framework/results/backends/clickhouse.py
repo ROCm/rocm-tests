@@ -54,6 +54,15 @@ class PlatformCounts:
     total: int
 
 
+@dataclass(frozen=True)
+class PlatformJobMetadata:
+    """Per-platform GitHub Actions job metadata."""
+
+    url: str
+    status: str
+    conclusion: str
+
+
 def env_bool(name: str, default: bool) -> bool:
     """Read a boolean environment variable."""
 
@@ -267,19 +276,21 @@ def fetch_artifact_source_run_id(jobs: list[dict[str, Any]]) -> int | None:
     return None
 
 
-def build_platform_job_urls(jobs: list[dict[str, Any]]) -> dict[str, str]:
-    """Map platform names from the matrix to their GitHub Actions job URLs."""
+def build_platform_job_metadata(jobs: list[dict[str, Any]]) -> dict[str, PlatformJobMetadata]:
+    """Map platform names from the matrix to their GitHub Actions job metadata."""
 
-    job_urls: dict[str, str] = {}
+    platform_jobs: dict[str, PlatformJobMetadata] = {}
     suffix = " / e2e tests"
     for job in jobs:
         name = str_or_empty(job.get("name"))
         if not name.endswith(suffix):
             continue
-        url = str_or_empty(job.get("html_url") or job.get("url"))
-        if url:
-            job_urls[name[: -len(suffix)]] = url
-    return job_urls
+        platform_jobs[name[: -len(suffix)]] = PlatformJobMetadata(
+            url=str_or_empty(job.get("html_url") or job.get("url")),
+            status=str_or_empty(job.get("status")),
+            conclusion=str_or_empty(job.get("conclusion")),
+        )
+    return platform_jobs
 
 
 def create_table(client, table: str) -> None:
@@ -336,7 +347,7 @@ def build_insert_rows(
     artifact_source_run_id: int | None,
     counts_rows: list[tuple[PlatformCounts, str, str]],
     targets: dict[str, TargetConfig],
-    platform_job_urls: dict[str, str],
+    platform_jobs: dict[str, PlatformJobMetadata],
     include_total_row: bool,
 ) -> tuple[list[str], list[list[Any]]]:
     """Transform GitHub workflow data into ClickHouse insert rows."""
@@ -384,7 +395,10 @@ def build_insert_rows(
     rows: list[list[Any]] = []
     for counts, artifact_name, counts_path in counts_rows:
         target = resolve_target(counts.platform, targets)
-        artifact_url = platform_job_urls.get(counts.platform, counts_path)
+        platform_job = platform_jobs.get(counts.platform)
+        artifact_url = platform_job.url if platform_job and platform_job.url else counts_path
+        platform_status = platform_job.status if platform_job else ""
+        platform_conclusion = platform_job.conclusion if platform_job else ""
         result_status = "passed" if counts.failed == 0 and counts.error == 0 and counts.total > 0 else "failed"
         raw_counts_json = json.dumps(
             {
@@ -412,8 +426,8 @@ def build_insert_rows(
                 str_or_empty(run_metadata.get("head_branch")),
                 str_or_empty(run_metadata.get("head_sha")),
                 str_or_empty(run_metadata.get("event")),
-                str_or_empty(run_metadata.get("status")),
-                str_or_empty(run_metadata.get("conclusion")),
+                platform_status,
+                platform_conclusion,
                 parse_iso_datetime(run_metadata.get("run_started_at"))
                 or parse_iso_datetime(run_metadata.get("created_at"))
                 or datetime.now(timezone.utc),
@@ -468,6 +482,8 @@ def build_insert_rows(
         set_total_value("tests_filters", "")
         set_total_value("artifact_name", "computed-total")
         set_total_value("artifact_url", run_url)
+        set_total_value("status", "")
+        set_total_value("conclusion", "")
         set_total_value("tests_pass", total_pass)
         set_total_value("tests_fail", total_fail)
         set_total_value("tests_error", total_error)
@@ -531,7 +547,7 @@ def main() -> bool:
         run_metadata = fetch_run_metadata(args.github_repo, args.run_id)
         workflow_jobs = fetch_workflow_jobs(args.github_repo, args.run_id)
         artifact_source_run_id = fetch_artifact_source_run_id(workflow_jobs)
-        platform_job_urls = build_platform_job_urls(workflow_jobs)
+        platform_jobs = build_platform_job_metadata(workflow_jobs)
         columns, rows = build_insert_rows(
             github_repo=args.github_repo,
             source_repo=args.source_repo,
@@ -540,7 +556,7 @@ def main() -> bool:
             artifact_source_run_id=artifact_source_run_id,
             counts_rows=counts_rows,
             targets=targets,
-            platform_job_urls=platform_job_urls,
+            platform_jobs=platform_jobs,
             include_total_row=not args.no_total_row,
         )
 
