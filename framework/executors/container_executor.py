@@ -227,3 +227,72 @@ class ContainerExecutor(AbstractExecutor):
         cli = self._assemble_run_command(command)
         logger.debug("ContainerExecutor.run: %s", cli)
         return self._host.run(cli, timeout=timeout or 300.0, stream=stream)
+
+    # ------------------------------------------------------------------
+    # Exec into a running container
+    # ------------------------------------------------------------------
+
+    def exec_in(
+        self,
+        container_name: str,
+        command: str,
+        timeout: float | None = None,
+    ) -> ExecutionResult:
+        """Execute *command* inside an already-running named container.
+
+        Unlike ``run()``, no new container is created.  Use this for
+        long-lived test containers started by a session-scoped fixture where
+        creating a container per command is too expensive.
+
+        Args:
+            container_name: Name or ID of the running container.
+            command:        Shell command to execute inside it.
+            timeout:        Maximum seconds (default 300 s).
+
+        Returns:
+            ExecutionResult forwarded from the ``docker exec`` invocation.
+        """
+        cli = f"{self.runtime} exec {container_name} " f"sh -c {shlex.quote(command)}"
+        logger.debug("ContainerExecutor.exec_in[%s]: %s", container_name, command)
+        return self._host.run(cli, timeout=timeout or 300.0)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _assemble_run_command(self, user_command: str) -> str:
+        """Build the full ``docker run`` CLI invocation string.
+
+        On Linux, AMD GPU device nodes (``/dev/kfd``, ``/dev/dri``) and the
+        ``video`` group are added when ``use_amd_devices=True``.  On Windows
+        these device paths do not exist; ROCm for Windows exposes GPU access
+        through a different mechanism so they are omitted automatically.
+
+        Args:
+            user_command: The shell command to run inside the container.
+
+        Returns:
+            A shell-safe string suitable for passing to ``CpuExecutor.run()``.
+        """
+        parts = [self.runtime, "run", "--rm"]
+
+        if self.use_amd_devices:
+            platform = os_adapter_factory().get_platform_name()
+            if platform == "linux":
+                # Linux: pass AMD KFD and DRI device nodes into the container.
+                parts += [
+                    f"--device={self._KFD_DEVICE}",
+                    f"--device={self._DRI_PATH}",
+                    "--group-add=video",
+                ]
+            # Windows: GPU access is managed by the ROCm Windows driver stack;
+            # device passthrough flags are not applicable.
+            parts.append(f"--env=ROCR_VISIBLE_DEVICES={self.gpu_index}")
+
+        if self.extra_run_flags:
+            parts.append(self.extra_run_flags)
+
+        parts.append(self.image)
+        parts += ["sh", "-c", shlex.quote(user_command)]
+
+        return " ".join(parts)
