@@ -1,5 +1,7 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+# Caller permissions are an upper bound that a reusable workflow can only
+# preserve or reduce, so permissions are intentionally defined by each caller.
 #
 name: Gitleaks
 
@@ -40,11 +42,6 @@ on:
         required: false
         type: string
         default: "."
-# Reusable workflows declare the *minimum* permissions every caller
-# must grant.
-permissions:
-  contents: read
-
 jobs:
   scan:
     name: Gitleaks scan
