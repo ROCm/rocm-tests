@@ -133,8 +133,11 @@ def _detect_gpu_conf_dir(cmake_executor=None) -> str:
     else:
         try:
             rc, stdout, stderr = run_cmd_get_stdout_stderr(
-                "bash", "-c", "lspci -n -d 1002: | grep -E '0300|1200' | head -1",
-                timeout=10, quiet=True,
+                "bash",
+                "-c",
+                "lspci -n -d 1002: | grep -E '0300|1200' | head -1",
+                timeout=10,
+                quiet=True,
             )
         except Exception:
             logger.warning("lspci not available for GPU detection")
@@ -183,7 +186,11 @@ def rvs_source(external_build, compiler_build_dir: str, cmake_executor) -> str:
         )
     else:
         rc, stdout, stderr = run_cmd_get_stdout_stderr(
-            "git", "submodule", "update", "--init", "--recursive",
+            "git",
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
             cwd=str(src_dir),
             timeout=120,
         )
@@ -253,7 +260,9 @@ def rvs_binary(
             pytest.fail(f"RVS cmake install failed:\n{(result.stderr or '')[:3000]}")
     else:
         rc, stdout, stderr = run_cmd_get_stdout_stderr(
-            "cmake", "--install", str(build_dir),
+            "cmake",
+            "--install",
+            str(build_dir),
             env={"DESTDIR": str(install_dir)},
             timeout=120,
         )
