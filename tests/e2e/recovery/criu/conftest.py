@@ -14,7 +14,6 @@ import logging
 import os
 
 import pytest
-
 from tests.common.criu import ensure_criu_runtime, ensure_criu_runtime_target
 
 logger = logging.getLogger(__name__)
