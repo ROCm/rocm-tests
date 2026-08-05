@@ -152,13 +152,6 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
-    "tests/e2e/rocm_examples": [
-        "hw.gpu",
-        "layer.runtime",
-        "ci.nightly",
-        "e2e.stack",
-        "os.linux",
-    ],
     # UCX HPC communication library: configure/make build + filtered *rocm* gtest suite.
     "tests/e2e/hpc/ucx": [
         "hw.gpu",
