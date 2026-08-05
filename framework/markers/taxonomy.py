@@ -40,10 +40,6 @@ PARAMETRIC_MARKERS: dict[str, str] = {
     "gpu_count": "Minimum GPU count per node (@pytest.mark.gpu_count(4))",
     "container_image": "Override container image (@pytest.mark.container_image('rocm/pytorch:6.3'))",
     "gpu_indices": "Exact GPU indices to acquire, bypassing NUMA selection (@pytest.mark.gpu_indices([0, 2]))",
-    "container": (
-        "Run target_executor commands inside a container on the acquired GPU node "
-        "(@pytest.mark.container(image='rocm/pytorch:latest', ipc='host', privileged=True))"
-    ),
 }
 
 # Duration guidance (informational — not enforced programmatically)
@@ -162,6 +158,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "hw.gpu",
         "layer.runtime",
         "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/rocm_examples": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
         "e2e.stack",
         "os.linux",
     ],
