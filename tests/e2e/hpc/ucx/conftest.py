@@ -28,7 +28,9 @@ def ucx_build(rock_dir, compiler_build_dir, framework_config, external_build, cm
     with external_build.build_lock("hpc-ucx", timeout=build_timeout):
         source_dir = external_build.clone_repo(UCX_GIT_URL, dest, ref=UCX_GIT_REF)
         external_build.assert_license_present(source_dir)
-        build_dir = f"{source_dir}/build"
+        # clone_repo returns a repo-relative path locally; autotools' configure
+        # rejects a relative --prefix, so absolutize the build dir it is built from.
+        build_dir = os.path.realpath(f"{source_dir}/build")
         configure_args = [
             "--disable-logging",
             "--disable-debug",
