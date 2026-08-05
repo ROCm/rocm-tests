@@ -76,7 +76,7 @@ def _resolve_dest(cmake_executor, compiler_build_dir: str) -> str:
     """Return the absolute checkout path on the build node."""
     base = os.path.join(compiler_build_dir, _SUBDIR)
     if cmake_executor is not None and hasattr(cmake_executor, "workspace_path_for"):
-        return cmake_executor.workspace_path_for(base)
+        return str(cmake_executor.workspace_path_for(base))
     return os.path.abspath(base)
 
 

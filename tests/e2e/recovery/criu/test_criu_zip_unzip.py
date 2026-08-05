@@ -3,16 +3,8 @@
 
 """CRIU checkpoint zip/unzip round-trip of the cuda_memtest HIP workload.
 
-Verify that archiving (``tar``) a CRIU checkpoint image and restoring it from a *different*,
-un-archived directory works with cuda_memtest.
-
-Flow (single self-contained test): launch cuda_memtest, ``criu dump`` the running process,
-``tar -cvf`` the checkpoint image, ``tar -xvf`` it into a fresh destination directory, then
-``criu restore`` from that untarred destination and verify the workload resumed. Build/install
-come from the ``cuda_memtest_build`` / ``criu_runtime`` fixtures; dump/restore/log helpers come
-from ``tests.common.criu.steps``; launch and arch-gating are reused from ``test_criu_cuda_memtest``.
-Shares the ``criu_cuda_memtest_serial`` xdist_group so it runs serially with the other CRIU tests
-(shared node workdir). Linux only; skips on GFX targets outside SUPPORTED_ARCHS.
+Launch cuda_memtest, ``criu dump`` it, ``tar`` the checkpoint image, untar it into a
+fresh directory, ``criu restore`` from there, and verify the workload resumed. Linux.
 """
 
 from __future__ import annotations

@@ -74,47 +74,26 @@ def _restore(executor, criu_cmd: str, build, full_log: bool = False) -> None:
         assert "RESTORE_OK" in restore.stdout, f"criu restore did not finish successfully:\n{log[-1500:]}"
 
 
-# Launch + dump run once per process; the restore reuses the on-disk image. When the
-# cache is empty _ensure_checkpoint re-launches and re-dumps, so either test runs alone.
-_CHECKPOINT: dict = {}
+# Serialized via this xdist_group: CRIU tests sharing the build workdir must not run
+# concurrently (they write the same dump.log / *.img / cuda_memtest.out).
+@pytest.mark.runtime.medium
+@pytest.mark.xdist_group("criu_cuda_memtest_serial")
+def test_criu_checkpoint_restore_cuda_memtest(
+    target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, request
+):
+    """Launch cuda_memtest, checkpoint it, restore it, and verify it resumed.
 
-
-def _ensure_checkpoint(executor, criu_cmd: str, build, ld: str, full_log: bool) -> str:
-    """Launch cuda_memtest and ``criu dump`` it once per run; return the checkpointed PID.
-
-    Cached after the first call so the restore test reuses the same image instead of re-dumping.
+    One test end-to-end (launch -> criu dump -> criu restore -> verify) so the whole
+    flow runs on the single GPU ``target_executor`` acquires -- the restore always
+    lands on the GPU the checkpoint was taken from.
     """
-    if not _CHECKPOINT.get("done"):
-        pid = _launch(executor, build, ld)
-        try:
-            _checkpoint(executor, criu_cmd, build, pid, full_log)
-        except BaseException:
-            criu.kill_pid(executor, pid)  # dump failed -> workload still alive
-            raise
-        _CHECKPOINT["pid"] = pid
-        _CHECKPOINT["done"] = True
-    return _CHECKPOINT["pid"]
-
-
-@pytest.mark.runtime.medium
-@pytest.mark.xdist_group("criu_cuda_memtest_serial")
-def test_criu_check_point_cuda_memtest(target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, request):
-    """Checkpoint a running cuda_memtest process with ``criu dump``."""
     _skip_if_unsupported_arch(gpu_arch)
     executor, ld = target_executor, ld_path["LD_LIBRARY_PATH"]
     full_log = request.config.getoption("capture") == "no"
-    _ensure_checkpoint(executor, criu_runtime, cuda_memtest_build, ld, full_log)
 
-
-@pytest.mark.runtime.medium
-@pytest.mark.xdist_group("criu_cuda_memtest_serial")
-def test_criu_restore_cuda_memtest(target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, request):
-    """Restore the checkpointed cuda_memtest process and verify it resumed and is still running."""
-    _skip_if_unsupported_arch(gpu_arch)
-    executor, ld = target_executor, ld_path["LD_LIBRARY_PATH"]
-    full_log = request.config.getoption("capture") == "no"
-    pid = _ensure_checkpoint(executor, criu_runtime, cuda_memtest_build, ld, full_log)
+    pid = _launch(executor, cuda_memtest_build, ld)
     try:
+        _checkpoint(executor, criu_runtime, cuda_memtest_build, pid, full_log)
         _restore(executor, criu_runtime, cuda_memtest_build, full_log)
         with step("Verify cuda_memtest resumed under criu"):
             # criu restores into the original PID; confirm it is alive and still the workload.
