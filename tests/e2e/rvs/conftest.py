@@ -18,9 +18,10 @@ import logging
 import os
 import pathlib
 import re
-import subprocess
 
 import pytest
+
+from framework.executors.local_executor import run_cmd_get_stdout_stderr
 
 logger = logging.getLogger(__name__)
 
@@ -29,34 +30,76 @@ _RVS_REF = os.environ.get("ROCM_TEST_RVS_REF", "master")
 
 """PCI device ID + revision -> short name (used for RVS config directory lookup)"""
 _GPU_DEVICE_MAP = {
-    "66a1_00": "MI50", "66a1_06": "MI50",
-    "738c_01": "MI100", "738c_cc": "MI100",
-    "740f_02": "MI210", "7410_02": "MI210",
-    "740c_01": "MI250", "7408_00": "MI250",
-    "74a0_00": "MI300A", "74b4_00": "MI300A",
-    "74a1_00": "MI300X", "74b5_00": "MI300X",
-    "74a9_00": "MI300X-HF", "74bd_00": "MI300X-HF",
-    "74a2_00": "MI308X", "74b6_00": "MI308X",
-    "74a8_00": "MI308X-HF", "74bc_00": "MI308X-HF",
-    "74a5_00": "MI325X", "74b9_00": "MI325X",
-    "75a0_00": "MI350X", "75b0_00": "MI350X",
-    "75a3_00": "MI355X", "75b3_00": "MI355X",
-    "73a3_00": "nv21", "73ae_00": "nv21",
-    "7448_00": "nv31", "7448_ec": "nv31",
-    "744c_c0": "nv31", "744c_c8": "nv31", "744c_cc": "nv31",
-    "744c_ce": "nv31", "744c_cf": "nv31", "744c_e0": "nv31",
-    "744c_ec": "nv31", "744c_e8": "nv31", "744c_ee": "nv31",
-    "745e_cc": "nv31", "7449_00": "nv31", "744a_00": "nv31",
-    "7460_00": "nv32", "7461_00": "nv32", "7470_00": "nv32",
-    "747e_c8": "nv32", "747e_c9": "nv32", "747e_ff": "nv32",
-    "747e_d8": "nv32", "747e_d9": "nv32", "747e_db": "nv32",
-    "748f_30": "gfx1200", "748f_31": "gfx1200", "748f_32": "RX9060",
-    "748f_f0": "gfx1200", "748f_f1": "gfx1200", "748f_f2": "gfx1200",
-    "748f_f3": "RX9060", "7590_c0": "gfx1200", "7590_c7": "RX9060",
-    "746f_30": "RX9070GRE", "746f_31": "gfx1201", "746f_32": "RX9070",
-    "746f_f0": "RX9070GRE", "746f_f1": "RX9070GRE", "746f_f2": "RX9070GRE",
-    "746f_f3": "RX9070", "746f_f4": "RX9070", "746f_f5": "gfx1201",
-    "746f_f6": "RX9070GRE", "7550_c0": "gfx1201", "7550_c3": "RX9070GRE",
+    "66a1_00": "MI50",
+    "66a1_06": "MI50",
+    "738c_01": "MI100",
+    "738c_cc": "MI100",
+    "740f_02": "MI210",
+    "7410_02": "MI210",
+    "740c_01": "MI250",
+    "7408_00": "MI250",
+    "74a0_00": "MI300A",
+    "74b4_00": "MI300A",
+    "74a1_00": "MI300X",
+    "74b5_00": "MI300X",
+    "74a9_00": "MI300X-HF",
+    "74bd_00": "MI300X-HF",
+    "74a2_00": "MI308X",
+    "74b6_00": "MI308X",
+    "74a8_00": "MI308X-HF",
+    "74bc_00": "MI308X-HF",
+    "74a5_00": "MI325X",
+    "74b9_00": "MI325X",
+    "75a0_00": "MI350X",
+    "75b0_00": "MI350X",
+    "75a3_00": "MI355X",
+    "75b3_00": "MI355X",
+    "73a3_00": "nv21",
+    "73ae_00": "nv21",
+    "7448_00": "nv31",
+    "7448_ec": "nv31",
+    "744c_c0": "nv31",
+    "744c_c8": "nv31",
+    "744c_cc": "nv31",
+    "744c_ce": "nv31",
+    "744c_cf": "nv31",
+    "744c_e0": "nv31",
+    "744c_ec": "nv31",
+    "744c_e8": "nv31",
+    "744c_ee": "nv31",
+    "745e_cc": "nv31",
+    "7449_00": "nv31",
+    "744a_00": "nv31",
+    "7460_00": "nv32",
+    "7461_00": "nv32",
+    "7470_00": "nv32",
+    "747e_c8": "nv32",
+    "747e_c9": "nv32",
+    "747e_ff": "nv32",
+    "747e_d8": "nv32",
+    "747e_d9": "nv32",
+    "747e_db": "nv32",
+    "748f_30": "gfx1200",
+    "748f_31": "gfx1200",
+    "748f_32": "RX9060",
+    "748f_f0": "gfx1200",
+    "748f_f1": "gfx1200",
+    "748f_f2": "gfx1200",
+    "748f_f3": "RX9060",
+    "7590_c0": "gfx1200",
+    "7590_c7": "RX9060",
+    "746f_30": "RX9070GRE",
+    "746f_31": "gfx1201",
+    "746f_32": "RX9070",
+    "746f_f0": "RX9070GRE",
+    "746f_f1": "RX9070GRE",
+    "746f_f2": "RX9070GRE",
+    "746f_f3": "RX9070",
+    "746f_f4": "RX9070",
+    "746f_f5": "gfx1201",
+    "746f_f6": "RX9070GRE",
+    "7550_c0": "gfx1201",
+    "7550_c3": "RX9070GRE",
     "7551_c0": "gfx1201",
 }
 
@@ -83,13 +126,20 @@ def _file_exists(path: pathlib.Path, cmake_executor=None) -> bool:
 
 def _detect_gpu_conf_dir(cmake_executor=None) -> str:
     """Detect GPU PCI device ID and map to RVS config directory name."""
-    cmd = "lspci -n -d 1002: | grep -E '0300|1200' | head -1"
-    if cmake_executor is None:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
-        line = result.stdout.strip()
-    else:
+    if cmake_executor is not None:
+        cmd = "lspci -n -d 1002: | grep -E '0300|1200' | head -1"
         result = cmake_executor.run(cmd)
         line = (result.stdout or "").strip()
+    else:
+        try:
+            rc, stdout, stderr = run_cmd_get_stdout_stderr(
+                "bash", "-c", "lspci -n -d 1002: | grep -E '0300|1200' | head -1",
+                timeout=10, quiet=True,
+            )
+        except Exception:
+            logger.warning("lspci not available for GPU detection")
+            return ""
+        line = stdout.strip() if rc == 0 else ""
 
     if not line:
         logger.warning("No AMD GPU detected via lspci")
@@ -112,7 +162,9 @@ def _detect_gpu_conf_dir(cmake_executor=None) -> str:
     else:
         logger.warning(
             "GPU detected (device_id=%s, rev=%s, key=%s) but no mapping found in GPU_DEVICE_MAP",
-            device_id, rev, key,
+            device_id,
+            rev,
+            key,
         )
 
     return gpu_name
@@ -130,10 +182,13 @@ def rvs_source(external_build, compiler_build_dir: str, cmake_executor) -> str:
             timeout=120.0,
         )
     else:
-        subprocess.run(
-            ["git", "submodule", "update", "--init", "--recursive"],
-            cwd=str(src_dir), check=True, timeout=120,
+        rc, stdout, stderr = run_cmd_get_stdout_stderr(
+            "git", "submodule", "update", "--init", "--recursive",
+            cwd=str(src_dir),
+            timeout=120,
         )
+        if rc != 0:
+            pytest.fail(f"git submodule update failed:\n{stderr}")
     return str(src_dir)
 
 
@@ -197,14 +252,13 @@ def rvs_binary(
         if not result.ok:
             pytest.fail(f"RVS cmake install failed:\n{(result.stderr or '')[:3000]}")
     else:
-        env = os.environ.copy()
-        env["DESTDIR"] = str(install_dir)
-        proc = subprocess.run(
-            ["cmake", "--install", str(build_dir)],
-            env=env, capture_output=True, text=True, timeout=120,
+        rc, stdout, stderr = run_cmd_get_stdout_stderr(
+            "cmake", "--install", str(build_dir),
+            env={"DESTDIR": str(install_dir)},
+            timeout=120,
         )
-        if proc.returncode != 0:
-            pytest.fail(f"RVS cmake install failed:\n{proc.stderr[:3000]}")
+        if rc != 0:
+            pytest.fail(f"RVS cmake install failed:\n{stderr[:3000]}")
 
     # 5. Locate installed binary
     rvs_bin = None
@@ -215,8 +269,7 @@ def rvs_binary(
 
     if rvs_bin is None:
         pytest.fail(
-            f"RVS binary not found under {install_dir} after install. "
-            f"Contents: {list(install_dir.rglob('*'))[:20]}"
+            f"RVS binary not found under {install_dir} after install. " f"Contents: {list(install_dir.rglob('*'))[:20]}"
         )
 
     logger.info("RVS binary installed at: %s", rvs_bin)
