@@ -132,7 +132,7 @@ def _detect_gpu_conf_dir(cmake_executor=None) -> str:
         line = (result.stdout or "").strip()
     else:
         try:
-            rc, stdout, stderr = run_cmd_get_stdout_stderr(
+            rc, stdout, _stderr = run_cmd_get_stdout_stderr(
                 "bash",
                 "-c",
                 "lspci -n -d 1002: | grep -E '0300|1200' | head -1",
@@ -173,6 +173,46 @@ def _detect_gpu_conf_dir(cmake_executor=None) -> str:
     return gpu_name
 
 
+def _collect_conf_roots(
+    *paths: pathlib.Path | None,
+    cmake_executor=None,
+) -> list[pathlib.Path]:
+    """Return the subset of candidate paths that exist as directories."""
+    roots: list[pathlib.Path] = []
+    for p in paths:
+        if p is None:
+            continue
+        if cmake_executor is None:
+            if p.is_dir():
+                roots.append(p)
+        elif cmake_executor.run(f"test -d {p}").ok:
+            roots.append(p)
+    return roots
+
+
+def _resolve_conf_file(
+    config_name: str,
+    search_roots: list[pathlib.Path],
+    cmake_executor=None,
+    gpu_conf_dir: str = "",
+) -> str | None:
+    """Search for a config file across roots, trying GPU-specific path first."""
+    if gpu_conf_dir:
+        for root in search_roots:
+            candidate = root / gpu_conf_dir / config_name
+            if _file_exists(candidate, cmake_executor):
+                logger.info("Resolved config %s -> %s (GPU-specific: %s)", config_name, candidate, gpu_conf_dir)
+                return str(candidate)
+
+    for root in search_roots:
+        candidate = root / config_name
+        if _file_exists(candidate, cmake_executor):
+            logger.info("Resolved config %s -> %s (generic fallback)", config_name, candidate)
+            return str(candidate)
+
+    return None
+
+
 @pytest.fixture(scope="session")
 def rvs_source(external_build, compiler_build_dir: str, cmake_executor) -> str:
     """Clone ROCmValidationSuite with submodules once per session; return source path."""
@@ -185,7 +225,7 @@ def rvs_source(external_build, compiler_build_dir: str, cmake_executor) -> str:
             timeout=120.0,
         )
     else:
-        rc, stdout, stderr = run_cmd_get_stdout_stderr(
+        rc, _stdout, stderr = run_cmd_get_stdout_stderr(
             "git",
             "submodule",
             "update",
@@ -259,7 +299,7 @@ def rvs_binary(
         if not result.ok:
             pytest.fail(f"RVS cmake install failed:\n{(result.stderr or '')[:3000]}")
     else:
-        rc, stdout, stderr = run_cmd_get_stdout_stderr(
+        rc, _stdout, stderr = run_cmd_get_stdout_stderr(
             "cmake",
             "--install",
             str(build_dir),
@@ -305,41 +345,21 @@ def rvs_find_conf(rock_dir: str, rvs_source: str, cmake_executor, rvs_binary: st
     source_conf = pathlib.Path(rvs_source) / "rvs" / "conf"
 
     def _find_conf(config_name: str, *, gpu_only: bool = False, gpu_conf_dir: str = "") -> str:
-        search_roots = []
         installed_conf = rock_dir_path / "share" / "rocm-validation-suite" / "conf"
+        search_roots = _collect_conf_roots(
+            installed_conf, install_conf, source_conf,
+            cmake_executor=cmake_executor,
+        )
 
-        if cmake_executor is None:
-            for p in (installed_conf, install_conf, source_conf):
-                if p is not None and p.is_dir():
-                    search_roots.append(p)
-        else:
-            for p in (installed_conf, install_conf, source_conf):
-                if p is None:
-                    continue
-                result = cmake_executor.run(f"test -d {p}")
-                if result.ok:
-                    search_roots.append(p)
-
-        # GPU-specific lookup
-        for root in search_roots:
-            if gpu_conf_dir:
-                candidate = root / gpu_conf_dir / config_name
-                if _file_exists(candidate, cmake_executor):
-                    logger.info("Resolved config %s -> %s (GPU-specific: %s)", config_name, candidate, gpu_conf_dir)
-                    return str(candidate)
+        resolved = _resolve_conf_file(config_name, search_roots, cmake_executor, gpu_conf_dir)
+        if resolved:
+            return resolved
 
         if gpu_only:
             pytest.skip(
                 f"GPU-specific config {config_name} not found under {gpu_conf_dir} "
                 f"in {[str(r) for r in search_roots]}"
             )
-
-        # Generic fallback
-        for root in search_roots:
-            candidate = root / config_name
-            if _file_exists(candidate, cmake_executor):
-                logger.info("Resolved config %s -> %s (generic fallback)", config_name, candidate)
-                return str(candidate)
 
         pytest.skip(f"RVS config {config_name} not found in {[str(r) for r in search_roots]}")
 
