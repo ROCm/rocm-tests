@@ -103,6 +103,7 @@ def _wait_for_progress(executor, setup, baseline: int) -> int:
 
 @pytest.mark.container(ipc="host", privileged=True)
 @pytest.mark.runtime.medium
+@pytest.mark.xdist_group("criu_serial")
 def test_criu_pyt_ex_mnist(target_executor, pyt_mnist_setup, criu_runtime_target, gpu_arch, request):
     """Checkpoint/restore a live MNIST training process and confirm it resumes without hanging.
 
