@@ -15,7 +15,6 @@ import os
 
 import pytest
 
-from framework.executors.cpu_executor import CpuExecutor
 from tests.common.criu import ensure_criu_runtime, ensure_criu_runtime_target
 
 logger = logging.getLogger(__name__)
@@ -42,6 +41,7 @@ def criu_runtime_target(target_executor, framework_config) -> str:
     Function-scoped. Returns the ``sudo -n ... criu`` command prefix.
     """
     return ensure_criu_runtime_target(target_executor, framework_config)
+
 
 # ###########################################################################
 # #### MNIST #### -- pytorch/examples MNIST setup
