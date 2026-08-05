@@ -25,11 +25,11 @@ from framework.builder.binary_builder import (
     BinaryBuilder,
     assert_binary_exists,
     assert_license_present,
+    autotools_make,
     build_artifact_exists,
     build_cache_action,
     clone_repo,
     cmake_build,
-    configure_make_build,
     detect_mpi_runtime,
     external_build_lock,
     find_rocm_clangpp,
@@ -410,7 +410,7 @@ def external_build(compiler_build_dir: str, framework_config, cmake_executor):
                 remote_executor=cmake_executor,
             )
 
-        def configure_make_build(
+        def autotools_make(
             self,
             source_dir: str,
             build_dir: str,
@@ -418,7 +418,7 @@ def external_build(compiler_build_dir: str, framework_config, cmake_executor):
         ) -> str:
             """Run an autotools configure/make/[install] build (local or remote)."""
             kwargs.setdefault("timeout", build_timeout)
-            return configure_make_build(
+            return autotools_make(
                 source_dir,
                 build_dir,
                 remote_executor=cmake_executor,

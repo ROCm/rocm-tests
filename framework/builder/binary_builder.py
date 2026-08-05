@@ -1243,7 +1243,7 @@ def _abspath_for(path: str, remote_executor) -> str:
     return str(pathlib.Path(path).resolve())
 
 
-def configure_make_build(
+def autotools_make(
     source_dir: str,
     build_dir: str,
     *,

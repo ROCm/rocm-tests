@@ -26,7 +26,7 @@ def ucx_build(rock_dir, compiler_build_dir, framework_config, external_build, cm
     dest = pathlib.Path(compiler_build_dir) / "hpc" / "ucx"
 
     with external_build.build_lock("hpc-ucx", timeout=build_timeout):
-        source_dir = os.path.realpath(str(external_build.clone_repo(UCX_GIT_URL, dest, ref=UCX_GIT_REF)))
+        source_dir = external_build.clone_repo(UCX_GIT_URL, dest, ref=UCX_GIT_REF)
         external_build.assert_license_present(source_dir)
         build_dir = f"{source_dir}/build"
         configure_args = [
@@ -43,7 +43,7 @@ def ucx_build(rock_dir, compiler_build_dir, framework_config, external_build, cm
             "--without-java",
         ]
         logger.info("UCX %s: autogen/configure/make/install (rocm=%s)", UCX_GIT_REF, rocm_path)
-        return external_build.configure_make_build(
+        return external_build.autotools_make(
             source_dir,
             build_dir,
             bootstrap_script="./autogen.sh",
