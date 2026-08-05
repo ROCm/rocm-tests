@@ -1,59 +1,43 @@
-# Third-Party Notices — CRIU cuda_memtest tests
+# Third-Party Notices — cuda_memtest
 
-The tests under `tests/e2e/recovery/criu/` **fetch, build, and run** two third-party
-open-source projects **at test time**. Neither project's source or binaries are vendored,
-committed, or redistributed as part of the rocm-tests repository — clones land in the
-gitignored `output/` build directory (cuda_memtest) or on the test node itself (CRIU).
+The tests under `tests/e2e/recovery/criu/` **fetch, modify, build, and run** the third-party
+cuda_memtest project **at test time**. Its source and binaries are not vendored, committed, or
+redistributed as part of the rocm-tests repository — the clone lands in the gitignored `output/`
+build directory. (CRIU, the checkpoint/restore tool these tests drive, is covered separately by
+`tests/common/criu/NOTICES.md`.)
 
-This file documents each component, exactly how it is used, and the resulting license
-obligations. It is an engineering-compliance summary, not legal advice; final sign-off for
-any product distribution should come from AMD OSS/legal review.
+This file documents the component, exactly how it is used, and the resulting license obligations.
+It is an engineering-compliance summary, not legal advice; final sign-off for any product
+distribution should come from AMD OSS/legal review.
 
 ---
 
-## Components and how they are used
+## Component and how it is used
 
 | Component | Upstream | Pinned ref | License |
 |---|---|---|---|
 | cuda_memtest | https://github.com/ComputationalRadiationPhysics/cuda_memtest | commit `0cd3a996ce82682fcf50fa6f433b6f1f2ce1353d` | University of Illinois/NCSA Open Source License (permissive) |
-| CRIU | https://github.com/checkpoint-restore/criu | tag `v4.1` | GPL-2.0-only (LGPL-2.1 for `lib/`) |
 
-### cuda_memtest
 1. `git clone` at the pinned commit into `output/test-binaries/recovery/cuda_memtest`.
 2. **Modify** the sources: `hipify-perl` (CUDA → HIP) plus a one-line `sed` patch to
    `hipHostGetDevicePointer`.
 3. Build a standalone binary with `hipcc`.
 4. Run the binary as a subprocess.
 
-### CRIU
-1. `git clone` tag `v4.1` onto the **test node** (`~/criu_src`, outside the repo) — see
-   `scripts/install_criu.py`.
-2. Build (`make`) and **install system-wide** (`sudo make install` → `/usr/local/sbin`);
-   build the `amdgpu_plugin.so` and copy it to `/usr/lib/criu`.
-3. Invoke the `criu` command-line tool (`criu dump` / `criu restore` / `criu check`) as a
-   **separate process**. CRIU is **not modified** and **not linked** into rocm-tests code.
-
 ---
 
 ## Obligations assessment
 
-- **No redistribution.** rocm-tests does not ship either project's code or binaries; both are
-  obtained at runtime from their upstream repositories. GPL-2.0 and NCSA obligations attach to
-  *distribution*, which does not occur here.
-- **CRIU (GPL-2.0)** is used only via arm's-length CLI invocation. Per GPL-2.0 §0, *"The act of
-  running the Program is not restricted."* Running a separate `criu` process is aggregation, not
-  a derivative work, so GPL copyleft does not extend to rocm-tests. rocm-tests source remains
-  under its own license (`SPDX-License-Identifier: MIT`).
+- **No redistribution.** rocm-tests does not ship cuda_memtest's code or binaries; it is obtained
+  at runtime from upstream. NCSA obligations attach to *redistribution*, which does not occur here.
 - **cuda_memtest (NCSA)** permits use, modification, and redistribution with attribution. The
   hipify/`sed` modifications are allowed; the built binary is not redistributed.
 - **Modification imposes no obligation.** NCSA is permissive: modifying the sources (hipify +
-  `sed`) requires nothing on its own — it does **not** require marking changed files or
-  disclosing the diff (unlike GPL-2.0 §2(a)). NCSA's retain-the-notice conditions trigger only
-  on *redistribution*, which does not occur. CRIU is not modified, so GPL-2.0 §2(a) never
-  applies either.
-- **If distribution is ever added** (e.g. bundling the sources or built binaries): retain the
-  NCSA copyright notices and disclaimer for cuda_memtest, and comply with GPL-2.0 source-offer
-  requirements for CRIU. This is out of scope for the current runtime-fetch model.
+  `sed`) requires nothing on its own — it does **not** require marking changed files or disclosing
+  the diff. NCSA's retain-the-notice conditions trigger only on *redistribution*, which does not
+  occur.
+- **If distribution is ever added** (e.g. bundling the sources or built binary): retain the NCSA
+  copyright notices and disclaimer. This is out of scope for the current runtime-fetch model.
 
 ---
 
@@ -71,11 +55,3 @@ Forked and maintained since 2013 by:
   Helmholtz-Zentrum Dresden-Rossendorf
 ```
 Full license text: `LICENSE` in the cuda_memtest repository.
-
-### CRIU — GNU General Public License, version 2 (LGPL-2.1 for `lib/`)
-```
-Copyright the CRIU project contributors (checkpoint-restore/criu).
-Licensed under GPL-2.0-only; software under lib/ is licensed under LGPL-2.1.
-Only version 2 of the GPL applies unless explicitly stated otherwise.
-```
-Full license text: `COPYING` in the CRIU repository.

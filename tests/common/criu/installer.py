@@ -2,25 +2,27 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""install_criu.py -- Reusable installer for CRIU + the AMD amdgpu CRIU plugin.
+"""installer.py -- Build and install CRIU + the AMD amdgpu CRIU plugin on a test node.
 
-Provisions CRIU on a GPU node so the ``criu_runtime`` fixture finds it ready. Run manually or
-from fleet provisioning; the fixture also invokes it on demand.
+Provisions CRIU so the ``criu_runtime`` fixture finds it ready. The ``criu_runtime`` fixture
+clones CRIU via ``external_build.clone_repo()`` and passes the checkout with ``--src-dir``; this
+installer then only builds and installs. Run standalone (no ``--src-dir``) it clones the source
+itself so it remains usable from fleet provisioning.
 
 What it does:
     1. Install CRIU build prerequisites (apt / dnf / zypper auto-detected).
-    2. git clone CRIU at the requested tag (default v4.1).
-    3. ``make -j`` && ``sudo make install-criu``       (installs binary to /usr/local/sbin; no man pages).
+    2. Use the ``--src-dir`` checkout, or ``git clone`` CRIU at the requested tag (default v4.1).
+    3. ``make -j`` && ``sudo make install-criu``  (installs the binary to /usr/local/sbin; no man pages).
     4. ``sudo make amdgpu_plugin``.
     5. ``sudo mkdir -p /usr/lib/criu`` && copy ``amdgpu_plugin.so`` there.
     6. ``sudo criu check``  (should print "Looks good").
 
 Usage:
-    python3 install_criu.py [CRIU_VERSION_TAG]
-    CRIU_VERSION=v4.1 python3 install_criu.py
-    CRIU_SRC_DIR=/opt/src python3 install_criu.py v4.1
+    python3 installer.py [CRIU_VERSION_TAG]
+    python3 installer.py --src-dir /path/to/criu v4.1
+    CRIU_VERSION=v4.1 python3 installer.py
 
-Requires: sudo privileges, git, a C toolchain, and network access. Linux only.
+Requires: sudo privileges, a C toolchain, network access (for clone/prereqs). Linux only.
 """
 
 from __future__ import annotations
@@ -101,7 +103,7 @@ _PREREQS = {
 
 def _log(message: str) -> None:
     """Print a namespaced progress line."""
-    print(f"\n[install_criu] {message}", flush=True)
+    print(f"\n[criu-installer] {message}", flush=True)
 
 
 def _run(cmd: list[str], cwd: str | None = None) -> None:
@@ -110,60 +112,75 @@ def _run(cmd: list[str], cwd: str | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
-# Elevated commands drop the ``sudo`` prefix when already running as root (e.g. inside a container,
-# where ``sudo`` is frequently not installed). ``os.geteuid`` is Linux-only, which is all this runs on.
-_SUDO: list[str] = [] if os.geteuid() == 0 else ["sudo"]
+def _sudo() -> list[str]:
+    """Return the elevated-command prefix: empty when already root, else ``["sudo"]``.
+
+    Elevated commands drop ``sudo`` when running as root (e.g. inside a container, where ``sudo``
+    is frequently not installed). Computed lazily so importing this module on a non-Linux host
+    (for collection/lint) does not call the Linux-only ``os.geteuid``.
+    """
+    return [] if getattr(os, "geteuid", lambda: 1)() == 0 else ["sudo"]
 
 
 def install_prereqs() -> None:
     """Install CRIU build prerequisites with the first available package manager."""
     if shutil.which("apt-get"):
         _log("Installing prerequisites with apt-get (Ubuntu/Debian)")
-        _run([*_SUDO, "apt-get", "update"])
-        _run([*_SUDO, "apt-get", "install", "-y", *_PREREQS["apt-get"]])
+        _run([*_sudo(), "apt-get", "update"])
+        _run([*_sudo(), "apt-get", "install", "-y", *_PREREQS["apt-get"]])
     elif shutil.which("dnf"):
         _log("Installing prerequisites with dnf (RHEL/CentOS/Fedora)")
-        _run([*_SUDO, "dnf", "install", "-y", *_PREREQS["dnf"]])
+        _run([*_sudo(), "dnf", "install", "-y", *_PREREQS["dnf"]])
     elif shutil.which("zypper"):
         _log("Installing prerequisites with zypper (SLES/openSUSE)")
-        _run([*_SUDO, "zypper", "--non-interactive", "install", *_PREREQS["zypper"]])
+        _run([*_sudo(), "zypper", "--non-interactive", "install", *_PREREQS["zypper"]])
     else:
         _log("WARNING: no supported package manager (apt/dnf/zypper) found.")
         _log("Install CRIU build prerequisites manually, then re-run.")
 
 
-def build_and_install(version: str) -> None:
-    """Clone CRIU at *version*, build it, and install CRIU + the amdgpu plugin."""
-    _log(f"Cloning CRIU {version} into {CRIU_SRC_DIR}")
-    if os.path.exists(CRIU_SRC_DIR):
-        shutil.rmtree(CRIU_SRC_DIR)
-    _run(["git", "clone", "-b", version, CRIU_REPO, CRIU_SRC_DIR])
+def build_and_install(version: str, src_dir: str | None = None) -> None:
+    """Build CRIU + the amdgpu plugin from *src_dir* and install them.
+
+    When *src_dir* is given (the fixture clones via ``external_build.clone_repo``), it is built
+    as-is. Otherwise CRIU *version* is cloned into ``CRIU_SRC_DIR`` first so the installer also
+    works standalone.
+    """
+    if src_dir:
+        criu_src = src_dir
+        _log(f"Building CRIU from provided checkout {criu_src}")
+    else:
+        criu_src = CRIU_SRC_DIR
+        _log(f"Cloning CRIU {version} into {criu_src}")
+        if os.path.exists(criu_src):
+            shutil.rmtree(criu_src)
+        _run(["git", "clone", "-b", version, CRIU_REPO, criu_src])
 
     _log("Building CRIU (make -j)")
-    _run(["make", f"-j{os.cpu_count() or 1}"], cwd=CRIU_SRC_DIR)
+    _run(["make", f"-j{os.cpu_count() or 1}"], cwd=criu_src)
 
     # 'install-criu' installs just the criu binary (+ plugins) to /usr/local/sbin and skips the
     # 'install-man' target, which rebuilds man pages via the asciidoc Python module -- often absent
     # in container venvs (e.g. /opt/venv) and not needed to run CRIU.
     _log("Installing CRIU (sudo make install-criu -> /usr/local/sbin)")
-    _run([*_SUDO, "make", "install-criu"], cwd=CRIU_SRC_DIR)
+    _run([*_sudo(), "make", "install-criu"], cwd=criu_src)
 
     _log("Building the amdgpu CRIU plugin (sudo make amdgpu_plugin)")
-    _run([*_SUDO, "make", "amdgpu_plugin"], cwd=CRIU_SRC_DIR)
+    _run([*_sudo(), "make", "amdgpu_plugin"], cwd=criu_src)
 
     _log(f"Installing amdgpu_plugin.so into {CRIU_PLUGIN_DIR}")
-    _run([*_SUDO, "mkdir", "-p", CRIU_PLUGIN_DIR])
+    _run([*_sudo(), "mkdir", "-p", CRIU_PLUGIN_DIR])
 
-    plugin_so = _find_plugin_so()
+    plugin_so = _find_plugin_so(criu_src)
     if not plugin_so:
         _log("ERROR: amdgpu_plugin.so was not produced by the build.")
         sys.exit(1)
-    _run([*_SUDO, "cp", plugin_so, os.path.join(CRIU_PLUGIN_DIR, "amdgpu_plugin.so")])
+    _run([*_sudo(), "cp", plugin_so, os.path.join(CRIU_PLUGIN_DIR, "amdgpu_plugin.so")])
 
 
-def _find_plugin_so() -> str | None:
-    """Return the built amdgpu_plugin.so path under plugins/amdgpu, or None."""
-    amdgpu_dir = os.path.join(CRIU_SRC_DIR, "plugins", "amdgpu")
+def _find_plugin_so(criu_src: str) -> str | None:
+    """Return the built amdgpu_plugin.so path under *criu_src*/plugins/amdgpu, or None."""
+    amdgpu_dir = os.path.join(criu_src, "plugins", "amdgpu")
     for root, _dirs, files in os.walk(amdgpu_dir):
         if "amdgpu_plugin.so" in files:
             return os.path.join(root, "amdgpu_plugin.so")
@@ -174,7 +191,7 @@ def verify() -> None:
     """Run ``sudo criu check`` (with /usr/local/sbin on PATH); exit 1 on failure."""
     _log("Verifying installation with 'sudo criu check'")
     result = subprocess.run(
-        [*_SUDO, "env", f"PATH={CRIU_PATH}", "criu", "check"],
+        [*_sudo(), "env", f"PATH={CRIU_PATH}", "criu", "check"],
         check=False,
     )
     if result.returncode == 0:
@@ -187,12 +204,17 @@ def verify() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """Install prerequisites, build/install CRIU + amdgpu plugin, and verify."""
-    parser = argparse.ArgumentParser(description="Install CRIU + the AMD amdgpu CRIU plugin.")
+    parser = argparse.ArgumentParser(description="Build and install CRIU + the AMD amdgpu CRIU plugin.")
     parser.add_argument(
         "version",
         nargs="?",
         default=os.environ.get("CRIU_VERSION", DEFAULT_VERSION),
-        help=f"CRIU git tag to build (default: {DEFAULT_VERSION}).",
+        help=f"CRIU git tag to clone when --src-dir is not given (default: {DEFAULT_VERSION}).",
+    )
+    parser.add_argument(
+        "--src-dir",
+        default=None,
+        help="Existing CRIU checkout to build (skips cloning). Supplied by the criu_runtime fixture.",
     )
     args = parser.parse_args(argv)
 
@@ -200,10 +222,10 @@ def main(argv: list[str] | None = None) -> int:
         _log(f"ERROR: CRIU is Linux-only; cannot install on {sys.platform!r}.")
         return 1
 
-    _log(f"CRIU installer starting (version={args.version})")
+    _log(f"CRIU installer starting (version={args.version}, src_dir={args.src_dir or '<clone>'})")
     try:
         install_prereqs()
-        build_and_install(args.version)
+        build_and_install(args.version, src_dir=args.src_dir)
         verify()
     except subprocess.CalledProcessError as exc:
         _log(f"ERROR: command failed with exit code {exc.returncode}: {' '.join(exc.cmd)}")

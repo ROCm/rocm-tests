@@ -5,8 +5,10 @@
 
 Two tests sharing one checkpoint: checkpoint the running workload (``criu dump``), then restore it
 and verify it resumed and is still running (``criu restore``). Build/install come from the
-``cuda_memtest_build`` / ``criu_runtime`` fixtures; dump/restore use ``_criu_steps``.
-Linux only; skips on GFX targets outside SUPPORTED_ARCHS when ``--gpu-arch`` is given.
+``cuda_memtest_build`` / ``criu_runtime`` fixtures; dump/restore use ``tests.common.criu.steps``.
+Both tests share the ``criu_cuda_memtest_serial`` xdist_group so they run serially on one worker
+under parallel CI and the restore reuses the checkpoint. Linux only; skips on GFX targets outside
+SUPPORTED_ARCHS when ``--gpu-arch`` is given.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import re
 import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
-from tests.e2e.recovery.criu import _criu_steps as criu
+from tests.common.criu import steps as criu
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +59,13 @@ def _total_vram_mb(executor, ld: str, rock_dir: str) -> int | None:
 
 
 def _launch(executor, build, ld: str, rock_dir: str) -> str:
-    """Size ``--max_num_blocks`` from VRAM (round(GB)*1000-2000), launch cuda_memtest, return its PID."""
+    """Size ``--max_num_blocks`` from VRAM (floor(GB)*1000-2000), launch cuda_memtest, return its PID."""
     with step("Size and launch cuda_memtest"):
         vram_mb = _total_vram_mb(executor, ld, rock_dir)
         if not vram_mb:
             pytest.skip("Could not determine total GPU VRAM to size cuda_memtest.")
-        blocks = round(vram_mb / 1024) * 1000
+        # Floor GB (never round up) so the block count stays within physical VRAM.
+        blocks = int(vram_mb / 1024) * 1000
         blocks = blocks - 2000 if blocks > 2000 else blocks
         report_metric("GPU_VRAM_MB", float(vram_mb), "MB")
         report_metric("CUDA_MEMTEST_MAX_NUM_BLOCKS", float(blocks))
@@ -97,10 +100,10 @@ def _restore(executor, criu_cmd: str, build, full_log: bool = False) -> None:
         assert "RESTORE_OK" in restore.stdout, f"criu restore did not finish successfully:\n{log[-1500:]}"
 
 
-# One checkpoint shared by the two tests in a single run: launch + criu dump happen once
-# (materialized on first use so either test still runs standalone) and the on-disk image is reused
-# by the restore test. NOTE: not xdist-safe -- with -n the tests may split across workers, each
-# re-dumping; run these single-process.
+# Launch + criu dump happen once per worker and the on-disk image is reused by the restore test.
+# Both tests share the ``criu_cuda_memtest_serial`` xdist_group, so they co-locate on one worker and
+# this cache is reused (no re-dump). Correctness never depends on it, though -- _ensure_checkpoint
+# re-launches and re-dumps when the cache is empty, so either test runs standalone.
 _CHECKPOINT: dict = {}
 
 
@@ -122,6 +125,7 @@ def _ensure_checkpoint(executor, criu_cmd: str, build, ld: str, rock_dir: str, f
 
 
 @pytest.mark.runtime.medium
+@pytest.mark.xdist_group("criu_cuda_memtest_serial")
 def test_criu_check_point_cuda_memtest(
     target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, rock_dir, request
 ):
@@ -133,6 +137,7 @@ def test_criu_check_point_cuda_memtest(
 
 
 @pytest.mark.runtime.medium
+@pytest.mark.xdist_group("criu_cuda_memtest_serial")
 def test_criu_restore_cuda_memtest(
     target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, rock_dir, request
 ):

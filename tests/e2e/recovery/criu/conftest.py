@@ -7,29 +7,27 @@
 sources, and build the HIP binary with ``hipcc`` on the node the tests run on; skips when the
 ROCm toolchain is absent.
 
-``criu_runtime`` (session): ensure CRIU + amdgpu_plugin are ready (``criu check`` + plugin file),
-auto-installing via scripts/install_criu.py when missing, and return the ``sudo -n env PATH=... criu``
-prefix. CRIU needs root; passwordless ``sudo -n`` is required or the suite skips cleanly.
+``criu_runtime`` (session): delegate to :func:`tests.common.criu.ensure_criu_runtime` to ensure
+CRIU + amdgpu_plugin are ready and return the ``sudo -n env PATH=... criu`` command prefix.
 """
 
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 import logging
 import os
-import re
 
 import pytest
 
 from framework.executors.cpu_executor import CpuExecutor
+from tests.common.criu import ensure_criu_runtime
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Upstream cuda_memtest repo (pinned commit for reproducibility)
-# cuda_memtest (NCSA) and CRIU (GPL-2.0) are fetched/built at runtime, not vendored.
-# See NOTICES.md in this directory for licenses and obligations.
+# cuda_memtest is cloned and built at runtime, not vendored.
+# See NOTICES.md in this directory for its license and obligations.
 # ---------------------------------------------------------------------------
 
 _CUDA_MEMTEST_URL = os.environ.get(
@@ -42,31 +40,6 @@ _CUDA_MEMTEST_REF = os.environ.get(
 )
 
 _SUBDIR = "recovery/cuda_memtest"
-
-# ---------------------------------------------------------------------------
-# CRIU invocation prefix
-# ---------------------------------------------------------------------------
-
-# CRIU installs to /usr/local/sbin (see scripts/install_criu.py). sudo resets the
-# environment, so PATH is set explicitly for the elevated process.
-_CRIU_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin"
-CRIU = f'sudo -n env "PATH={_CRIU_PATH}" criu'
-
-# Path where the amdgpu CRIU plugin is installed.
-_AMDGPU_PLUGIN = "/usr/lib/criu/amdgpu_plugin.so"
-
-_INSTALL_HINT = (
-    "CRIU + amdgpu_plugin is required by this suite. When missing it is auto-installed "
-    "on the test node via tests/e2e/recovery/criu/scripts/install_criu.py (set "
-    "ROCM_TEST_CRIU_AUTO_INSTALL=0 to disable, ROCM_TEST_CRIU_VERSION=<tag> to pin the "
-    "version). Auto-install needs passwordless sudo, git, a C toolchain, and network "
-    "access; you can also run install_criu.py manually on the node beforehand."
-)
-
-# CRIU git tag to build when auto-installing.
-_DEFAULT_CRIU_VERSION = "v4.1"
-# Shell-safe git ref (tag/branch) pattern -- validated before interpolation.
-_CRIU_VERSION_RE = re.compile(r"^[A-Za-z0-9._/\-]+$")
 
 
 @dataclass(frozen=True)
@@ -163,75 +136,7 @@ def cuda_memtest_build(cmake_executor, rock_dir: str, compiler_build_dir: str, f
     return CudaMemtestBuild(binary=os.path.join(dest, "cuda_memtest"), workdir=dest)
 
 
-def _criu_ready(probe_exec) -> tuple[bool, str]:
-    """Return ``(ready, diagnostic)``: ready when the amdgpu plugin exists and ``criu check`` says "Looks good"."""
-    if not probe_exec.run(f"test -f {_AMDGPU_PLUGIN}").ok:
-        return False, f"amdgpu plugin not found at {_AMDGPU_PLUGIN}"
-    check = probe_exec.run(f"{CRIU} check")
-    combined = f"{check.stdout}\n{check.stderr}"
-    if "Looks good" not in combined:
-        return False, f"`criu check` did not report 'Looks good':\n{combined[-1500:]}"
-    return True, ""
-
-
-def _install_criu(probe_exec, is_remote: bool, version: str, timeout: float):
-    """Run scripts/install_criu.py on the test node; return its ExecutionResult.
-
-    Local runs execute the script directly; remote runs base64-transfer it to ``/tmp`` on the
-    SSH node first (the repo may not be checked out there), then run it.
-    """
-    local_script = os.path.join(os.path.dirname(__file__), "scripts", "install_criu.py")
-    if is_remote:
-        with open(local_script, "rb") as handle:
-            payload = base64.b64encode(handle.read()).decode()
-        remote_script = "/tmp/rocm_test_install_criu.py"
-        transfer = probe_exec.run(f"echo {payload} | base64 -d > {remote_script}")
-        if not transfer.ok:
-            return transfer
-        script_path = remote_script
-    else:
-        script_path = local_script
-    return probe_exec.run(f"python3 {script_path} {version}", timeout=timeout)
-
-
 @pytest.fixture(scope="session")
-def criu_runtime(cmake_executor, framework_config) -> str:
-    """Ensure CRIU + amdgpu_plugin are ready on the test node; auto-install if not.
-
-    Uses CRIU as-is when ``criu check`` says "Looks good" and the plugin is present; otherwise
-    installs via scripts/install_criu.py and re-verifies. Disable with ``ROCM_TEST_CRIU_AUTO_INSTALL=0``;
-    pick the tag with ``ROCM_TEST_CRIU_VERSION`` (default ``v4.1``). Returns the ``sudo -n ... criu`` prefix.
-    """
-    is_remote = cmake_executor is not None
-    probe_exec = cmake_executor if is_remote else CpuExecutor(suppress_output_log=True)
-
-    # Passwordless sudo is required to both install and run CRIU (see Privilege note).
-    if not probe_exec.run("sudo -n true").ok:
-        pytest.skip("Passwordless sudo is not available for the test user. " + _INSTALL_HINT)
-
-    ready, diagnostic = _criu_ready(probe_exec)
-    if ready:
-        logger.info("CRIU runtime available: amdgpu_plugin present and 'criu check' passed.")
-        return CRIU
-
-    if os.environ.get("ROCM_TEST_CRIU_AUTO_INSTALL", "1") == "0":
-        pytest.skip(f"CRIU not ready ({diagnostic}) and auto-install disabled. " + _INSTALL_HINT)
-
-    version = os.environ.get("ROCM_TEST_CRIU_VERSION", _DEFAULT_CRIU_VERSION)
-    if not _CRIU_VERSION_RE.match(version):
-        pytest.fail(f"Invalid ROCM_TEST_CRIU_VERSION {version!r}; expected a git tag/branch name.")
-
-    logger.warning("CRIU not ready (%s). Auto-installing CRIU %s via install_criu.py ...", diagnostic, version)
-    install = _install_criu(probe_exec, is_remote, version, float(framework_config.therock.build_timeout_secs))
-    if not install.ok:
-        pytest.fail(
-            f"Automatic CRIU installation failed (exit={install.exit_code}).\n"
-            f"stdout: {install.stdout[-2000:]}\nstderr: {install.stderr[-2000:]}\n" + _INSTALL_HINT
-        )
-
-    ready, diagnostic = _criu_ready(probe_exec)
-    if not ready:
-        pytest.fail(f"CRIU still not ready after auto-installation ({diagnostic}). " + _INSTALL_HINT)
-
-    logger.info("CRIU installed via install_criu.py; runtime available.")
-    return CRIU
+def criu_runtime(external_build, cmake_executor, framework_config) -> str:
+    """Ensure CRIU + amdgpu_plugin are ready on the test node; return the ``sudo -n ... criu`` prefix."""
+    return ensure_criu_runtime(external_build, cmake_executor, framework_config)
