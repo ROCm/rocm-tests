@@ -15,7 +15,7 @@ import re
 import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
-from tests.e2e.recovery.criu import _criu_steps as criu
+from tests.common.criu import steps as criu
 
 logger = logging.getLogger(__name__)
 
