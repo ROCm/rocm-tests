@@ -290,7 +290,7 @@ jobs:
           python-version: 3.12
 
       - name: Install ClickHouse results backend dependencies
-        run: python -m pip install --root-user-action=ignore clickhouse-connect certifi
+        run: python -m pip install --root-user-action=ignore --no-cache-dir clickhouse-connect certifi
 
       - name: Upload nightly results to ClickHouse
         env:
