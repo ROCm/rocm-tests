@@ -77,7 +77,7 @@ def _restore(executor, criu_cmd: str, build, full_log: bool = False) -> None:
 # Serialized via this xdist_group: CRIU tests sharing the build workdir must not run
 # concurrently (they write the same dump.log / *.img / cuda_memtest.out).
 @pytest.mark.runtime.medium
-@pytest.mark.xdist_group("criu_cuda_memtest_serial")
+@pytest.mark.xdist_group("criu_serial")
 def test_criu_checkpoint_restore_cuda_memtest(
     target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, request
 ):
