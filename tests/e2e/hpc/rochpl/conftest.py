@@ -31,7 +31,6 @@ import re
 
 import pytest
 
-from framework.builder.binary_builder import find_rocm_clangpp
 from framework.executors.background_process import _blocking_stream_run
 
 logger = logging.getLogger(__name__)
@@ -46,6 +45,14 @@ _ROCHPL_REF = os.environ.get("ROCHPL_REF", _DEFAULT_ROCHPL_REF)
 # install.sh drops the launcher wrapper here on success -- used for idempotency.
 _BUILD_SENTINEL = "mpirun_rochpl"
 
+# OpenMPI version to provision when no MPI runtime is discovered on the node.
+# Kept in lockstep with the OpenMPI that rocHPL's own ``install.sh`` bootstraps
+# (``git clone --branch v5.0.7 ... ompi.git``) so the provisioned launcher matches
+# the toolchain rocHPL is validated against. Override with
+# ``ROCM_TEST_ROCHPL_OPENMPI_VERSION`` / ``OPENMPI_VERSION`` if a node needs a
+# different release.
+_OPENMPI_VERSION = "5.0.7"
+
 
 def _safe_ref_name(ref: str) -> str:
     """Return a filesystem-safe label for a git ref."""
@@ -57,13 +64,6 @@ def _path_exists(path: str, cmake_executor) -> bool:
     if cmake_executor is not None:
         return cmake_executor.run(f"test -f {path}", timeout=30.0).ok
     return os.path.isfile(path)
-
-
-def _resolve_llvm_bin(rock_dir: str, cmake_executor) -> str:
-    """Return the ROCm LLVM ``bin`` directory to prepend to PATH for the build."""
-    clangpp = find_rocm_clangpp(rock_dir) if cmake_executor is None else None
-    cxx = str(clangpp) if clangpp is not None else f"{rock_dir}/lib/llvm/bin/clang++"
-    return os.path.dirname(cxx)
 
 
 def _run_build_step(cmd: str, *, cmake_executor, timeout: float, label: str, log_path: str) -> None:
@@ -120,7 +120,9 @@ def rochpl_mpi_runtime(external_build):
     if runtime is not None:
         logger.info("rocHPL: using discovered MPI runtime at %s", runtime.launcher)
         return runtime
-    version = os.environ.get("ROCM_TEST_ROCHPL_OPENMPI_VERSION") or os.environ.get("OPENMPI_VERSION") or "4.1.4"
+    version = (
+        os.environ.get("ROCM_TEST_ROCHPL_OPENMPI_VERSION") or os.environ.get("OPENMPI_VERSION") or _OPENMPI_VERSION
+    )
     logger.info("rocHPL: no MPI runtime found; provisioning OpenMPI %s", version)
     return external_build.provision_openmpi_runtime(version=version)
 
@@ -176,10 +178,14 @@ def rochpl_build(
         mpi_home = rochpl_mpi_runtime.env.get("MPI_HOME", "")
         mpi_bin = os.path.dirname(rochpl_mpi_runtime.launcher)
         mpi_lib = rochpl_mpi_runtime.env.get("LD_LIBRARY_PATH", "")
-        llvm_bin = _resolve_llvm_bin(rock_dir, cmake_executor)
+        # rocHPL's install.sh sets ``PATH=$PATH:$ROCM_PATH/bin`` and its CMake finds
+        # the HIP compiler through ROCm's HIP cmake package via ``ROCM_PATH`` (the
+        # script accepts no compiler flag). So ``ROCM_PATH`` + ``$ROCM_PATH/bin`` on
+        # PATH is all the build needs -- no separate LLVM ``bin`` entry is required
+        # (this also matches the run-time env in test_rochpl.py).
         env_prefix = (
             f"ROCM_PATH={rocm_path} "
-            f"PATH={mpi_bin}:{rocm_path}/bin:{llvm_bin}:$PATH "
+            f"PATH={mpi_bin}:{rocm_path}/bin:$PATH "
             f"LD_LIBRARY_PATH={mpi_lib}:{rocm_path}/lib:$LD_LIBRARY_PATH"
         )
 
