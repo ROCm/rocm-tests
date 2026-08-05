@@ -152,6 +152,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    "tests/e2e/rocm_examples": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # CRIU checkpoint/restore stress suite.
     # Single-GPU / single-node HIP workload (cuda_memtest) that is checkpointed and
     # restored with CRIU + amdgpu_plugin. Weekly cadence because the happy-path case
