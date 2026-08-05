@@ -347,7 +347,9 @@ def rvs_find_conf(rock_dir: str, rvs_source: str, cmake_executor, rvs_binary: st
     def _find_conf(config_name: str, *, gpu_only: bool = False, gpu_conf_dir: str = "") -> str:
         installed_conf = rock_dir_path / "share" / "rocm-validation-suite" / "conf"
         search_roots = _collect_conf_roots(
-            installed_conf, install_conf, source_conf,
+            installed_conf,
+            install_conf,
+            source_conf,
             cmake_executor=cmake_executor,
         )
 
