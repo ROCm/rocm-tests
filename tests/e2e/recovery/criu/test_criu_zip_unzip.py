@@ -76,7 +76,7 @@ def _unzip_checkpoint(executor, tarball: str, dest: str) -> None:
 @pytest.mark.runtime.medium
 @pytest.mark.xdist_group("criu_cuda_memtest_serial")
 def test_criu_zip_unzip_cuda_memtest(
-    target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, rock_dir, request
+    target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, request
 ):
     """Zip a cuda_memtest checkpoint, unzip it elsewhere, and restore from the unzipped copy.
 
@@ -92,7 +92,7 @@ def test_criu_zip_unzip_cuda_memtest(
     tarball = f"{build.workdir}_zipped.tar"
     dest = f"{build.workdir}_zipped"
 
-    pid = _launch(executor, build, ld, rock_dir)
+    pid = _launch(executor, build, ld)
     try:
         # Checkpoint into the build workdir (writes dump.log + *.img there).
         _checkpoint(executor, criu_runtime, build, pid, full_log)

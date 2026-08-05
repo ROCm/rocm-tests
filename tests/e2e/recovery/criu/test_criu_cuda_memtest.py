@@ -14,7 +14,6 @@ SUPPORTED_ARCHS when ``--gpu-arch`` is given.
 from __future__ import annotations
 
 import logging
-import re
 
 import pytest
 
@@ -28,8 +27,17 @@ SUPPORTED_ARCHS = frozenset(
     {"gfx90a", "gfx908", "gfx942", "gfx950", "gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201"}
 )
 
-_WORKLOAD_ARGS = "--disable_all --enable_test 0 --num_passes 1"
+# Run Test 0 continuously (no --num_passes, so cuda_memtest loops until killed) -- the
+# workload must stay alive for criu dump; criu dump / kill_pid terminate it afterward.
+_WORKLOAD_ARGS = "--disable_all --enable_test 0"
 _LAUNCH_TIMEOUT = 60.0
+
+# GPU footprint for the workload, in cuda_memtest blocks (~1 MB each). Small on purpose: the
+# upstream robustness test caps nothing, but CRIU's amdgpu_plugin drains each GPU buffer object via
+# sDMA within a fence timeout, so a VRAM-filling allocation makes the dump time out ("failed to
+# query fence status - Timer expired"). ~2 GB exercises real device memory while keeping the
+# checkpoint fast.
+_MAX_NUM_BLOCKS = 2000
 
 
 def _skip_if_unsupported_arch(gpu_arch: str | None) -> None:
@@ -37,49 +45,21 @@ def _skip_if_unsupported_arch(gpu_arch: str | None) -> None:
         pytest.skip(f"GPU arch {gpu_arch} not supported for CRIU cuda_memtest: {sorted(SUPPORTED_ARCHS)}")
 
 
-def _total_vram_mb(executor, ld: str, rock_dir: str) -> int | None:
-    """Return total VRAM (MB) for the acquired GPU via rocm-smi/amd-smi, or None.
-
-    ``<rock_dir>/bin`` is prepended to PATH so the SMI tools resolve even when ROCm's bin dir
-    is not on the caller's PATH.
-    """
-    cmd = (
-        f"env LD_LIBRARY_PATH={ld} PATH={rock_dir}/bin:$PATH sh -c '"
-        "{ command -v rocm-smi >/dev/null 2>&1 && rocm-smi --showmeminfo vram 2>/dev/null; } ; "
-        "{ command -v amd-smi >/dev/null 2>&1 && amd-smi metric -g 0 --mem-usage 2>/dev/null; }'"
-    )
-    out = executor.run(cmd, timeout=120).stdout or ""
-    totals = [int(m) for line in out.splitlines() if "total" in line.lower() for m in re.findall(r"\d+", line)]
-    if not totals:
-        return None
-    raw = max(totals)
-    if raw >= (1 << 30):  # bytes
-        return raw // (1024 * 1024)
-    return raw if raw >= 1024 else None  # already MB
-
-
-def _launch(executor, build, ld: str, rock_dir: str) -> str:
-    """Size ``--max_num_blocks`` from VRAM (floor(GB)*1000-2000), launch cuda_memtest, return its PID."""
-    with step("Size and launch cuda_memtest"):
-        vram_mb = _total_vram_mb(executor, ld, rock_dir)
-        if not vram_mb:
-            pytest.skip("Could not determine total GPU VRAM to size cuda_memtest.")
-        # Floor GB (never round up) so the block count stays within physical VRAM.
-        blocks = int(vram_mb / 1024) * 1000
-        blocks = blocks - 2000 if blocks > 2000 else blocks
-        report_metric("GPU_VRAM_MB", float(vram_mb), "MB")
-        report_metric("CUDA_MEMTEST_MAX_NUM_BLOCKS", float(blocks))
+def _launch(executor, build, ld: str) -> str:
+    """Launch cuda_memtest with a small fixed GPU footprint (see ``_MAX_NUM_BLOCKS``); return its PID."""
+    with step("Launch cuda_memtest"):
+        report_metric("CUDA_MEMTEST_MAX_NUM_BLOCKS", float(_MAX_NUM_BLOCKS))
         # Capture the PID via $! -- `grep cuda_memtest` would also match the pytest argv.
         cmd = (
             f"cd {build.workdir} && rm -f dump.log restore.log cuda_memtest.out *.img 2>/dev/null; "
-            f"env LD_LIBRARY_PATH={ld} nohup {build.binary} {_WORKLOAD_ARGS} --max_num_blocks {blocks} "
+            f"env LD_LIBRARY_PATH={ld} nohup {build.binary} {_WORKLOAD_ARGS} --max_num_blocks {_MAX_NUM_BLOCKS} "
             "> cuda_memtest.out 2>&1 & pid=$!; disown 2>/dev/null || true; sleep 5; "
             'if ps -p "$pid" >/dev/null 2>&1; then echo PID=$pid; else echo PID=; tail -n 40 cuda_memtest.out; fi'
         )
         out = executor.run(cmd, timeout=_LAUNCH_TIMEOUT).stdout or ""
         pid = next((ln.split("=", 1)[1].strip() for ln in out.splitlines() if ln.strip().startswith("PID=")), "")
         assert pid, f"cuda_memtest did not start:\n{out[-1500:]}"
-        logger.info("cuda_memtest running with PID %s (max_num_blocks=%d)", pid, blocks)
+        logger.info("cuda_memtest running with PID %s (max_num_blocks=%d)", pid, _MAX_NUM_BLOCKS)
         return pid
 
 
@@ -107,13 +87,13 @@ def _restore(executor, criu_cmd: str, build, full_log: bool = False) -> None:
 _CHECKPOINT: dict = {}
 
 
-def _ensure_checkpoint(executor, criu_cmd: str, build, ld: str, rock_dir: str, full_log: bool) -> str:
+def _ensure_checkpoint(executor, criu_cmd: str, build, ld: str, full_log: bool) -> str:
     """Launch cuda_memtest and ``criu dump`` it once per run; return the checkpointed PID.
 
     Cached after the first call so the restore test reuses the same image instead of re-dumping.
     """
     if not _CHECKPOINT.get("done"):
-        pid = _launch(executor, build, ld, rock_dir)
+        pid = _launch(executor, build, ld)
         try:
             _checkpoint(executor, criu_cmd, build, pid, full_log)
         except BaseException:
@@ -126,26 +106,22 @@ def _ensure_checkpoint(executor, criu_cmd: str, build, ld: str, rock_dir: str, f
 
 @pytest.mark.runtime.medium
 @pytest.mark.xdist_group("criu_cuda_memtest_serial")
-def test_criu_check_point_cuda_memtest(
-    target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, rock_dir, request
-):
+def test_criu_check_point_cuda_memtest(target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, request):
     """Checkpoint a running cuda_memtest process with ``criu dump``."""
     _skip_if_unsupported_arch(gpu_arch)
     executor, ld = target_executor, ld_path["LD_LIBRARY_PATH"]
     full_log = request.config.getoption("capture") == "no"
-    _ensure_checkpoint(executor, criu_runtime, cuda_memtest_build, ld, rock_dir, full_log)
+    _ensure_checkpoint(executor, criu_runtime, cuda_memtest_build, ld, full_log)
 
 
 @pytest.mark.runtime.medium
 @pytest.mark.xdist_group("criu_cuda_memtest_serial")
-def test_criu_restore_cuda_memtest(
-    target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, rock_dir, request
-):
+def test_criu_restore_cuda_memtest(target_executor, ld_path, cuda_memtest_build, criu_runtime, gpu_arch, request):
     """Restore the checkpointed cuda_memtest process and verify it resumed and is still running."""
     _skip_if_unsupported_arch(gpu_arch)
     executor, ld = target_executor, ld_path["LD_LIBRARY_PATH"]
     full_log = request.config.getoption("capture") == "no"
-    pid = _ensure_checkpoint(executor, criu_runtime, cuda_memtest_build, ld, rock_dir, full_log)
+    pid = _ensure_checkpoint(executor, criu_runtime, cuda_memtest_build, ld, full_log)
     try:
         _restore(executor, criu_runtime, cuda_memtest_build, full_log)
         with step("Verify cuda_memtest resumed under criu"):
