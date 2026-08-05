@@ -13,20 +13,25 @@ Validates:
        ROCHPL_MIN_GFLOPS is set, GFLOPS must meet that floor.
 
 The clone + install.sh build are handled by the session-scoped ``rochpl_build``
-fixture in ``conftest.py``.  This test drives the resulting ``mpirun_rochpl`` on
-the GPU node via ``target_executor`` with the MPI + ROCm runtime environment
-injected as an ``env VAR=... cmd`` prefix (never via ``os.environ``).
+fixture in ``conftest.py`` (one build per GPU arch -- P/Q/N/NB are runtime args
+to ``mpirun_rochpl``, so the binary is shared across every variant). This test
+drives that launcher on the GPU node via ``target_executor`` with the MPI + ROCm
+runtime environment injected as an ``env VAR=... cmd`` prefix (never via
+``os.environ``).
 
-The GPU count is configurable on a single node via ``ROCHPL_NUM_GPUS`` (default
-2): ``1`` runs single-GPU mode (``hw.gpu``, 1 rank, grid 1x1), ``>1`` runs
-multi-GPU mode (``hw.multi_gpu``, one rank per GPU). See ``_workload.py`` for all
-env knobs (``ROCHPL_P``/``ROCHPL_Q``/``ROCHPL_N``/``ROCHPL_NB``/
-``ROCHPL_ITERATIONS``/``ROCHPL_MIN_GFLOPS``).
+The test is *parametrized* over an ASIC-specific run matrix: one variant per GPU
+count (typically ``1:2:4:8``), each with the tuned ``P``/``Q``/``N``/``NB`` for
+the target ``--gpu-arch``. ``pytest_generate_tests`` builds the parametrization at
+collection time from ``_workload.variants_for(arch)`` and attaches the matching
+``gpu_count`` and ``hw.gpu``/``hw.multi_gpu`` markers to each variant. See
+``_workload.py`` for the matrix and all env knobs (``ROCHPL_GPU_COUNTS`` /
+``ROCHPL_MATRIX_JSON`` / ``ROCHPL_NUM_GPUS`` / ``ROCHPL_ITERATIONS`` /
+``ROCHPL_MIN_GFLOPS``).
 
-Markers (declared explicitly; also registered as a CATEGORY_PROFILE for
-tests/e2e/hpc/rochpl/):
-    hw.gpu / hw.multi_gpu -- chosen from ROCHPL_NUM_GPUS (single vs multi GPU)
-    gpu_count(N)   -- acquire N=ROCHPL_NUM_GPUS GPUs from one node
+Markers (hw.* + gpu_count are applied per-variant by ``pytest_generate_tests``;
+the rest come from the CATEGORY_PROFILE for tests/e2e/hpc/rochpl/):
+    hw.gpu / hw.multi_gpu -- per variant (single- vs multi-GPU count)
+    gpu_count(N)   -- per variant: acquire N GPUs from one node
     layer.math_lib -- rocHPL is a GPU compute (rocBLAS/DGEMM) benchmark
     ci.weekly      -- long-running Linpack performance benchmark (from CATEGORY_PROFILE)
     e2e.stack      -- full-stack end-to-end scenario
@@ -42,25 +47,14 @@ import pytest
 
 from framework.reporting.allure_reporter import report_metric
 from tests.e2e.hpc.rochpl._workload import (
-    IS_SINGLE_GPU,
     ITERATIONS,
     MIN_GFLOPS,
     MPI_EXTRA_ENV,
-    NB,
-    NUM_GPUS,
-    N,
-    P,
-    Q,
+    Variant,
+    variants_for,
 )
 
 logger = logging.getLogger(__name__)
-
-# hw dimension follows the configured GPU count (ROCHPL_NUM_GPUS). Declared via a
-# module-level ``pytestmark`` list rather than a bare MarkDecorator global: a
-# standalone MarkDecorator is callable, so pytest's collector would introspect it
-# and the repo's dotted-mark __getattr__ patch would emit spurious "unknown mark"
-# warnings. This hw.* overrides the hw.multi_gpu default from the CATEGORY_PROFILE.
-pytestmark = [pytest.mark.hw.gpu if IS_SINGLE_GPU else pytest.mark.hw.multi_gpu]
 
 # rocHPL prints a result row after the "T/V ... Gflops" header, e.g.:
 #   WC00C2R4       45312   512     2     1        12.34      4567.8 (  2283.9)
@@ -75,18 +69,42 @@ _FAILED_RE = re.compile(r"\bFAILED\b")
 _PASSED_RE = re.compile(r"\bPASSED\b")
 
 
-@pytest.mark.gpu_count(NUM_GPUS)
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    """Parametrize ``variant`` over the ASIC-specific 1:2:4:8 GPU-count matrix.
+
+    Runs at collection time so the target arch is read from ``--gpu-arch`` and
+    each variant carries its own ``gpu_count`` and ``hw.gpu``/``hw.multi_gpu``
+    markers (the per-variant hw.* overrides the hw.multi_gpu CATEGORY_PROFILE
+    default; the marker linter still sees hw.* satisfied via that profile).
+    """
+    if "variant" not in metafunc.fixturenames:
+        return
+    arch = metafunc.config.getoption("--gpu-arch", default=None)
+    params = []
+    for variant in variants_for(arch):
+        hw_marker = pytest.mark.hw.gpu if variant.is_single_gpu else pytest.mark.hw.multi_gpu
+        params.append(
+            pytest.param(
+                variant,
+                id=variant.label,
+                marks=[pytest.mark.gpu_count(variant.gpus), hw_marker],
+            )
+        )
+    metafunc.parametrize("variant", params)
+
+
 @pytest.mark.runtime.soak
 def test_rochpl_benchmark(
+    variant: Variant,
     target_executor,
     rock_dir: str,
     ld_path: dict,
     rochpl_build: str,
     rochpl_mpi_runtime,
 ):
-    """Run rocHPL across P*Q GPUs and assert the Linpack residual PASSED.
+    """Run rocHPL across the variant's P*Q GPUs and assert the residual PASSED.
 
-    ``target_executor`` acquires ``ROCHPL_NUM_GPUS`` GPUs and injects
+    ``target_executor`` acquires ``variant.gpus`` GPUs and injects
     ``ROCR_VISIBLE_DEVICES``; ``mpirun_rochpl`` launches ``P*Q`` MPI ranks, one
     per visible GPU, over the ``P x Q`` process grid.
     """
@@ -105,11 +123,18 @@ def test_rochpl_benchmark(
         f"env {mpi_extra_env}ROCM_PATH={rock_dir} "
         f"PATH={mpi_bin}:{rock_dir}/bin:$PATH "
         f"LD_LIBRARY_PATH={mpi_lib}:{ld}:$LD_LIBRARY_PATH "
-        f"./mpirun_rochpl -P {P} -Q {Q} -N {N} --NB {NB}{it_arg} && "
+        f"./mpirun_rochpl -P {variant.p} -Q {variant.q} -N {variant.n} --NB {variant.nb}{it_arg} && "
         f"cat HPL.out"
     )
 
-    logger.info("rocHPL launch: P=%d Q=%d N=%d NB=%d ranks=%d", P, Q, N, NB, NUM_GPUS)
+    logger.info(
+        "rocHPL launch: P=%d Q=%d N=%d NB=%d ranks=%d",
+        variant.p,
+        variant.q,
+        variant.n,
+        variant.nb,
+        variant.gpus,
+    )
 
     # runtime.soak cap: 2h for a tuned Linpack solve. The one-time source build is
     # a separate session fixture with its own therock.build_timeout_secs.
@@ -125,7 +150,7 @@ def test_rochpl_benchmark(
     match = _RESULT_RE.search(result.stdout)
     assert match, f"rocHPL produced no parseable GFLOPS result row:\n{result.stdout[-4000:]}"
     gflops = float(match.group(1))
-    report_metric("ROCHPL_GFLOPS", gflops, "GFLOPS")
+    report_metric(f"ROCHPL_GFLOPS_{variant.label}", gflops, "GFLOPS")
     logger.info("rocHPL total performance: %.1f GFLOPS", gflops)
 
     assert gflops > 0.0, f"rocHPL reported non-positive GFLOPS ({gflops}):\n{result.stdout[-2000:]}"
