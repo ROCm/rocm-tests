@@ -3,12 +3,8 @@
 
 """CRIU checkpoint/restore of the cuda_memtest HIP workload.
 
-Two tests sharing one checkpoint: checkpoint the running workload (``criu dump``), then restore it
-and verify it resumed and is still running (``criu restore``). Build/install come from the
-``cuda_memtest_build`` / ``criu_runtime`` fixtures; dump/restore use ``tests.common.criu.steps``.
-Both tests share the ``criu_cuda_memtest_serial`` xdist_group so they run serially on one worker
-under parallel CI and the restore reuses the checkpoint. Linux only; skips on GFX targets outside
-SUPPORTED_ARCHS when ``--gpu-arch`` is given.
+Launches cuda_memtest, checkpoints it with ``criu dump``, then restores it with
+``criu restore`` and verifies it resumed and is still running. Linux, single GPU.
 """
 
 from __future__ import annotations
@@ -32,11 +28,9 @@ SUPPORTED_ARCHS = frozenset(
 _WORKLOAD_ARGS = "--disable_all --enable_test 0"
 _LAUNCH_TIMEOUT = 60.0
 
-# GPU footprint for the workload, in cuda_memtest blocks (~1 MB each). Small on purpose: the
-# upstream robustness test caps nothing, but CRIU's amdgpu_plugin drains each GPU buffer object via
-# sDMA within a fence timeout, so a VRAM-filling allocation makes the dump time out ("failed to
-# query fence status - Timer expired"). ~2 GB exercises real device memory while keeping the
-# checkpoint fast.
+# GPU footprint in cuda_memtest blocks (~1 MB each). Kept small: CRIU's amdgpu_plugin
+# drains each GPU buffer via sDMA within a fence timeout, so a VRAM-filling allocation
+# makes the dump time out. ~2 GB exercises real device memory while keeping the dump fast.
 _MAX_NUM_BLOCKS = 2000
 
 
@@ -80,10 +74,8 @@ def _restore(executor, criu_cmd: str, build, full_log: bool = False) -> None:
         assert "RESTORE_OK" in restore.stdout, f"criu restore did not finish successfully:\n{log[-1500:]}"
 
 
-# Launch + criu dump happen once per worker and the on-disk image is reused by the restore test.
-# Both tests share the ``criu_cuda_memtest_serial`` xdist_group, so they co-locate on one worker and
-# this cache is reused (no re-dump). Correctness never depends on it, though -- _ensure_checkpoint
-# re-launches and re-dumps when the cache is empty, so either test runs standalone.
+# Launch + dump run once per process; the restore reuses the on-disk image. When the
+# cache is empty _ensure_checkpoint re-launches and re-dumps, so either test runs alone.
 _CHECKPOINT: dict = {}
 
 
