@@ -1,14 +1,10 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Build and environment fixtures for the CRIU cuda_memtest suite.
+"""Build and environment fixtures for the CRIU checkpoint/restore suite.
 
-``cuda_memtest_build`` (session): clone cuda_memtest at a pinned commit, hipify + patch the
-sources, and build the HIP binary with ``hipcc`` on the node the tests run on; skips when the
-ROCm toolchain is absent.
-
-``criu_runtime`` (session): delegate to :func:`tests.common.criu.ensure_criu_runtime` to ensure
-CRIU + amdgpu_plugin are ready and return the ``sudo -n env PATH=... criu`` command prefix.
+Provides the CRIU runtime prefix (host and in-target) and the cuda_memtest HIP build
+grouped into the COMMON / CUDAMEM sections below.
 """
 
 from __future__ import annotations
@@ -20,15 +16,39 @@ import os
 import pytest
 
 from framework.executors.cpu_executor import CpuExecutor
-from tests.common.criu import ensure_criu_runtime
+from tests.common.criu import ensure_criu_runtime, ensure_criu_runtime_target
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Upstream cuda_memtest repo (pinned commit for reproducibility)
-# cuda_memtest is cloned and built at runtime, not vendored.
-# See NOTICES.md in this directory for its license and obligations.
-# ---------------------------------------------------------------------------
+
+# ###########################################################################
+# #### COMMON #### -- CRIU runtime prefix (host and in-target)
+# ###########################################################################
+
+
+@pytest.fixture(scope="session")
+def criu_runtime(external_build, cmake_executor, framework_config) -> str:
+    """Make CRIU + amdgpu_plugin ready on the test node (host/SSH); auto-install if not.
+
+    Session-scoped. Returns the ``sudo -n ... criu`` command prefix.
+    """
+    return ensure_criu_runtime(external_build, cmake_executor, framework_config)
+
+
+@pytest.fixture
+def criu_runtime_target(target_executor, framework_config) -> str:
+    """Make CRIU ready *inside* ``target_executor`` so it lives where the workload runs.
+
+    Function-scoped. Returns the ``sudo -n ... criu`` command prefix.
+    """
+    return ensure_criu_runtime_target(target_executor, framework_config)
+
+
+# ###########################################################################
+# #### CUDAMEM #### -- cuda_memtest HIP build
+# cuda_memtest (NCSA) and CRIU (GPL-2.0) are fetched/built at runtime, not vendored.
+# See NOTICES.md in this directory for licenses and obligations.
+# ###########################################################################
 
 _CUDA_MEMTEST_URL = os.environ.get(
     "ROCM_TEST_CUDA_MEMTEST_URL",
@@ -44,27 +64,15 @@ _SUBDIR = "recovery/cuda_memtest"
 
 @dataclass(frozen=True)
 class CudaMemtestBuild:
-    """Result of the session-scoped cuda_memtest build.
-
-    Attributes:
-        binary:  Absolute path to the compiled ``cuda_memtest`` binary on the
-                 node where the tests execute.
-        workdir: Directory holding the binary and (at runtime) the CRIU image
-                 files / dump.log / restore.log. CRIU dumps into the CWD, so all
-                 checkpoint/restore commands ``cd`` here.
-    """
+    """Compiled cuda_memtest: ``binary`` path and its ``workdir`` (CRIU dumps into the CWD)."""
 
     binary: str
     workdir: str
 
 
 def _build_executor(cmake_executor, rock_dir: str):
-    """Return an executor that runs build commands on the test node.
-
-    Remote (``--remote-node``): reuse the session ``SshExecutor`` so the checkout
-    and compile happen on the same host that later runs CRIU. Local: a
-    ``CpuExecutor`` with ``<rock_dir>/bin`` prepended to PATH so ``hipcc`` /
-    ``hipify-perl`` resolve (no GPU env is injected -- compilation is CPU-only).
+    """Return the build executor: the session SSH executor when remote, else a ``CpuExecutor``
+    with ``<rock_dir>/bin`` on PATH so ``hipcc`` / ``hipify-perl`` resolve (build is CPU-only).
     """
     if cmake_executor is not None:
         return cmake_executor
@@ -82,10 +90,8 @@ def _resolve_dest(cmake_executor, compiler_build_dir: str) -> str:
 
 @pytest.fixture(scope="session")
 def cuda_memtest_build(cmake_executor, rock_dir: str, compiler_build_dir: str, framework_config) -> CudaMemtestBuild:
-    """Clone, hipify, patch, and compile cuda_memtest once per session.
+    """Clone, hipify, patch, and compile cuda_memtest once per session with ``hipcc``.
 
-    Runs: git clone + reset to the pinned commit, ``hipify-perl`` on the sources, the
-    ``hipHostGetDevicePointer`` cast patch, then ``hipcc -DENABLE_NVML=0 ... -lpthread``.
     Skips (never fails) when ``hipcc`` / ``hipify-perl`` are absent. Returns a CudaMemtestBuild.
     """
     build_exec = _build_executor(cmake_executor, rock_dir)
@@ -101,13 +107,8 @@ def cuda_memtest_build(cmake_executor, rock_dir: str, compiler_build_dir: str, f
 
     dest = _resolve_dest(cmake_executor, compiler_build_dir)
 
-    # hipify-perl cannot re-process an already-hipified tree, so the checkout is
-    # wiped and re-cloned each session to keep the build deterministic.
-    #
-    # ROCM_PATH / HIP_PATH are exported so hipcc/hipify-perl resolve their internal
-    # toolchain (clang++, rocm_agent_enumerator) under --rock-dir. Without this
-    # hipcc falls back to a stale default (e.g. /opt/rocm-<ver>) and fails with
-    # "clang++: No such file or directory" when rock_dir is a non-default install.
+    # Re-clone each session (hipify-perl cannot re-process an already-hipified tree) and export
+    # ROCM_PATH / HIP_PATH so hipcc/hipify-perl resolve their toolchain under --rock-dir.
     script = "\n".join(
         (
             "set -e",
@@ -136,7 +137,4 @@ def cuda_memtest_build(cmake_executor, rock_dir: str, compiler_build_dir: str, f
     return CudaMemtestBuild(binary=os.path.join(dest, "cuda_memtest"), workdir=dest)
 
 
-@pytest.fixture(scope="session")
-def criu_runtime(external_build, cmake_executor, framework_config) -> str:
-    """Ensure CRIU + amdgpu_plugin are ready on the test node; return the ``sudo -n ... criu`` prefix."""
-    return ensure_criu_runtime(external_build, cmake_executor, framework_config)
+# #### END CUDAMEM ####
