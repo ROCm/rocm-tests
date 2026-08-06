@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.e2e.transformer_engine._transformer_engine_jax import TeJaxConfig
+from tests.e2e.jax._transformer_engine_jax import TeJaxConfig
 
 
 @pytest.fixture(scope="session")
