@@ -30,10 +30,6 @@ on:
   schedule:
     - cron: '0 11 * * *'   # 11:00 AM UTC daily
 
-  push:
-    branches:
-      - users/mparamas/ch-plugin
-
   workflow_call:
     inputs:
       source_repo:
