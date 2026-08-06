@@ -25,7 +25,7 @@ Configuration:
 Supported hardware:
     gfx94X and gfx950. The test skips on any other architecture.
 
-Markers (no CATEGORY_PROFILE exists for tests/e2e/transformer_engine -- all
+Markers (no CATEGORY_PROFILE exists for tests/e2e/jax -- all
 declared explicitly):
     hw.gpu, ci.nightly, layer.math_lib, e2e.stack, os.linux, runtime.soak.
 """
@@ -33,7 +33,7 @@ declared explicitly):
 import pytest
 
 from framework.reporting.allure_reporter import report_metric
-from tests.e2e.transformer_engine._transformer_engine_jax import (
+from tests.e2e.jax._transformer_engine_jax import (
     TeJaxConfig,
     TeTestSummary,
     build_rocm_envs,
