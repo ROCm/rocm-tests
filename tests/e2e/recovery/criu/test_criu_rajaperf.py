@@ -3,9 +3,8 @@
 
 """CRIU checkpoint/restore of the LLNL RAJAPerf HIP workload.
 
-Checkpoint a running ``raja-perf.exe`` (``criu dump``), then restore it and verify it resumed
-(``criu restore``). Build/runtime come from the ``rajaperf_build`` / ``criu_runtime`` fixtures;
-dump/restore helpers from ``_criu_steps``. Linux only; skips on GFX targets outside SUPPORTED_ARCHS.
+Launch ``raja-perf.exe``, ``criu dump`` then ``criu restore`` it, and verify the restored PID is
+alive and still the workload. Linux only; skips on GFX targets outside SUPPORTED_ARCHS.
 """
 
 from __future__ import annotations
@@ -13,15 +12,13 @@ from __future__ import annotations
 import logging
 
 import pytest
-from tests.e2e.recovery.criu.test_criu_cuda_memtest import _checkpoint, _restore
+from tests.common.criu import steps as criu
 
 from framework.reporting.allure_reporter import step
-from tests.e2e.recovery.criu import _criu_steps as criu
 
 logger = logging.getLogger(__name__)
 
-# GFX targets validated for CRIU checkpoint/restore of RAJAPerf: gfx1250 (MI450), gfx950 (MI350X),
-# gfx942 (MI300A), gfx90a (MI250X/MI210/MI200), gfx908 (MI100).
+# GFX targets validated for CRIU checkpoint/restore of RAJAPerf.
 SUPPORTED_ARCHS = frozenset({"gfx1250", "gfx950", "gfx942", "gfx90a", "gfx908"})
 
 # RAJAPerf variants to exercise under CRIU.
@@ -34,20 +31,16 @@ _LAUNCH_TIMEOUT = 60.0
 
 
 def _skip_if_unsupported_arch(gpu_arch: str | None) -> None:
+    """Skip when ``--gpu-arch`` names a GFX target outside SUPPORTED_ARCHS."""
     if gpu_arch and gpu_arch not in SUPPORTED_ARCHS:
         pytest.skip(f"GPU arch {gpu_arch} not supported for CRIU RAJAPerf: {sorted(SUPPORTED_ARCHS)}")
 
 
-def _launch(executor, build, ld: str, rock_dir: str) -> str:
-    """Launch ``raja-perf.exe`` in the background from the build dir and return its PID.
-
-    The PID is captured via ``$!`` (the exact launched process). ``rock_dir`` is accepted for
-    signature parity with the shared launch helper and is unused here.
-    """
-    del rock_dir  # unused: RAJAPerf launch needs no VRAM sizing
+def _launch(executor, build, ld: str) -> str:
+    """Launch ``raja-perf.exe`` in the background from the build dir; return its PID."""
     with step("Launch RAJAPerf"):
         # Launch from build.workdir so ./bin/raja-perf.exe resolves and CRIU dumps into this CWD;
-        # clear any stale dump/restore logs and image files first.
+        # capture the exact PID via $! and clear any stale dump/restore logs and images first.
         cmd = (
             f"cd {build.workdir} && rm -f dump.log restore.log rajaperf.out *.img 2>/dev/null; "
             f"env LD_LIBRARY_PATH={ld} nohup ./bin/raja-perf.exe {_WORKLOAD_ARGS} "
@@ -62,48 +55,38 @@ def _launch(executor, build, ld: str, rock_dir: str) -> str:
         return pid
 
 
-# One checkpoint shared by the two tests in a single run: launch + criu dump happen once
-# (materialized on first use so either test still runs standalone) and the on-disk image is reused
-# by the restore test. NOTE: not xdist-safe -- with -n the tests may split across workers, each
-# re-dumping; run these single-process.
-_CHECKPOINT: dict = {}
+def _checkpoint(executor, criu_cmd: str, build, pid: str, full_log: bool = False) -> None:
+    """Checkpoint the running process with ``criu dump`` and assert it stopped."""
+    with step("Checkpoint with criu dump"):
+        dump = criu.criu_dump(executor, criu_cmd, build.workdir, pid)
+        log = criu.attach_criu_log(executor, build.workdir, "dump.log", full=full_log)
+        assert "OK" in dump.stdout, f"criu dump did not report OK:\n{dump.stdout[-1500:]}\n{log[-1500:]}"
+        assert "PID_GONE" in dump.stdout, "workload still exists after criu dump."
 
 
-def _ensure_checkpoint(executor, criu_cmd: str, build, ld: str, rock_dir: str, full_log: bool) -> str:
-    """Launch RAJAPerf and ``criu dump`` it once per run; return the checkpointed PID.
-
-    Cached after the first call so the restore test reuses the same image instead of re-dumping.
-    """
-    if not _CHECKPOINT.get("done"):
-        pid = _launch(executor, build, ld, rock_dir)
-        try:
-            _checkpoint(executor, criu_cmd, build, pid, full_log)
-        except BaseException:
-            criu.kill_pid(executor, pid)  # dump failed -> workload still alive
-            raise
-        _CHECKPOINT["pid"] = pid
-        _CHECKPOINT["done"] = True
-    return _CHECKPOINT["pid"]
+def _restore(executor, criu_cmd: str, build, full_log: bool = False) -> None:
+    """Restore the checkpoint with ``criu restore`` and assert CRIU reported success."""
+    with step("Restore with criu restore"):
+        restore = criu.criu_restore(executor, criu_cmd, build.workdir)
+        log = criu.attach_criu_log(executor, build.workdir, "restore.log", full=full_log)
+        assert "RESTORE_OK" in restore.stdout, f"criu restore did not finish successfully:\n{log[-1500:]}"
 
 
+# Serialized via this xdist_group: CRIU checkpoint/restore is a node-level (KFD) operation, so no
+# two CRIU tests run concurrently on the same node (shared with the cuda_memtest / zip_unzip tests).
 @pytest.mark.runtime.medium
-def test_criu_check_point_rajaperf(target_executor, ld_path, rajaperf_build, criu_runtime, gpu_arch, rock_dir, request):
-    """Checkpoint a running RAJAPerf process with ``criu dump``."""
+@pytest.mark.xdist_group("criu_serial")
+def test_criu_checkpoint_restore_rajaperf(target_executor, ld_path, rajaperf_build, criu_runtime, gpu_arch, request):
+    """Launch RAJAPerf, checkpoint it, restore it, and confirm it resumed under the original PID."""
     _skip_if_unsupported_arch(gpu_arch)
     executor, ld = target_executor, ld_path["LD_LIBRARY_PATH"]
     full_log = request.config.getoption("capture") == "no"
-    _ensure_checkpoint(executor, criu_runtime, rajaperf_build, ld, rock_dir, full_log)
 
-
-@pytest.mark.runtime.medium
-def test_criu_restore_rajaperf(target_executor, ld_path, rajaperf_build, criu_runtime, gpu_arch, rock_dir, request):
-    """Restore the checkpointed RAJAPerf process and verify it resumed and is still running."""
-    _skip_if_unsupported_arch(gpu_arch)
-    executor, ld = target_executor, ld_path["LD_LIBRARY_PATH"]
-    full_log = request.config.getoption("capture") == "no"
-    pid = _ensure_checkpoint(executor, criu_runtime, rajaperf_build, ld, rock_dir, full_log)
+    pid = _launch(executor, rajaperf_build, ld)
     try:
+        _checkpoint(executor, criu_runtime, rajaperf_build, pid, full_log)
         _restore(executor, criu_runtime, rajaperf_build, full_log)
+
         with step("Verify RAJAPerf resumed under criu"):
             # criu restores into the original PID; confirm it is alive and still the workload.
             check = executor.run(
