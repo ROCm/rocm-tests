@@ -70,7 +70,7 @@ JAX_WHEEL_KEYS = ("jax_whl", "jax_rocm_plugin_whl", "jax_rocm_plugin_native_whl"
 # Result-line patterns.
 JAX_UT_PATTERN = r"(?P<testcase>.*)\s+(?P<status>PASSED|SKIPPED|FAILED)"
 CPP_UT_PATTERN = (
-    r"Test\s+#\d+: (?P<testcase>[\w/.]+(?:[\w\d]+)+)\s+.*(?:\*\*\*.*)?"
+    r"Test\s+#\d+: (?P<testcase>[\w/.]+)\s+.*(?:\*\*\*.*)?"
     r"(?P<status>Failed|Passed|Skipped|Exception|Error)(?::)?\s*[\d\.]+\s+sec"
 )
 
