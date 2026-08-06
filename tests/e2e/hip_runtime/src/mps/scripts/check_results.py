@@ -67,7 +67,7 @@ def dim(t):
 # ---------------------------------------------------------------------------
 
 _DEFAULT_HEALTH_WARN_MB = 100
-_MEMORY_MOVER_HEALTH_WARN_MB = 1024
+_MEMORY_MOVER_HEALTH_WARN_MB = 2048
 
 
 def read_sysinfo(results_dir):
