@@ -2,9 +2,9 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Insert ROCm nightly workflow results into ClickHouse.
+"""Insert ROCm e2e workflow results into ClickHouse.
 
-Writes a single converged table ``rocmtests_nightly_results`` that holds two row
+Writes a single converged table ex: ``rocmtests_nightly_results`` that holds two row
 types, distinguished by the ``row_type`` column:
 
 ``row_type = 'summary'``
@@ -21,9 +21,7 @@ types, distinguished by the ``row_type`` column:
 
 Both row types share the primary sort key ``(run_id, platform, row_type,
 nodeid)`` so the table can serve as a single source of truth for dashboards
-without any cross-table JOINs.  A supplementary ``SummingMergeTree``
-Materialized View (``rocmtests_job_rollup`` / ``rocmtests_job_rollup_mv``)
-pre-aggregates per-file outcome counts for sub-second dashboard rollup queries.
+without any cross-table JOINs.
 
 All connection parameters must be supplied via environment variables or CLI
 flags — no values are hardcoded.
@@ -226,18 +224,6 @@ def default_ca_cert() -> str | None:
     except ImportError:
         return None
     return certifi.where()
-
-
-def _rollup_table_name(table: str) -> str:
-    """Derive the rollup table name from the main table name."""
-    base = table.split(".")[-1]
-    prefix = table[: -len(base)] if "." in table else ""
-    return f"{prefix}{base}_rollup"
-
-
-def _rollup_mv_name(table: str) -> str:
-    """Derive the rollup MV name from the main table name."""
-    return f"{_rollup_table_name(table)}_mv"
 
 
 # ── ClickHouse connection ────────────────────────────────────────────────────
@@ -673,19 +659,13 @@ _COLUMN_INDEX = {name: idx for idx, name in enumerate(_COLUMNS)}
 
 
 def create_table(client, table: str) -> None:
-    """Create the converged ``rocmtests_nightly_results`` table plus the rollup MV.
-
-    Also creates the ``<table>_rollup`` SummingMergeTree target and the
-    ``<table>_rollup_mv`` Materialized View that pre-aggregates case-row
-    outcome counts per ``(run_id, platform, test_file, outcome)``.
+    """Create the converged ``rocmtests_nightly_results`` table.
 
     Args:
         client: Active ClickHouse client.
         table: Validated table name (may be database-qualified).
     """
     table = validate_clickhouse_table_name(table)
-    rollup = validate_clickhouse_table_name(_rollup_table_name(table))
-    rollup_mv = validate_clickhouse_table_name(_rollup_mv_name(table))
 
     # Main converged table
     client.command(f"""
@@ -753,45 +733,9 @@ ORDER BY (run_id, platform, row_type, nodeid)
 """)
     print(f"Created table {table}", flush=True)
 
-    # Rollup target table for the MV
-    client.command(f"""
-CREATE TABLE IF NOT EXISTS {rollup}
-(
-    run_id       UInt64,
-    platform     LowCardinality(String),
-    gpu_arch     LowCardinality(String),
-    test_file    String,
-    outcome      LowCardinality(String),
-    test_count   UInt64,
-    total_secs   Float64
-)
-ENGINE = SummingMergeTree((test_count, total_secs))
-ORDER BY (run_id, platform, test_file, outcome)
-""")
-    print(f"Created rollup table {rollup}", flush=True)
-
-    # Materialized View — fires on INSERT of case rows
-    client.command(f"""
-CREATE MATERIALIZED VIEW IF NOT EXISTS {rollup_mv}
-TO {rollup}
-AS
-SELECT
-    run_id,
-    platform,
-    gpu_arch,
-    test_file,
-    outcome,
-    count()            AS test_count,
-    sum(duration_secs) AS total_secs
-FROM {table}
-WHERE row_type = 'case'
-GROUP BY run_id, platform, gpu_arch, test_file, outcome
-""")
-    print(f"Created rollup materialized view {rollup_mv}", flush=True)
-
 
 def drop_and_create_table(client, table: str) -> None:
-    """Drop and recreate the main table plus rollup objects.
+    """Drop and recreate the main table.
 
     Use this for schema migrations.  Existing data is permanently deleted.
 
@@ -800,12 +744,8 @@ def drop_and_create_table(client, table: str) -> None:
         table: Validated table name.
     """
     table = validate_clickhouse_table_name(table)
-    rollup = validate_clickhouse_table_name(_rollup_table_name(table))
-    rollup_mv = validate_clickhouse_table_name(_rollup_mv_name(table))
 
-    print(f"Dropping {rollup_mv}, {rollup}, {table} …", flush=True)
-    client.command(f"DROP VIEW IF EXISTS {rollup_mv}")
-    client.command(f"DROP TABLE IF EXISTS {rollup}")
+    print(f"Dropping {table} …", flush=True)
     client.command(f"DROP TABLE IF EXISTS {table}")
     create_table(client, table)
 
@@ -1206,13 +1146,13 @@ def parse_args() -> argparse.Namespace:
         "--create-table",
         action="store_true",
         default=False,
-        help="Create the destination table (and rollup MV) if they do not exist",
+        help="Create the destination table if it does not exist",
     )
     parser.add_argument(
         "--recreate-table",
         action="store_true",
         default=False,
-        help="DROP and recreate the destination table + rollup MV (data loss — use for schema migrations)",
+        help="DROP and recreate the destination table (data loss — use for schema migrations)",
     )
     parser.add_argument(
         "--no-total-row",
@@ -1283,7 +1223,7 @@ def main() -> bool:
 
         return True
 
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError, KeyError, configparser.Error, HTTPError, URLError, TimeoutError) as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         if "CERTIFICATE_VERIFY_FAILED" in str(exc):
             print(

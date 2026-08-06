@@ -309,5 +309,4 @@ jobs:
             --table "${RESULTS_TABLE}" \
             --testplan testplan.ini \
             --counts-dir all-counts \
-            --reports-dir all-reports \
-            --create-table
+            --reports-dir all-reports 
