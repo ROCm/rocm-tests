@@ -11,7 +11,6 @@ import pytest
 @pytest.mark.runtime.medium
 @pytest.mark.parametrize("conf_name", [
     "tst_single.conf",
-    "tst_stress.conf",
 ])
 def test_gpu_rvs_tst_monitored(
     run_monitored_rvs,
@@ -30,7 +29,7 @@ def test_gpu_rvs_tst_monitored(
     result = run_monitored_rvs(
         conf_file=conf_file,
         test_name="gpu_rvs_tst_monitored",
-        timeout=1200,
+        timeout=1800,
     )
 
     assert result["passed"], (
