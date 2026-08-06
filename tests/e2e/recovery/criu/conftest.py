@@ -16,7 +16,6 @@ import os
 
 import pytest
 
-from framework.builder.binary_builder import find_rocm_clangpp
 from framework.executors.cpu_executor import CpuExecutor
 from tests.common import criu as criu_common
 
@@ -56,6 +55,16 @@ class MatrixTransposeBuild:
 
     binary: str
     workdir: str
+
+
+def _build_executor(cmake_executor, rock_dir: str):
+    """Return the build executor: the session SSH executor when remote, else a ``CpuExecutor``
+    with ``<rock_dir>/bin`` on PATH so the ROCm toolchain resolves (build is CPU-only).
+    """
+    if cmake_executor is not None:
+        return cmake_executor
+    env = {"PATH": f"{os.path.join(rock_dir, 'bin')}:{os.environ.get('PATH', '')}"}
+    return CpuExecutor(env_overrides=env, suppress_output_log=True)
 
 
 def _mt_resolve_dest(cmake_executor, compiler_build_dir: str) -> str:

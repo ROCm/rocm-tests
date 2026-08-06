@@ -71,7 +71,7 @@ def _restore(executor, criu_cmd: str, build, full_log: bool = False) -> None:
 
 
 # Serialized via this xdist_group: CRIU checkpoint/restore is a node-level (KFD) operation, so no
-# two CRIU tests run concurrently on the same node (shared with the other CRIU workload tests).
+# two CRIU tests run concurrently on the same node.
 @pytest.mark.runtime.medium
 @pytest.mark.xdist_group("criu_serial")
 def test_criu_checkpoint_restore_matrix_transpose(
