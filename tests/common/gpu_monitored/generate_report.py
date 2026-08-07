@@ -198,7 +198,7 @@ def _svg_polyline(
     h: int,
     pad: Tuple[int, int, int, int],
     y_min: float,
-    y_max: float
+    y_max: float,
 ) -> str:
     if len(pts) < 2:
         return ""
