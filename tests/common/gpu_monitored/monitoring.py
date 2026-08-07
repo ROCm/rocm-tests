@@ -37,7 +37,7 @@ class Monitor:
         cu_csv: Path,
         sample_interval: int = 2,
         enable_cu_occupancy: bool = False,
-        amd_smi_path: str = "amd-smi"
+        amd_smi_path: str = "amd-smi",
     ):
         self.csv_file = Path(csv_file)
         self.cu_csv = Path(cu_csv)
@@ -62,7 +62,7 @@ class Monitor:
                 str(self.sample_interval),
                 "--csv",
                 "--file",
-                str(self.csv_file)
+                str(self.csv_file),
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -73,8 +73,8 @@ class Monitor:
             if self._monitor_proc.poll() is not None:
                 rc = self._monitor_proc.returncode
                 logger.warning(
-                    "amd-smi monitor exited immediately (rc=%d) — "
-                    "monitoring CSV will be empty", rc,
+                    "amd-smi monitor exited immediately (rc=%d) — " "monitoring CSV will be empty", 
+                    rc,
                 )
 
             if self.enable_cu_occupancy:

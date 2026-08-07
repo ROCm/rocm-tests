@@ -595,7 +595,9 @@ def validate_monitoring(test_name: str, per_gpu: Dict, pattern: str, run_dir: st
                     (st.get("gfx_util", {}).get("avg", 0) for _, st in active),
                     default=0,
                 )
-                warnings.append(f"No GPU's active window reached expected " f"{min_util}% gfx util (best was {worst}% avg)")
+                warnings.append(
+                    f"No GPU's active window reached expected " f"{min_util}% gfx util (best was {worst}% avg)"
+                )
             if min_vram_pct > 0:
                 any_meets_vram = False
                 for gid, st in active:

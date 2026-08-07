@@ -50,6 +50,7 @@ def _get_system_tz() -> tuple:
     tz_name = _time.strftime("%Z") or "UTC"
     return offset_sec, tz_name
 
+
 SYS_TZ_OFFSET, SYS_TZ_NAME = _get_system_tz()
 
 GPU_COLORS = [
@@ -189,14 +190,15 @@ def _stats(vals: List[float]) -> Optional[Dict[str, float]]:
 # SVG + interactive tooltip rendering
 # ---------------------------------------------------------------------------
 
+
 def _svg_polyline(
-        pts: List[Tuple[float, float]],
-        color: str,
-        w: int,
-        h: int,
-        pad: Tuple[int, int, int, int],
-        y_min: float,
-        y_max: float
+    pts: List[Tuple[float, float]],
+    color: str,
+    w: int,
+    h: int,
+    pad: Tuple[int, int, int, int],
+    y_min: float,
+    y_max: float
 ) -> str:
     if len(pts) < 2:
         return ""
@@ -256,7 +258,6 @@ def _y_axis_grid(
             f'fill="rgba(156,163,175,0.8)" font-size="10">{label}</text>'
         )
     return grid
-
 
 
 def _render_combined_chart(

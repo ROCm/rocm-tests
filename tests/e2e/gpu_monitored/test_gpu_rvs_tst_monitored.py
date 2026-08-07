@@ -8,6 +8,7 @@ Runs TST configs under continuous amd-smi monitoring, then performs
 
 import pytest
 
+
 @pytest.mark.runtime.medium
 @pytest.mark.parametrize(
     "conf_name",
@@ -35,4 +36,4 @@ def test_gpu_rvs_tst_monitored(
         timeout=1800,
     )
 
-    assert result["passed"], (f"RVS TST failed ({conf_name}):\n{result['validation']}")
+    assert result["passed"], f"RVS TST failed ({conf_name}):\n{result['validation']}"

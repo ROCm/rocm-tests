@@ -140,5 +140,3 @@ def validate_rvs_result(stdout: str, stderr: str, exit_code: int, dmesg_new: Opt
 
     messages.append(f"--- {layers_evaluated}/5 layers evaluated ---")
     return failed, "\n".join(messages)
-
-
