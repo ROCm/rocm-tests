@@ -305,5 +305,14 @@ int main(int argc, char **argv)
     printf("[BUGGY] SUITE_MARKER success scenario=%s pid=%d\n",
            only_mode_label(only), static_cast<int>(getpid()));
     fflush(stdout);
-    return 0;
+    // Use _exit(0) rather than return/exit so that C++ destructors and HIP
+    // runtime atexit handlers do not run after the device has been reset.
+    // On gfx94x the siglongjmp fault-recovery path resets the device, but
+    // the runtime's background fault-handler thread may still be live; the
+    // normal exit sequence triggers a secondary SIGSEGV (exit 139).  On other
+    // architectures hipDeviceReset() is called inside the normal sync path
+    // (above) so the context is already clean — _exit(0) is equally safe
+    // there and keeps the behaviour consistent across all architectures.
+    // stdout/stderr are explicitly flushed above so no output is lost.
+    _exit(0);
 }
