@@ -11,8 +11,7 @@ from pathlib import Path
 from tests.common.gpu_monitored.generate_report import generate_report
 
 
-def write_report(run_dir: Path, test_name: str, exit_code: int, duration: int,
-                 *, unsupported: bool = False) -> None:
+def write_report(run_dir: Path, test_name: str, exit_code: int, duration: int, *, unsupported: bool = False) -> None:
     """Generate HTML report at `run_dir/report.html`.
 
     ``unsupported`` is a classification flag set by the test (e.g. RVS

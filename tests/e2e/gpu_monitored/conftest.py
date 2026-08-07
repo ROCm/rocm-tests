@@ -53,13 +53,20 @@ def _probe_kernel_health(lookback_sec: int = 300) -> dict:
     """
     try:
         rc, stdout, _stderr = run_cmd_get_stdout_stderr(
-            "dmesg", "--time-format=reltime", f"--since=-{lookback_sec}s",
-            timeout=10, quiet=True,
+            "dmesg",
+            "--time-format=reltime",
+            f"--since=-{lookback_sec}s",
+            timeout=10,
+            quiet=True,
         )
         if rc != 0:
             rc, stdout, _stderr = run_cmd_get_stdout_stderr(
-                "sudo", "-n", "dmesg", "-T",
-                timeout=10, quiet=True,
+                "sudo",
+                "-n",
+                "dmesg",
+                "-T",
+                timeout=10,
+                quiet=True,
             )
         if rc != 0:
             return {"healthy": True, "events": [], "raw_lines": 0, "note": "dmesg unavailable"}
@@ -79,6 +86,7 @@ def _probe_kernel_health(lookback_sec: int = 300) -> dict:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def gpu_monitor_interval():
@@ -129,6 +137,7 @@ def gpu_monitor(run_dir, rock_dir, gpu_monitor_interval):
             enable_cu_occupancy=cu_occupancy,
             amd_smi_path=amd_smi,
         )
+
     return _factory
 
 
@@ -139,6 +148,7 @@ def kernel_health_probe():
     Returns a function that probes dmesg for critical events.
     Call at the start of a test to verify GPU health before stressing.
     """
+
     def _probe(lookback_sec: int = 300, strict: bool = False):
         result = _probe_kernel_health(lookback_sec)
         if not result["healthy"]:
@@ -152,12 +162,18 @@ def kernel_health_probe():
             else:
                 logger.warning(msg)
         return result
+
     return _probe
 
 
 @pytest.fixture
 def run_monitored_rvs(
-    gpu_monitor, run_dir, rvs_binary, rock_dir, ld_path, request,
+    gpu_monitor,
+    run_dir,
+    rvs_binary,
+    rock_dir,
+    ld_path,
+    request,
 ):
     """High-level fixture: run RVS with monitoring, validation, analysis, and report.
 
@@ -168,6 +184,7 @@ def run_monitored_rvs(
             result = run_monitored_rvs(conf_file=conf, test_name="iet_stress")
             assert result["passed"]
     """
+
     def _run(
         conf_file: str,
         test_name: str = "rvs_test",
@@ -190,7 +207,11 @@ def run_monitored_rvs(
 
             try:
                 rc, stdout, stderr = run_cmd_get_stdout_stderr(
-                    "bash", "-c", cmd, timeout=timeout, quiet=True,
+                    "bash",
+                    "-c",
+                    cmd,
+                    timeout=timeout,
+                    quiet=True,
                 )
             except Exception as e:
                 timed_out = True

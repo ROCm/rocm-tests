@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 try:
     from tests.common.gpu_monitored import csv_schema as _csv_schema  # type: ignore
 except ImportError:  # pragma: no cover - script-style invocation
+
     class _CsvSchemaFallback:
         TIMESTAMP = "timestamp"
         GPU = "gpu"
@@ -33,7 +34,9 @@ except ImportError:  # pragma: no cover - script-style invocation
         VRAM_USED = "vram_used"
         VRAM_TOTAL = "vram_total"
         VRAM_PCT = "vram_percent"
+
     _csv_schema = _CsvSchemaFallback()
+
 
 def _get_system_tz() -> tuple:
     """Return (utc_offset_seconds, tz_abbreviation) for the system's local
@@ -50,21 +53,28 @@ def _get_system_tz() -> tuple:
 SYS_TZ_OFFSET, SYS_TZ_NAME = _get_system_tz()
 
 GPU_COLORS = [
-    "#3b82f6", "#ef4444", "#22c55e", "#f59e0b",
-    "#8b5cf6", "#ec4899", "#06b6d4", "#f97316",
+    "#3b82f6",
+    "#ef4444",
+    "#22c55e",
+    "#f59e0b",
+    "#8b5cf6",
+    "#ec4899",
+    "#06b6d4",
+    "#f97316",
 ]
 
 COMBINED_METRICS = [
-    ("power_pct",   "Power %",        "#ef4444"),
-    ("temp_pct",    "Temperature %",   "#f59e0b"),
-    ("gfx_clk_pct", "GFX Clock %",    "#3b82f6"),
-    ("gfx_util",    "GFX Util %",     "#22c55e"),
-    ("vram_pct",    "VRAM Util %",    "#8b5cf6"),
-    ("mem_engine",  "MEM Engine %",   "#06b6d4"),
-    ("mem_clk_pct", "MEM Clock %",    "#ec4899"),
+    ("power_pct", "Power %", "#ef4444"),
+    ("temp_pct", "Temperature %", "#f59e0b"),
+    ("gfx_clk_pct", "GFX Clock %", "#3b82f6"),
+    ("gfx_util", "GFX Util %", "#22c55e"),
+    ("vram_pct", "VRAM Util %", "#8b5cf6"),
+    ("mem_engine", "MEM Engine %", "#06b6d4"),
+    ("mem_clk_pct", "MEM Clock %", "#ec4899"),
 ]
 
 _chart_id_counter = 0
+
 
 def _next_chart_id() -> str:
     global _chart_id_counter
@@ -114,28 +124,32 @@ def _parse_rows(rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         vram_total = _sf(r.get(_csv_schema.VRAM_TOTAL), 0)
         vram_used = _sf(r.get(_csv_schema.VRAM_USED), 0)
         vram_pct_raw = r.get(_csv_schema.VRAM_PCT, "")
-        vram_pct = _sf(vram_pct_raw) if vram_pct_raw.strip() not in ("", "N/A") else (
-            (vram_used / vram_total * 100) if vram_total > 0 else 0)
-        parsed.append({
-            "t": int(_sf(ts, 0)),
-            "gpu": r.get(_csv_schema.GPU, "0"),
-            "power": _sf(r.get(_csv_schema.POWER_USAGE)),
-            "max_power": _sf(r.get(_csv_schema.MAX_POWER), 1000),
-            "hotspot_temp": _sf(r.get(_csv_schema.HOTSPOT_TEMP)),
-            "mem_temp": _sf(r.get(_csv_schema.MEM_TEMP)),
-            "gfx_clk": _sf(r.get(_csv_schema.GFX_CLK)),
-            "gfx_util": _sf(r.get(_csv_schema.GFX_UTIL)),
-            "mem_clk": _sf(r.get(_csv_schema.MEM_CLK)),
-            "mem_engine": _sf(r.get(_csv_schema.MEM_UTIL)),
-            "vram_used": vram_used,
-            "vram_total": vram_total,
-            "vram_pct": vram_pct,
-        })
+        vram_pct = (
+            _sf(vram_pct_raw)
+            if vram_pct_raw.strip() not in ("", "N/A")
+            else ((vram_used / vram_total * 100) if vram_total > 0 else 0)
+        )
+        parsed.append(
+            {
+                "t": int(_sf(ts, 0)),
+                "gpu": r.get(_csv_schema.GPU, "0"),
+                "power": _sf(r.get(_csv_schema.POWER_USAGE)),
+                "max_power": _sf(r.get(_csv_schema.MAX_POWER), 1000),
+                "hotspot_temp": _sf(r.get(_csv_schema.HOTSPOT_TEMP)),
+                "mem_temp": _sf(r.get(_csv_schema.MEM_TEMP)),
+                "gfx_clk": _sf(r.get(_csv_schema.GFX_CLK)),
+                "gfx_util": _sf(r.get(_csv_schema.GFX_UTIL)),
+                "mem_clk": _sf(r.get(_csv_schema.MEM_CLK)),
+                "mem_engine": _sf(r.get(_csv_schema.MEM_UTIL)),
+                "vram_used": vram_used,
+                "vram_total": vram_total,
+                "vram_pct": vram_pct,
+            }
+        )
     return parsed
 
 
-def _compute_pct_fields(rows: List[Dict[str, Any]],
-                        gpu_limits: Optional[Dict] = None) -> List[Dict[str, Any]]:
+def _compute_pct_fields(rows: List[Dict[str, Any]], gpu_limits: Optional[Dict] = None) -> List[Dict[str, Any]]:
     if not rows:
         return rows
     gl = gpu_limits or {}
@@ -168,17 +182,22 @@ def _downsample(points: List, max_pts: int = 800) -> List:
 def _stats(vals: List[float]) -> Optional[Dict[str, float]]:
     if not vals:
         return None
-    return {"min": min(vals), "max": max(vals),
-            "avg": round(sum(vals) / len(vals), 1), "samples": len(vals)}
+    return {"min": min(vals), "max": max(vals), "avg": round(sum(vals) / len(vals), 1), "samples": len(vals)}
 
 
 # ---------------------------------------------------------------------------
 # SVG + interactive tooltip rendering
 # ---------------------------------------------------------------------------
 
-def _svg_polyline(pts: List[Tuple[float, float]], color: str,
-                  w: int, h: int, pad: Tuple[int, int, int, int],
-                  y_min: float, y_max: float) -> str:
+def _svg_polyline(
+        pts: List[Tuple[float, float]],
+        color: str,
+        w: int,
+        h: int,
+        pad: Tuple[int, int, int, int],
+        y_min: float,
+        y_max: float
+) -> str:
     if len(pts) < 2:
         return ""
     pl, pr, pt, pb = pad
@@ -186,11 +205,15 @@ def _svg_polyline(pts: List[Tuple[float, float]], color: str,
     span = max(1.0, t1 - t0)
     iw = max(1, w - pl - pr)
     ih = max(1, h - pt - pb)
-    def _x(t): return pl + (t - t0) / span * iw
+
+    def _x(t):
+        return pl + (t - t0) / span * iw
+
     def _y(v):
         rng = max(0.01, y_max - y_min)
         u = min(1.0, max(0.0, (v - y_min) / rng))
         return pt + (1.0 - u) * ih
+
     coords = " ".join(f"{_x(t):.1f},{_y(v):.1f}" for t, v in pts)
     return f'<polyline fill="none" stroke="{color}" stroke-width="1.5" stroke-opacity="0.85" points="{coords}" />'
 
@@ -206,13 +229,16 @@ def _time_axis_ticks(t0: int, t1: int, w: int, h: int, pad: Tuple[int, int, int,
         x = pl + frac * iw
         ts_val = t0 + frac * span
         lbl = datetime.fromtimestamp(ts_val).strftime("%H:%M:%S")
-        ticks += (f'<text x="{x:.0f}" y="{h-10}" text-anchor="middle" '
-                  f'fill="rgba(156,163,175,0.8)" font-size="10">{lbl} {SYS_TZ_NAME}</text>')
+        ticks += (
+            f'<text x="{x:.0f}" y="{h-10}" text-anchor="middle" '
+            f'fill="rgba(156,163,175,0.8)" font-size="10">{lbl} {SYS_TZ_NAME}</text>'
+        )
     return ticks
 
 
-def _y_axis_grid(w: int, h: int, pad: Tuple[int, int, int, int],
-                 y_min: float, y_max: float, n_ticks: int, unit: str) -> str:
+def _y_axis_grid(
+    w: int, h: int, pad: Tuple[int, int, int, int], y_min: float, y_max: float, n_ticks: int, unit: str
+) -> str:
     pl, pr, pt, pb = pad
     ih = h - pt - pb
     grid = ""
@@ -220,18 +246,22 @@ def _y_axis_grid(w: int, h: int, pad: Tuple[int, int, int, int],
         frac = i / n_ticks
         val = y_min + frac * (y_max - y_min)
         y = pt + (1.0 - frac) * ih
-        grid += (f'<line x1="{pl}" y1="{y:.0f}" x2="{w-pr}" y2="{y:.0f}" '
-                 f'stroke="rgba(148,163,184,0.15)" stroke-width="1" />')
+        grid += (
+            f'<line x1="{pl}" y1="{y:.0f}" x2="{w-pr}" y2="{y:.0f}" '
+            f'stroke="rgba(148,163,184,0.15)" stroke-width="1" />'
+        )
         label = f"{val:.0f}{unit}"
-        grid += (f'<text x="{pl-8}" y="{y+4:.0f}" text-anchor="end" '
-                 f'fill="rgba(156,163,175,0.8)" font-size="10">{label}</text>')
+        grid += (
+            f'<text x="{pl-8}" y="{y+4:.0f}" text-anchor="end" '
+            f'fill="rgba(156,163,175,0.8)" font-size="10">{label}</text>'
+        )
     return grid
 
 
 
-def _render_combined_chart(data: Dict[str, List[Dict[str, Any]]], title: str,
-                           throttle_temp_c: float = 100.0,
-                           gpu_limits: Optional[Dict] = None) -> str:
+def _render_combined_chart(
+    data: Dict[str, List[Dict[str, Any]]], title: str, throttle_temp_c: float = 100.0, gpu_limits: Optional[Dict] = None
+) -> str:
     all_pts = []
     for gpu_rows in data.values():
         all_pts.extend(gpu_rows)
@@ -264,10 +294,7 @@ def _render_combined_chart(data: Dict[str, List[Dict[str, Any]]], title: str,
     avg_pts = _downsample(avg_pts, 600)
 
     metric_keys = [k for k, _, _ in COMBINED_METRICS]
-    y_max_pct = max(
-        (p.get(k, 0) for p in avg_pts for k in metric_keys),
-        default=100
-    )
+    y_max_pct = max((p.get(k, 0) for p in avg_pts for k in metric_keys), default=100)
     y_max_pct = max(100.0, math.ceil(y_max_pct / 10) * 10)
 
     w, h = 1100, 360
@@ -279,14 +306,20 @@ def _render_combined_chart(data: Dict[str, List[Dict[str, Any]]], title: str,
     for i in range(n_gridlines + 1):
         pct = y_max_pct * i / n_gridlines
         y = pt_pad + (1.0 - pct / y_max_pct) * ih
-        grid += (f'<line x1="{pl}" y1="{y:.0f}" x2="{w-pr}" y2="{y:.0f}" '
-                 f'stroke="rgba(148,163,184,0.18)" stroke-width="1" />')
-        grid += (f'<text x="{pl-8}" y="{y+4:.0f}" text-anchor="end" '
-                 f'fill="rgba(156,163,175,0.85)" font-size="11">{pct:.0f}%</text>')
+        grid += (
+            f'<line x1="{pl}" y1="{y:.0f}" x2="{w-pr}" y2="{y:.0f}" '
+            f'stroke="rgba(148,163,184,0.18)" stroke-width="1" />'
+        )
+        grid += (
+            f'<text x="{pl-8}" y="{y+4:.0f}" text-anchor="end" '
+            f'fill="rgba(156,163,175,0.85)" font-size="11">{pct:.0f}%</text>'
+        )
     if y_max_pct > 100:
         y100 = pt_pad + (1.0 - 100.0 / y_max_pct) * ih
-        grid += (f'<line x1="{pl}" y1="{y100:.0f}" x2="{w-pr}" y2="{y100:.0f}" '
-                 f'stroke="rgba(239,68,68,0.4)" stroke-width="1" stroke-dasharray="6,4" />')
+        grid += (
+            f'<line x1="{pl}" y1="{y100:.0f}" x2="{w-pr}" y2="{y100:.0f}" '
+            f'stroke="rgba(239,68,68,0.4)" stroke-width="1" stroke-dasharray="6,4" />'
+        )
 
     t0, t1 = avg_pts[0]["t"], avg_pts[-1]["t"]
     grid += _time_axis_ticks(t0, t1, w, h, pad)
@@ -309,8 +342,10 @@ def _render_combined_chart(data: Dict[str, List[Dict[str, Any]]], title: str,
     ref_100 = {
         "power_pct": f"{max_power_cap:.0f}W",
         "temp_pct": f"{throttle_temp_c:.0f}\u00b0C",
-        "gfx_clk_pct": f"{max_gfx_clk:.0f}MHz", "gfx_util": "100%",
-        "vram_pct": f"{max_vram:.0f}MB", "mem_engine": "100%",
+        "gfx_clk_pct": f"{max_gfx_clk:.0f}MHz",
+        "gfx_util": "100%",
+        "vram_pct": f"{max_vram:.0f}MB",
+        "mem_engine": "100%",
         "mem_clk_pct": f"{max_mem_clk:.0f}MHz",
     }
 
@@ -319,8 +354,10 @@ def _render_combined_chart(data: Dict[str, List[Dict[str, Any]]], title: str,
     for metric_key, label, color in COMBINED_METRICS:
         ref = ref_100.get(metric_key, "")
         display = f"{label} (100%={ref})" if ref else label
-        legend += (f'<rect x="{lx}" y="{pt_pad-22}" width="10" height="3" fill="{color}" />'
-                   f'<text x="{lx+13}" y="{pt_pad-17}" fill="rgba(220,220,220,0.95)" font-size="8.5">{display}</text>')
+        legend += (
+            f'<rect x="{lx}" y="{pt_pad-22}" width="10" height="3" fill="{color}" />'
+            f'<text x="{lx+13}" y="{pt_pad-17}" fill="rgba(220,220,220,0.95)" font-size="8.5">{display}</text>'
+        )
         lx += len(display) * 5 + 16
 
     cid = _next_chart_id()
@@ -351,8 +388,15 @@ def _render_combined_chart(data: Dict[str, List[Dict[str, Any]]], title: str,
         c = rest[0] if rest else "#94a3b8"
         fields_for_js.append({"key": k, "label": l, "unit": u, "color": c})
 
-    data_json = json.dumps([{k: round(p.get(k, 0), 1) if isinstance(p.get(k, 0), float) else p.get(k, 0)
-                             for k in ["t"] + [f["key"] for f in fields_for_js]} for p in avg_pts])
+    data_json = json.dumps(
+        [
+            {
+                k: round(p.get(k, 0), 1) if isinstance(p.get(k, 0), float) else p.get(k, 0)
+                for k in ["t"] + [f["key"] for f in fields_for_js]
+            }
+            for p in avg_pts
+        ]
+    )
     fields_json = json.dumps(fields_for_js)
 
     script = f"""
@@ -400,8 +444,9 @@ def _render_combined_chart(data: Dict[str, List[Dict[str, Any]]], title: str,
     {script}"""
 
 
-def _render_metric_chart(data: Dict[str, List[Dict[str, Any]]], key: str,
-                         title: str, unit: str, y_max_override: float = 0) -> str:
+def _render_metric_chart(
+    data: Dict[str, List[Dict[str, Any]]], key: str, title: str, unit: str, y_max_override: float = 0
+) -> str:
     all_vals = [r[key] for rows in data.values() for r in rows]
     if not all_vals:
         return ""
@@ -428,8 +473,10 @@ def _render_metric_chart(data: Dict[str, List[Dict[str, Any]]], key: str,
         ci = int(gpu_id) % len(GPU_COLORS) if gpu_id.isdigit() else 0
         color = GPU_COLORS[ci]
         lines += _svg_polyline(pts, color, w, h, pad, y_min, y_max)
-        legend += (f'<rect x="{lx}" y="{pt_pad-18}" width="10" height="3" fill="{color}" />'
-                   f'<text x="{lx+14}" y="{pt_pad-13}" fill="rgba(220,220,220,0.9)" font-size="9">GPU {gpu_id}</text>')
+        legend += (
+            f'<rect x="{lx}" y="{pt_pad-18}" width="10" height="3" fill="{color}" />'
+            f'<text x="{lx+14}" y="{pt_pad-13}" fill="rgba(220,220,220,0.9)" font-size="9">GPU {gpu_id}</text>'
+        )
         lx += 62
 
     cid = _next_chart_id()
@@ -497,8 +544,7 @@ def _render_metric_chart(data: Dict[str, List[Dict[str, Any]]], key: str,
     {script}"""
 
 
-def _render_gpu_bar_chart(data: Dict[str, List[Dict[str, Any]]],
-                          metrics: List[Tuple[str, str, str]]) -> str:
+def _render_gpu_bar_chart(data: Dict[str, List[Dict[str, Any]]], metrics: List[Tuple[str, str, str]]) -> str:
     gpu_ids = sorted(data.keys(), key=lambda g: int(g) if g.isdigit() else 0)
     if not gpu_ids:
         return ""
@@ -520,23 +566,31 @@ def _render_gpu_bar_chart(data: Dict[str, List[Dict[str, Any]]],
     bars = ""
     for gi, gpu_id in enumerate(gpu_ids):
         gx = pad_l + gi * group_w
-        bars += (f'<text x="{gx + group_w/2:.0f}" y="{h-10}" text-anchor="middle" '
-                 f'fill="rgba(156,163,175,0.9)" font-size="10">GPU {gpu_id}</text>')
+        bars += (
+            f'<text x="{gx + group_w/2:.0f}" y="{h-10}" text-anchor="middle" '
+            f'fill="rgba(156,163,175,0.9)" font-size="10">GPU {gpu_id}</text>'
+        )
         for bi, (key, label, color) in enumerate(metrics):
             val = avgs[gpu_id][key]
             bh = (val / global_max) * bar_area_h if global_max > 0 else 0
             bx = gx + (bi + 0.5) * bar_w
             by = pad_t + bar_area_h - bh
-            bars += (f'<rect x="{bx:.1f}" y="{by:.1f}" width="{bar_w*0.8:.1f}" '
-                     f'height="{bh:.1f}" fill="{color}" fill-opacity="0.8" rx="2" />')
+            bars += (
+                f'<rect x="{bx:.1f}" y="{by:.1f}" width="{bar_w*0.8:.1f}" '
+                f'height="{bh:.1f}" fill="{color}" fill-opacity="0.8" rx="2" />'
+            )
             if val > 0:
-                bars += (f'<text x="{bx + bar_w*0.4:.1f}" y="{by - 4:.1f}" text-anchor="middle" '
-                         f'fill="rgba(220,220,220,0.85)" font-size="9">{val:.0f}</text>')
+                bars += (
+                    f'<text x="{bx + bar_w*0.4:.1f}" y="{by - 4:.1f}" text-anchor="middle" '
+                    f'fill="rgba(220,220,220,0.85)" font-size="9">{val:.0f}</text>'
+                )
     legend = ""
     lx = pad_l + 10
     for _, label, color in metrics:
-        legend += (f'<rect x="{lx}" y="{pad_t-18}" width="10" height="10" fill="{color}" fill-opacity="0.8" rx="1" />'
-                   f'<text x="{lx+14}" y="{pad_t-10}" fill="rgba(220,220,220,0.9)" font-size="10">{label}</text>')
+        legend += (
+            f'<rect x="{lx}" y="{pad_t-18}" width="10" height="10" fill="{color}" fill-opacity="0.8" rx="1" />'
+            f'<text x="{lx+14}" y="{pad_t-10}" fill="rgba(220,220,220,0.9)" font-size="10">{label}</text>'
+        )
         lx += len(label) * 7 + 28
 
     return f"""
@@ -553,6 +607,7 @@ def _render_gpu_bar_chart(data: Dict[str, List[Dict[str, Any]]],
 # ---------------------------------------------------------------------------
 # Health checks + per-GPU table from enriched summary.json
 # ---------------------------------------------------------------------------
+
 
 def _load_analysis(run_dir: str) -> Dict[str, Any]:
     path = os.path.join(run_dir, "summary.json")
@@ -585,7 +640,9 @@ def _render_health_checks(analysis: Dict[str, Any]) -> str:
     thr = anomalies.get("throttle_events", [])
     if thr:
         worst = max(e.get("throttle_pct", 0) for e in thr)
-        rows += f"<tr><td>Throttling</td><td>{_badge(False, '', f'WARNING ({len(thr)} GPU(s), up to {worst}%)')}</td></tr>"
+        rows += (
+            f"<tr><td>Throttling</td><td>{_badge(False, '', f'WARNING ({len(thr)} GPU(s), up to {worst}%)')}</td></tr>"
+        )
     else:
         rows += f"<tr><td>Throttling</td><td>{_badge(True, 'OK', '')}</td></tr>"
 
@@ -644,20 +701,23 @@ def _render_per_gpu_table(analysis: Dict[str, Any]) -> str:
     rows = ""
     for gid in sorted(per_gpu, key=lambda g: int(g) if g.isdigit() else 0):
         st = per_gpu[gid]
+
         def _v(key: str, field: str = "avg") -> str:
             s = st.get(key)
             if not s:
                 return "N/A"
             return f"{s[field]:.0f}" if field != "avg" else f"{s['avg']:.1f}"
 
-        rows += (f"<tr><td>GPU {gid}</td>"
-                 f"<td>{_v('power')}</td>"
-                 f"<td>{_v('hotspot_temp')}</td>"
-                 f"<td>{_v('gfx_clk')}</td>"
-                 f"<td>{_v('gfx_util')}</td>"
-                 f"<td>{_v('vram_pct')}</td>"
-                 f"<td>{st.get('active_samples', 'N/A')}</td>"
-                 f"</tr>")
+        rows += (
+            f"<tr><td>GPU {gid}</td>"
+            f"<td>{_v('power')}</td>"
+            f"<td>{_v('hotspot_temp')}</td>"
+            f"<td>{_v('gfx_clk')}</td>"
+            f"<td>{_v('gfx_util')}</td>"
+            f"<td>{_v('vram_pct')}</td>"
+            f"<td>{st.get('active_samples', 'N/A')}</td>"
+            f"</tr>"
+        )
 
     pattern = analysis.get("workload_pattern", "")
     note = ""
@@ -701,8 +761,7 @@ CSS = """
 """
 
 
-def generate_report(run_dir: str, test_name: str, result: str,
-                    duration: int, output: str) -> None:
+def generate_report(run_dir: str, test_name: str, result: str, duration: int, output: str) -> None:
     global _chart_id_counter
     _chart_id_counter = 0
 
@@ -723,7 +782,9 @@ def generate_report(run_dir: str, test_name: str, result: str,
         by_gpu[r["gpu"]].append(r)
 
     charts_html = ""
-    charts_html += _render_combined_chart(by_gpu, "All Metrics (normalized to %)", throttle_temp_c=throttle_temp, gpu_limits=gpu_limits)
+    charts_html += _render_combined_chart(
+        by_gpu, "All Metrics (normalized to %)", throttle_temp_c=throttle_temp, gpu_limits=gpu_limits
+    )
     charts_html += _render_metric_chart(by_gpu, "power", "Power (W)", "W")
     charts_html += _render_metric_chart(by_gpu, "hotspot_temp", "Hotspot Temperature (\u00b0C)", "\u00b0C")
     charts_html += _render_metric_chart(by_gpu, "gfx_clk", "GFX Clock (MHz)", " MHz")
@@ -731,11 +792,14 @@ def generate_report(run_dir: str, test_name: str, result: str,
     charts_html += _render_metric_chart(by_gpu, "vram_pct", "VRAM Utilization (%)", "%", y_max_override=100.0)
     charts_html += _render_metric_chart(by_gpu, "mem_engine", "MEM Engine Activity (%)", "%", y_max_override=100.0)
     charts_html += _render_metric_chart(by_gpu, "mem_clk", "Memory Clock (MHz)", " MHz")
-    charts_html += _render_gpu_bar_chart(by_gpu, [
-        ("power", "Avg Power (W)", "#ef4444"),
-        ("hotspot_temp", "Avg Temp (\u00b0C)", "#f59e0b"),
-        ("gfx_clk", "Avg GFX Clk (MHz)", "#3b82f6"),
-    ])
+    charts_html += _render_gpu_bar_chart(
+        by_gpu,
+        [
+            ("power", "Avg Power (W)", "#ef4444"),
+            ("hotspot_temp", "Avg Temp (\u00b0C)", "#f59e0b"),
+            ("gfx_clk", "Avg GFX Clk (MHz)", "#3b82f6"),
+        ],
+    )
 
     all_vals = {
         "Power (W)": [r["power"] for r in parsed],

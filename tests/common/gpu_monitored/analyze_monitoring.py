@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 try:
     from tests.common.gpu_monitored import csv_schema as _csv_schema  # type: ignore
 except ImportError:  # pragma: no cover - script-style invocation
+
     class _CsvSchemaFallback:
         TIMESTAMP = "timestamp"
         GPU = "gpu"
@@ -41,6 +42,7 @@ except ImportError:  # pragma: no cover - script-style invocation
         VRAM_USED = "vram_used"
         VRAM_TOTAL = "vram_total"
         VRAM_PCT = "vram_percent"
+
     _csv_schema = _CsvSchemaFallback()
 
 
@@ -53,6 +55,7 @@ POWER_CAP_RATIO = 0.99
 TEMP_SLOPE_WARN_C_PER_MIN = 0.1
 STEADY_UTIL_THRESH = 50.0
 RAMP_UTIL_THRESH = 80.0
+
 
 def _get_workload_profile(test_name: str) -> Optional[Dict[str, Any]]:
     """Return the monitoring profile for ``test_name`` from the registry.
@@ -88,7 +91,13 @@ def _query_gpu_limits() -> Dict[str, float]:
         amd_smi = os.path.join(rocm_path, "bin", "amd-smi")
     try:
         rc, out, _stderr = run_cmd_get_stdout_stderr(
-            amd_smi, "static", "-g", "0", "--json", timeout=10, quiet=True,
+            amd_smi,
+            "static",
+            "-g",
+            "0",
+            "--json",
+            timeout=10,
+            quiet=True,
         )
         if rc != 0:
             return limits
@@ -136,7 +145,14 @@ def _query_gpu_limits() -> Dict[str, float]:
     if "max_gfx_clk_mhz" not in limits:
         try:
             rc, out, _stderr = run_cmd_get_stdout_stderr(
-                amd_smi, "metric", "-c", "-g", "0", "--json", timeout=10, quiet=True,
+                amd_smi,
+                "metric",
+                "-c",
+                "-g",
+                "0",
+                "--json",
+                timeout=10,
+                quiet=True,
             )
             if rc != 0:
                 return limits
@@ -153,6 +169,7 @@ def _query_gpu_limits() -> Dict[str, float]:
         except Exception:
             pass
     return limits
+
 
 _GPU_LIMITS_CACHE: Optional[Dict[str, float]] = None
 
@@ -235,21 +252,23 @@ def load_csv(path: str) -> List[Dict[str, Any]]:
                 t = int(r.get(_csv_schema.TIMESTAMP, "0"))
             except (ValueError, TypeError):
                 continue
-            rows.append({
-                "t": t,
-                "gpu": str(r.get(_csv_schema.GPU, "0")),
-                "power": _sf(r.get(_csv_schema.POWER_USAGE)),
-                "max_power": _sf(r.get(_csv_schema.MAX_POWER), 1000),
-                "hotspot_temp": _sf(r.get(_csv_schema.HOTSPOT_TEMP)),
-                "mem_temp": _sf(r.get(_csv_schema.MEM_TEMP)),
-                "gfx_clk": _sf(r.get(_csv_schema.GFX_CLK)),
-                "gfx_util": _sf(r.get(_csv_schema.GFX_UTIL)),
-                "mem_util": _sf(r.get(_csv_schema.MEM_UTIL)),
-                "mem_clk": _sf(r.get(_csv_schema.MEM_CLK)),
-                "vram_used": _sf(r.get(_csv_schema.VRAM_USED)),
-                "vram_total": _sf(r.get(_csv_schema.VRAM_TOTAL)),
-                "vram_pct": _sf(r.get(_csv_schema.VRAM_PCT)),
-            })
+            rows.append(
+                {
+                    "t": t,
+                    "gpu": str(r.get(_csv_schema.GPU, "0")),
+                    "power": _sf(r.get(_csv_schema.POWER_USAGE)),
+                    "max_power": _sf(r.get(_csv_schema.MAX_POWER), 1000),
+                    "hotspot_temp": _sf(r.get(_csv_schema.HOTSPOT_TEMP)),
+                    "mem_temp": _sf(r.get(_csv_schema.MEM_TEMP)),
+                    "gfx_clk": _sf(r.get(_csv_schema.GFX_CLK)),
+                    "gfx_util": _sf(r.get(_csv_schema.GFX_UTIL)),
+                    "mem_util": _sf(r.get(_csv_schema.MEM_UTIL)),
+                    "mem_clk": _sf(r.get(_csv_schema.MEM_CLK)),
+                    "vram_used": _sf(r.get(_csv_schema.VRAM_USED)),
+                    "vram_total": _sf(r.get(_csv_schema.VRAM_TOTAL)),
+                    "vram_pct": _sf(r.get(_csv_schema.VRAM_PCT)),
+                }
+            )
     return rows
 
 
@@ -323,14 +342,12 @@ def detect_workload_pattern(by_gpu: Dict[str, List[Dict]]) -> str:
     return "mixed"
 
 
-def compute_per_gpu(by_gpu: Dict[str, List[Dict]],
-                    steady: Dict[str, Tuple[int, int]],
-                    pattern: str) -> Dict[str, Dict]:
+def compute_per_gpu(by_gpu: Dict[str, List[Dict]], steady: Dict[str, Tuple[int, int]], pattern: str) -> Dict[str, Dict]:
     result = {}
     for gpu_id in sorted(by_gpu, key=lambda g: int(g) if g.isdigit() else 0):
         rows = by_gpu[gpu_id]
         s, e = steady.get(gpu_id, (0, max(0, len(rows) - 1)))
-        ss = rows[s:e + 1] if e >= s else rows
+        ss = rows[s : e + 1] if e >= s else rows
 
         if pattern == "serial":
             active = [r for r in rows if r["gfx_util"] >= STEADY_UTIL_THRESH]
@@ -370,21 +387,23 @@ def detect_imbalance(per_gpu: Dict[str, Dict], pattern: str) -> List[Dict]:
         for gid, avg in avgs.items():
             dev = abs(avg - fleet_mean) / fleet_mean * 100
             if dev > IMBALANCE_PCT:
-                flags.append({
-                    "gpu": gid, "metric": metric,
-                    "gpu_avg": round(avg, 1),
-                    "fleet_mean": round(fleet_mean, 1),
-                    "deviation_pct": round(dev, 1),
-                })
+                flags.append(
+                    {
+                        "gpu": gid,
+                        "metric": metric,
+                        "gpu_avg": round(avg, 1),
+                        "fleet_mean": round(fleet_mean, 1),
+                        "deviation_pct": round(dev, 1),
+                    }
+                )
     return flags
 
 
-def detect_throttling(by_gpu: Dict[str, List[Dict]],
-                      steady: Dict[str, Tuple[int, int]]) -> List[Dict]:
+def detect_throttling(by_gpu: Dict[str, List[Dict]], steady: Dict[str, Tuple[int, int]]) -> List[Dict]:
     events = []
     for gpu_id, rows in by_gpu.items():
         s, e = steady.get(gpu_id, (0, max(0, len(rows) - 1)))
-        ss = rows[s:e + 1]
+        ss = rows[s : e + 1]
         if len(ss) < 5:
             continue
         clks = [r["gfx_clk"] for r in ss if r["gfx_clk"] > 0]
@@ -394,23 +413,24 @@ def detect_throttling(by_gpu: Dict[str, List[Dict]],
         floor = avg_clk * (1 - THROTTLE_CLK_DROP_PCT / 100)
         hit = sum(1 for r in ss if r["hotspot_temp"] >= _get_gpu_limits()["throttle_temp_c"] and r["gfx_clk"] < floor)
         if hit > 0:
-            events.append({
-                "gpu": gpu_id,
-                "throttle_samples": hit,
-                "total_steady_samples": len(ss),
-                "throttle_pct": round(hit / len(ss) * 100, 1),
-                "max_temp_c": round(max(r["hotspot_temp"] for r in ss), 1),
-                "ss_avg_clk_mhz": round(avg_clk, 0),
-            })
+            events.append(
+                {
+                    "gpu": gpu_id,
+                    "throttle_samples": hit,
+                    "total_steady_samples": len(ss),
+                    "throttle_pct": round(hit / len(ss) * 100, 1),
+                    "max_temp_c": round(max(r["hotspot_temp"] for r in ss), 1),
+                    "ss_avg_clk_mhz": round(avg_clk, 0),
+                }
+            )
     return events
 
 
-def analyze_power(by_gpu: Dict[str, List[Dict]],
-                  steady: Dict[str, Tuple[int, int]]) -> Dict:
+def analyze_power(by_gpu: Dict[str, List[Dict]], steady: Dict[str, Tuple[int, int]]) -> Dict:
     all_ss = []
     for gpu_id, rows in by_gpu.items():
         s, e = steady.get(gpu_id, (0, max(0, len(rows) - 1)))
-        all_ss.extend(rows[s:e + 1])
+        all_ss.extend(rows[s : e + 1])
     if not all_ss:
         return {}
 
@@ -429,7 +449,7 @@ def analyze_power(by_gpu: Dict[str, List[Dict]],
     if first_gpu:
         frows = by_gpu[first_gpu]
         fs, fe = steady.get(first_gpu, (0, max(0, len(frows) - 1)))
-        ss_pwr = [r["power"] for r in frows[fs:fe + 1]]
+        ss_pwr = [r["power"] for r in frows[fs : fe + 1]]
         ss_avg = sum(ss_pwr) / len(ss_pwr) if ss_pwr else 0
         thr90 = ss_avg * 0.9
         if frows and ss_avg > 0:
@@ -448,18 +468,16 @@ def analyze_power(by_gpu: Dict[str, List[Dict]],
     }
 
 
-def analyze_mem_temp(by_gpu: Dict[str, List[Dict]],
-                     steady: Dict[str, Tuple[int, int]]) -> Dict:
+def analyze_mem_temp(by_gpu: Dict[str, List[Dict]], steady: Dict[str, Tuple[int, int]]) -> Dict:
     all_ss = []
     for gpu_id, rows in by_gpu.items():
         s, e = steady.get(gpu_id, (0, max(0, len(rows) - 1)))
-        all_ss.extend(rows[s:e + 1])
+        all_ss.extend(rows[s : e + 1])
     if not all_ss:
         return {}
 
     mem_t = [r["mem_temp"] for r in all_ss if r["mem_temp"] > 0]
-    deltas = [r["hotspot_temp"] - r["mem_temp"] for r in all_ss
-              if r["hotspot_temp"] > 0 and r["mem_temp"] > 0]
+    deltas = [r["hotspot_temp"] - r["mem_temp"] for r in all_ss if r["hotspot_temp"] > 0 and r["mem_temp"] > 0]
 
     result: Dict[str, Any] = {
         "mem_temp": _stats(mem_t),
@@ -470,7 +488,7 @@ def analyze_mem_temp(by_gpu: Dict[str, List[Dict]],
     rising_gpus = []
     for gpu_id, rows in by_gpu.items():
         s, e = steady.get(gpu_id, (0, max(0, len(rows) - 1)))
-        ss = rows[s:e + 1]
+        ss = rows[s : e + 1]
         if len(ss) < 30:
             continue
         tail = ss[-60:] if len(ss) >= 60 else ss[-30:]
@@ -490,8 +508,7 @@ def analyze_mem_temp(by_gpu: Dict[str, List[Dict]],
     return result
 
 
-def compute_steady_state_metrics(by_gpu: Dict[str, List[Dict]],
-                                 steady: Dict[str, Tuple[int, int]]) -> Dict:
+def compute_steady_state_metrics(by_gpu: Dict[str, List[Dict]], steady: Dict[str, Tuple[int, int]]) -> Dict:
     """Aggregate steady-state samples across all GPUs and compute
     ``start_offset_s``/``end_offset_s`` relative to the *global* t0.
     """
@@ -509,7 +526,7 @@ def compute_steady_state_metrics(by_gpu: Dict[str, List[Dict]],
         s, e = steady.get(gpu_id, (0, max(0, len(rows) - 1)))
         e = min(e, len(rows) - 1)
         s = max(0, min(s, e))
-        ss = rows[s:e + 1]
+        ss = rows[s : e + 1]
         all_ss.extend(ss)
         so = rows[s]["t"] - global_t0
         eo = rows[e]["t"] - global_t0
@@ -534,8 +551,7 @@ def compute_steady_state_metrics(by_gpu: Dict[str, List[Dict]],
     }
 
 
-def validate_monitoring(test_name: str, per_gpu: Dict, pattern: str,
-                        run_dir: str = "") -> Dict:
+def validate_monitoring(test_name: str, per_gpu: Dict, pattern: str, run_dir: str = "") -> Dict:
     """Check monitoring data against expected workload profiles.
     Returns warnings only — never changes pass/fail.
     """
@@ -562,8 +578,7 @@ def validate_monitoring(test_name: str, per_gpu: Dict, pattern: str,
     is_serial = profile.get("serial", False) or pattern == "serial"
 
     if is_serial:
-        active = [(gid, st) for gid, st in per_gpu.items()
-                  if st.get("active_samples", 0) > 0]
+        active = [(gid, st) for gid, st in per_gpu.items() if st.get("active_samples", 0) > 0]
         if not active:
             warnings.append("No GPU had any active samples during the test")
         else:
@@ -580,10 +595,7 @@ def validate_monitoring(test_name: str, per_gpu: Dict, pattern: str,
                     (st.get("gfx_util", {}).get("avg", 0) for _, st in active),
                     default=0,
                 )
-                warnings.append(
-                    f"No GPU's active window reached expected "
-                    f"{min_util}% gfx util (best was {worst}% avg)"
-                )
+                warnings.append(f"No GPU's active window reached expected " f"{min_util}% gfx util (best was {worst}% avg)")
             if min_vram_pct > 0:
                 any_meets_vram = False
                 for gid, st in active:
@@ -592,9 +604,7 @@ def validate_monitoring(test_name: str, per_gpu: Dict, pattern: str,
                         any_meets_vram = True
                         break
                 if not any_meets_vram:
-                    warnings.append(
-                        f"No GPU reached expected {min_vram_pct}% max VRAM"
-                    )
+                    warnings.append(f"No GPU reached expected {min_vram_pct}% max VRAM")
     else:
         for gpu_id in sorted(per_gpu, key=lambda g: int(g) if g.isdigit() else 0):
             st = per_gpu[gpu_id]

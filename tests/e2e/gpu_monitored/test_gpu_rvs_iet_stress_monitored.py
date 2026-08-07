@@ -9,9 +9,12 @@ Runs IET stress configs under continuous amd-smi monitoring, then performs
 import pytest
 
 @pytest.mark.runtime.medium
-@pytest.mark.parametrize("conf_name", [
-    "iet_stress.conf",
-])
+@pytest.mark.parametrize(
+    "conf_name",
+    [
+        "iet_stress.conf",
+    ],
+)
 def test_gpu_rvs_iet_stress_monitored(
     run_monitored_rvs,
     rvs_find_conf,
@@ -32,6 +35,4 @@ def test_gpu_rvs_iet_stress_monitored(
         timeout=1800,
     )
 
-    assert result["passed"], (
-        f"RVS IET failed ({conf_name}):\n{result['validation']}"
-    )
+    assert result["passed"], (f"RVS IET failed ({conf_name}):\n{result['validation']}")

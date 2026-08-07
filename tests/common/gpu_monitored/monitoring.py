@@ -31,8 +31,14 @@ class Monitor:
     The monitor subprocess is cleanly killed on __exit__.
     """
 
-    def __init__(self, csv_file: Path, cu_csv: Path, sample_interval: int = 2,
-                 enable_cu_occupancy: bool = False, amd_smi_path: str = "amd-smi"):
+    def __init__(
+        self,
+        csv_file: Path,
+        cu_csv: Path,
+        sample_interval: int = 2,
+        enable_cu_occupancy: bool = False,
+        amd_smi_path: str = "amd-smi"
+    ):
         self.csv_file = Path(csv_file)
         self.cu_csv = Path(cu_csv)
         self.sample_interval = sample_interval
@@ -44,9 +50,22 @@ class Monitor:
 
     def __enter__(self) -> "Monitor":
         self._monitor_proc = subprocess.Popen(
-            [self._amd_smi, "monitor", "-p", "-t", "-u", "-m", "-v",
-             "-w", str(self.sample_interval), "--csv", "--file", str(self.csv_file)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            [
+                self._amd_smi,
+                "monitor",
+                "-p",
+                "-t",
+                "-u",
+                "-m",
+                "-v",
+                "-w",
+                str(self.sample_interval),
+                "--csv",
+                "--file",
+                str(self.csv_file)
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
 
         try:
@@ -59,9 +78,7 @@ class Monitor:
                 )
 
             if self.enable_cu_occupancy:
-                self.cu_csv.write_text(
-                    "timestamp,gpu,pid,cu_occupancy,vram_mb\n"
-                )
+                self.cu_csv.write_text("timestamp,gpu,pid,cu_occupancy,vram_mb\n")
                 self._cu_thread = threading.Thread(target=self._cu_loop, daemon=True)
                 self._cu_thread.start()
         except BaseException:
@@ -103,8 +120,11 @@ class Monitor:
                 return
             try:
                 rc, stdout, _stderr = run_cmd_get_stdout_stderr(
-                    self._amd_smi, "process", "--json",
-                    timeout=10, quiet=True,
+                    self._amd_smi,
+                    "process",
+                    "--json",
+                    timeout=10,
+                    quiet=True,
                 )
                 if rc != 0 or not stdout.strip():
                     continue
@@ -167,8 +187,7 @@ class Monitor:
         s = str(raw).strip()
         if not s:
             return 0.0
-        m = re.match(r"^\s*([0-9.+-eE]+)\s*(GB|MB|KB|B)?\s*$", s,
-                     flags=re.IGNORECASE)
+        m = re.match(r"^\s*([0-9.eE+-]+)\s*(GB|MB|KB|B)?\s*$", s, flags=re.IGNORECASE)
         if m is None:
             return 0.0
         try:

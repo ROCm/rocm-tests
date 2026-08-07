@@ -19,8 +19,7 @@ from framework.executors.local_executor import run_cmd_get_stdout_stderr
 logger = logging.getLogger(__name__)
 
 _CRASH_PATTERNS = re.compile(
-    r"(segfault|segmentation fault|core dump|SIGBUS|SIGSEGV|"
-    r"Kernel panic|device reset|GPU hang|unrecoverable)",
+    r"(segfault|segmentation fault|core dump|SIGBUS|SIGSEGV|" r"Kernel panic|device reset|GPU hang|unrecoverable)",
     re.IGNORECASE,
 )
 
@@ -62,9 +61,7 @@ def dmesg_delta(before: Optional[str], after: Optional[str]) -> Optional[str]:
     return "\n".join(new_lines) if new_lines else ""
 
 
-def validate_rvs_result(
-    stdout: str, stderr: str, exit_code: int, dmesg_new: Optional[str]
-) -> Tuple[bool, str]:
+def validate_rvs_result(stdout: str, stderr: str, exit_code: int, dmesg_new: Optional[str]) -> Tuple[bool, str]:
     """5-layer validation of RVS test output.
 
     Returns:
@@ -96,10 +93,7 @@ def validate_rvs_result(
         messages.append(f"Layer 2 FAIL: {abort_count} ABORT(s) detected")
         failed = True
     elif false_count > 0:
-        messages.append(
-            f"Layer 2 FAIL: {false_count} test(s) reported pass: FALSE "
-            f"({true_count} passed)"
-        )
+        messages.append(f"Layer 2 FAIL: {false_count} test(s) reported pass: FALSE " f"({true_count} passed)")
         failed = True
     elif true_count > 0:
         messages.append(f"Layer 2 PASS: {true_count} test(s) reported pass: TRUE")
@@ -115,25 +109,18 @@ def validate_rvs_result(
     else:
         critical = [line for line in dmesg_new.splitlines() if _DMESG_CRITICAL.search(line)]
         if critical:
-            messages.append(
-                f"Layer 3 FAIL: {len(critical)} critical kernel event(s) during test"
-            )
+            messages.append(f"Layer 3 FAIL: {len(critical)} critical kernel event(s) during test")
             for c in critical[:3]:
                 messages.append(f"  → {c.strip()[:120]}")
             failed = True
         else:
-            messages.append(
-                f"Layer 3 PASS: {len(dmesg_new.splitlines())} new kernel messages, "
-                f"none critical"
-            )
+            messages.append(f"Layer 3 PASS: {len(dmesg_new.splitlines())} new kernel messages, " f"none critical")
     layers_evaluated += 1
 
     # Layer 4: Silent death detection
     has_output = bool(stdout.strip()) or bool(stderr.strip())
     if not has_output and exit_code != 0:
-        messages.append(
-            f"Layer 4 FAIL: silent death — no output but exit code {exit_code}"
-        )
+        messages.append(f"Layer 4 FAIL: silent death — no output but exit code {exit_code}")
         failed = True
     elif not has_output and exit_code == 0:
         messages.append("Layer 4 WARN: no output but exit code 0 (possible no-op)")
@@ -143,9 +130,7 @@ def validate_rvs_result(
 
     # Layer 5: Exit code consistency
     if exit_code != 0 and not failed:
-        messages.append(
-            f"Layer 5 FAIL: non-zero exit code ({exit_code}) despite other layers passing"
-        )
+        messages.append(f"Layer 5 FAIL: non-zero exit code ({exit_code}) despite other layers passing")
         failed = True
     elif exit_code != 0 and failed:
         messages.append(f"Layer 5 INFO: exit code {exit_code} (consistent with failures above)")
