@@ -31,7 +31,7 @@ import subprocess
 from typing import TYPE_CHECKING
 
 from framework.config.loader import FrameworkSection
-from framework.rocm.libs.amd_smi import _get
+from framework.rocm.libs.amd_smi import _to_mb, _unwrap_entries
 
 if TYPE_CHECKING:
     from framework.executors.ssh_executor import SshExecutor
@@ -383,8 +383,20 @@ class GpuDetector(AbstractGpuDetector):
         already have ``vram_mb > 0`` this method is a no-op.
 
         Tries system ``amd-smi`` first; falls back to ``rock_dir/bin/amd-smi``
-        when ``rock_dir`` is configured.  If ``amd-smi`` returns a different GPU
-        count than *gpus*, enrichment is skipped and a warning is logged.
+        when ``rock_dir`` is configured.
+
+        Two merge strategies, tried in order:
+
+        1. **1:1 match** — ``amd-smi`` returns the same number of entries as
+           *gpus*.  Each SMI entry is matched to the corresponding GPU by index.
+           This is the common case for discrete multi-GPU systems.
+
+        2. **1:N partition broadcast** — ``amd-smi`` returns 1 physical device
+           entry while *gpus* contains N logical partitions (e.g. MI300A with
+           CPX/DPX/QPX, MI308X with 8 partitions).  In this layout the physical
+           device's total VRAM is divided equally across all partitions — each
+           partition receives ``physical_vram_mb // N`` MB.  The arch string from
+           the single SMI entry is applied to all partitions.
 
         Args:
             gpus:   GpuInfo list (may have ``vram_mb=0`` for some entries).
@@ -421,34 +433,70 @@ class GpuDetector(AbstractGpuDetector):
                 logger.warning("GPU detection [%s]: amd-smi enrichment (%s) returned 0 GPU(s)", target, smi_path)
                 continue
 
-            if len(smi_gpus) != len(gpus):
-                logger.warning(
-                    "GPU detection [%s]: amd-smi returned %d GPU(s) but pool has %d — "
-                    "skipping amd-smi enrichment to avoid index mismatch",
-                    target,
-                    len(smi_gpus),
-                    len(gpus),
-                )
-                continue
+            n_partitions = len(gpus)
+            n_smi = len(smi_gpus)
 
-            enriched = [
-                GpuInfo(
-                    index=g.index,
-                    arch=smi_gpu.arch if smi_gpu.arch != "unknown" else g.arch,
-                    vram_mb=smi_gpu.vram_mb if g.vram_mb == 0 else g.vram_mb,
-                    numa_node=g.numa_node,
+            if n_smi == n_partitions:
+                # Strategy 1: 1:1 index match — standard discrete multi-GPU system.
+                enriched = [
+                    GpuInfo(
+                        index=g.index,
+                        arch=smi_gpu.arch if smi_gpu.arch != "unknown" else g.arch,
+                        vram_mb=smi_gpu.vram_mb if g.vram_mb == 0 else g.vram_mb,
+                        numa_node=g.numa_node,
+                    )
+                    for g, smi_gpu in zip(gpus, smi_gpus, strict=True)
+                ]
+                vram_populated = sum(1 for g in enriched if g.vram_mb > 0)
+                logger.info(
+                    "GPU detection [%s]: amd-smi enrichment via '%s' resolved %d/%d GPU(s) with VRAM data",
+                    target,
+                    smi_path,
+                    vram_populated,
+                    len(enriched),
                 )
-                for g, smi_gpu in zip(gpus, smi_gpus, strict=True)
-            ]
-            vram_populated = sum(1 for g in enriched if g.vram_mb > 0)
-            logger.info(
-                "GPU detection [%s]: amd-smi enrichment via '%s' resolved %d/%d GPU(s) with VRAM data",
+                return enriched
+
+            if n_smi == 1 and n_partitions > 1:
+                # Strategy 2: 1:N partition broadcast — APU with compute partitioning.
+                # amd-smi sees one physical device; lspci/KFD see N logical partitions.
+                # Each partition receives an equal share of the physical VRAM total.
+                physical = smi_gpus[0]
+                per_partition_vram_mb = physical.vram_mb // n_partitions if physical.vram_mb > 0 else 0
+                logger.info(
+                    "GPU detection [%s]: amd-smi 1-device / %d-partition layout detected "
+                    "(physical vram=%d MB → %d MB per partition) — applying broadcast enrichment",
+                    target,
+                    n_partitions,
+                    physical.vram_mb,
+                    per_partition_vram_mb,
+                )
+                enriched = [
+                    GpuInfo(
+                        index=g.index,
+                        arch=physical.arch if physical.arch != "unknown" else g.arch,
+                        vram_mb=per_partition_vram_mb if g.vram_mb == 0 else g.vram_mb,
+                        numa_node=g.numa_node,
+                    )
+                    for g in gpus
+                ]
+                vram_populated = sum(1 for g in enriched if g.vram_mb > 0)
+                logger.info(
+                    "GPU detection [%s]: partition broadcast via '%s' resolved %d/%d GPU(s) with VRAM data",
+                    target,
+                    smi_path,
+                    vram_populated,
+                    len(enriched),
+                )
+                return enriched
+
+            logger.warning(
+                "GPU detection [%s]: amd-smi returned %d GPU(s) but pool has %d — "
+                "no merge strategy applies; skipping this candidate",
                 target,
-                smi_path,
-                vram_populated,
-                len(enriched),
+                n_smi,
+                n_partitions,
             )
-            return enriched
 
         logger.warning(
             "GPU detection [%s]: amd-smi enrichment exhausted all candidates — %d GPU(s) retain vram_mb=0",
@@ -598,19 +646,19 @@ class GpuDetector(AbstractGpuDetector):
         exposes VRAM size and ASIC architecture in its JSON output.
         ``amd-smi list`` returns only identifiers (BDF, UUID) with no VRAM/arch fields.
 
-        JSON schema across ROCm versions (priority order in ``_get()`` fallbacks):
+        On APU systems with compute partitioning (MI300A, MI308X, MI355X) this
+        method returns **one** GpuInfo representing the physical device.  The
+        caller (``_enrich_via_amd_smi``) is responsible for distributing the
+        physical VRAM across the logical partitions visible to lspci/KFD.
 
-        VRAM total (field: ``vram_mb``):
-          - ROCm 7.x: ``vram.size.value``  (int MB, unit confirmed in ``vram.size.unit``)
-          - ROCm 6.x: ``vram.total.value`` (nested ``{"value": N, "unit": "MB"}``)
-          - ROCm 5.x: ``vram_total_mb``    (flat int, already in MB)
+        ROCm 7.1.0+ / amd-smi 26+ schema:
+          - Top-level wrapper: ``{"gpu_data": [...]}``
+          - VRAM total:        ``vram.size`` → ``{"value": N, "unit": "MB"}``
+          - Architecture:      ``asic.target_graphics_version`` → ``"gfx942"``
 
-        Architecture (field: ``arch``):
-          - All versions: ``asic.target_graphics_version`` (e.g. ``"gfx942"``)
-          - Fallback:     ``asic.arch``
-
-        Works for both local and remote execution — the command is run through
-        ``_run_command()`` which delegates to SSH when ``ssh_executor`` is set.
+        Works identically for local and remote execution — the command is run
+        through ``_run_command()`` which delegates to SSH when ``ssh_executor``
+        is set.
 
         Args:
             amd_smi_path: Absolute or resolvable path to the ``amd-smi`` binary.
@@ -618,35 +666,19 @@ class GpuDetector(AbstractGpuDetector):
 
         Returns:
             List of GpuInfo parsed from ``amd-smi static --json`` output.
+            For APU systems this is typically a single-element list.
 
         Raises:
             RuntimeError: If ``amd-smi`` exits non-zero.
             FileNotFoundError: If the binary is not found at *amd_smi_path*.
         """
         raw = self._run_command(f"{amd_smi_path} static --json")
-        devices = json.loads(raw)
+        entries = _unwrap_entries(json.loads(raw))
         gpus: list[GpuInfo] = []
-        for i, dev in enumerate(devices):
-            total_raw = _get(
-                dev,
-                ("vram", "size"),  # ROCm 7.x: {"value": N, "unit": "MB"}
-                ("vram", "total"),  # ROCm 6.x: {"value": N, "unit": "MB"}
-                ("vram_total_mb",),  # ROCm 5.x: flat int MB
-                ("vram_info", "vram_total_mb"),
-                default=0,
-            )
-            if isinstance(total_raw, dict):
-                vram_mb = int(total_raw.get("value", 0))
-            elif isinstance(total_raw, int):
-                vram_mb = total_raw // (1024 * 1024) if total_raw > 1024 * 1024 else total_raw
-            else:
-                vram_mb = 0
-            arch = _get(
-                dev,
-                ("asic", "target_graphics_version"),
-                ("asic", "arch"),
-                default="unknown",
-            )
+        for i, dev in enumerate(entries):
+            asic = dev.get("asic", {})
+            vram_mb = _to_mb(dev.get("vram", {}).get("size", 0))
+            arch = asic.get("target_graphics_version", "unknown")
             gpus.append(GpuInfo(index=i, arch=arch, vram_mb=vram_mb))
         return gpus
 
