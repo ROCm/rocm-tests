@@ -195,7 +195,10 @@ static bool run_null_deref()
         fprintf(stderr, "    fault signal caught (sig=%d) during null-deref — treating as fault observed\n",
                 g_fault_signal);
         fflush(stderr);
-        (void)hipDeviceReset();
+        // Skip hipDeviceReset() here: on gfx942 (MI308X) calling hipDeviceReset()
+        // after a null-deref SIGABRT triggers a secondary SIGSEGV inside the HIP
+        // runtime fault-handler thread.  We return true unconditionally; main() will
+        // call _exit(0) which bypasses all destructors and atexit handlers safely.
         return true;
     }
     bool ok = check_fault_sync(s, "null-deref");

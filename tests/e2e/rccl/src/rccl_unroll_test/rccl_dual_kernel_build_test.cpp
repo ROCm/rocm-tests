@@ -265,8 +265,9 @@ void test_UnrollOverride() {
         return;
     }
 
+    // RCCL supports RCCL_UNROLL_FACTOR 0-5 mapping to unroll factors 1, 2, 4, 8, 16, 32.
     struct { int envVal; int expectedUnroll; } cases[] = {
-        {0, 1}, {1, 2}, {2, 4},
+        {0, 1}, {1, 2}, {2, 4}, {3, 8}, {4, 16}, {5, 32},
     };
 
     bool allPassed = true;
@@ -324,7 +325,9 @@ void test_InvalidUnrollRejected() {
         return;
     }
 
-    int badValues[] = {3, 4, 5, 99};
+    // RCCL supports RCCL_UNROLL_FACTOR 0-5 (unroll factors 1, 2, 4, 8, 16, 32).
+    // Only out-of-range values (< 0 or > 5) should be rejected.
+    int badValues[] = {6, 7, 99};
     bool allRejected = true;
 
     for (int val : badValues) {
@@ -369,11 +372,12 @@ void test_CollectiveCorrectnessAllUnrolls() {
         return;
     }
 
-    int overrides[] = {0, 1, 2}; // unroll 1, 2, 4
-    int unrollLabels[] = {1, 2, 4};
+    // Test all 6 valid RCCL_UNROLL_FACTOR values (0-5 → unroll 1, 2, 4, 8, 16, 32).
+    int overrides[] = {0, 1, 2, 3, 4, 5};
+    int unrollLabels[] = {1, 2, 4, 8, 16, 32};
     bool allPassed = true;
 
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 6; ++i) {
         std::string cmd = "env RCCL_UNROLL_FACTOR=" + std::to_string(overrides[i]) +
                           " " + shellQuote(perfBin) + " -b 8 -e 4M -g 1";
         std::string output;
