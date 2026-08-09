@@ -629,9 +629,9 @@ class GpuDetector(AbstractGpuDetector):
         for i, dev in enumerate(devices):
             total_raw = _get(
                 dev,
-                ("vram", "size"),      # ROCm 7.x: {"value": N, "unit": "MB"}
-                ("vram", "total"),     # ROCm 6.x: {"value": N, "unit": "MB"}
-                ("vram_total_mb",),    # ROCm 5.x: flat int MB
+                ("vram", "size"),  # ROCm 7.x: {"value": N, "unit": "MB"}
+                ("vram", "total"),  # ROCm 6.x: {"value": N, "unit": "MB"}
+                ("vram_total_mb",),  # ROCm 5.x: flat int MB
                 ("vram_info", "vram_total_mb"),
                 default=0,
             )
