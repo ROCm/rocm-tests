@@ -18,13 +18,13 @@ All anomaly flags are warnings/informational; exit codes are never changed.
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import csv
 import json
 import math
 import os
 import sys
-from collections import defaultdict
-from typing import Any, Optional
+from typing import Any
 
 try:
     from tests.common.gpu_monitored import csv_schema as _csv_schema  # type: ignore
@@ -58,7 +58,7 @@ STEADY_UTIL_THRESH = 50.0
 RAMP_UTIL_THRESH = 80.0
 
 
-def _get_workload_profile(test_name: str) -> Optional[dict[str, Any]]:
+def _get_workload_profile(test_name: str) -> dict[str, Any] | None:
     """Return the monitoring profile for ``test_name`` from the registry.
 
     The profile dict lives on each test's ``TestSpec.workload_profile``
@@ -172,11 +172,11 @@ def _query_gpu_limits() -> dict[str, float]:  # noqa: C901
     return limits
 
 
-_GPU_LIMITS_CACHE: Optional[dict[str, float]] = None
+_GPU_LIMITS_CACHE: dict[str, float] | None = None
 
 
 def _get_gpu_limits() -> dict[str, float]:
-    global _GPU_LIMITS_CACHE  # noqa: PLW0603
+    global _GPU_LIMITS_CACHE
     if _GPU_LIMITS_CACHE is None:
         _GPU_LIMITS_CACHE = _query_gpu_limits()
     return _GPU_LIMITS_CACHE
@@ -204,7 +204,7 @@ def _sf(v, default=0.0):
     return fv
 
 
-def _stats(vals: list[float]) -> Optional[dict[str, Any]]:
+def _stats(vals: list[float]) -> dict[str, Any] | None:
     vals = [v for v in vals if not (math.isnan(v) or math.isinf(v))]
     if not vals:
         return None
@@ -298,7 +298,7 @@ def detect_steady_state(gpu_rows: list[dict]) -> tuple[int, int]:
     if n < 5:
         return 0, max(0, n - 1)
 
-    start: Optional[int] = None
+    start: int | None = None
     for i in range(n):
         if gpu_rows[i]["gfx_util"] >= RAMP_UTIL_THRESH:
             start = i
@@ -519,8 +519,8 @@ def compute_steady_state_metrics(by_gpu: dict[str, list[dict]], steady: dict[str
         return {}
     global_t0 = min(r["t"] for r in all_rows)
 
-    earliest: Optional[int] = None
-    latest: Optional[int] = None
+    earliest: int | None = None
+    latest: int | None = None
     for gpu_id, rows in by_gpu.items():
         if not rows:
             continue

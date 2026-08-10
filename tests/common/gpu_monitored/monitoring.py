@@ -7,14 +7,14 @@ monitoring subprocess (`amd-smi monitor --csv --file`) writes directly to a
 file via its own --file flag, so subprocess.Popen is used for lifecycle management.
 """
 
+import contextlib
 import json
 import logging
+from pathlib import Path
 import re
 import subprocess
 import threading
 import time
-from pathlib import Path
-from typing import List, Optional
 
 from framework.executors.local_executor import run_cmd_get_stdout_stderr
 from framework.rocm.libs.amd_smi import _get
@@ -44,8 +44,8 @@ class Monitor:
         self.sample_interval = sample_interval
         self.enable_cu_occupancy = enable_cu_occupancy
         self._amd_smi = amd_smi_path
-        self._monitor_proc: Optional[subprocess.Popen] = None
-        self._cu_thread: Optional[threading.Thread] = None
+        self._monitor_proc: subprocess.Popen | None = None
+        self._cu_thread: threading.Thread | None = None
         self._cu_stop = threading.Event()
 
     def __enter__(self) -> "Monitor":
@@ -73,7 +73,8 @@ class Monitor:
             if self._monitor_proc.poll() is not None:
                 rc = self._monitor_proc.returncode
                 logger.warning(
-                    "amd-smi monitor exited immediately (rc=%d) — " "monitoring CSV will be empty",
+                    "amd-smi monitor exited immediately (rc=%d) — "
+                    "monitoring CSV will be empty",
                     rc,
                 )
 
@@ -99,10 +100,8 @@ class Monitor:
             except subprocess.TimeoutExpired:
                 pass
             proc.kill()
-            try:
+            with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
         except Exception:
             pass
 
@@ -142,7 +141,7 @@ class Monitor:
                 pass
 
     @staticmethod
-    def _parse_cu_occupancy(out: str) -> List[str]:
+    def _parse_cu_occupancy(out: str) -> list[str]:
         """Parse `amd-smi process --json` output; return CSV rows for active processes."""
         try:
             data = json.loads(out)
@@ -150,7 +149,7 @@ class Monitor:
             return []
 
         ts = str(int(time.time()))
-        rows: List[str] = []
+        rows: list[str] = []
 
         if isinstance(data, list):
             gpus = data
@@ -166,10 +165,7 @@ class Monitor:
                 cu = _get(p, ("cu_occupancy",), ("CU_OCCUPANCY",), default=0)
                 pid = _get(p, ("pid",), ("PID",), default="?")
                 vm = _get(p, ("memory_usage",), ("MEMORY_USAGE",), default={})
-                if isinstance(vm, dict):
-                    vr = _get(vm, ("vram_mem",), ("VRAM_MEM",), default="0")
-                else:
-                    vr = vm
+                vr = _get(vm, ("vram_mem",), ("VRAM_MEM",), default="0") if isinstance(vm, dict) else vm
                 mb = Monitor._to_mb(vr)
                 try:
                     cu_f = float(cu)

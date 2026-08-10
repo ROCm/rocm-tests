@@ -8,15 +8,15 @@ Charts have JavaScript crosshair + tooltip on hover showing exact values at each
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import csv
+from datetime import datetime, timezone
+from html import escape
 import json
 import math
 import os
 import time as _time
-from collections import defaultdict
-from datetime import datetime, timezone
-from html import escape
-from typing import Any, Optional
+from typing import Any
 
 try:
     from tests.common.gpu_monitored import csv_schema as _csv_schema  # type: ignore
@@ -39,7 +39,6 @@ except ImportError:  # pragma: no cover - script-style invocation
 
     _csv_schema = _CsvSchemaFallback()
 
-
 def _get_system_tz() -> tuple:
     """Return (utc_offset_seconds, tz_abbreviation) for the system's local
     timezone. Uses timezone-aware ``datetime.fromtimestamp`` so it runs
@@ -51,7 +50,6 @@ def _get_system_tz() -> tuple:
     offset_sec = int((local - utc).total_seconds())
     tz_name = _time.strftime("%Z") or "UTC"
     return offset_sec, tz_name
-
 
 SYS_TZ_OFFSET, SYS_TZ_NAME = _get_system_tz()
 
@@ -78,19 +76,16 @@ COMBINED_METRICS = [
 
 _chart_id_counter = 0
 
-
 def _next_chart_id() -> str:
-    global _chart_id_counter  # noqa: PLW0603
+    global _chart_id_counter
     _chart_id_counter += 1
     return f"chart{_chart_id_counter}"
-
 
 def _load_csv(path: str) -> list[dict[str, str]]:
     if not os.path.exists(path):
         return []
     with open(path, newline="") as f:
         return list(csv.DictReader(f))
-
 
 def _load_command_metadata(run_dir: str) -> dict[str, str]:
     meta: dict[str, str] = {}
@@ -102,7 +97,6 @@ def _load_command_metadata(run_dir: str) -> dict[str, str]:
                     k, v = line.split(":", 1)
                     meta[k.strip()] = v.strip()
     return meta
-
 
 def _sf(v, default=0.0):
     """Safe float conversion — returns default for empty/N/A/NaN/Inf/invalid."""
@@ -116,7 +110,6 @@ def _sf(v, default=0.0):
     if math.isnan(fv) or math.isinf(fv):
         return default
     return fv
-
 
 def _parse_rows(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     parsed: list[dict[str, Any]] = []
@@ -151,8 +144,7 @@ def _parse_rows(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
         )
     return parsed
 
-
-def _compute_pct_fields(rows: list[dict[str, Any]], gpu_limits: Optional[dict] = None) -> list[dict[str, Any]]:
+def _compute_pct_fields(rows: list[dict[str, Any]], gpu_limits: dict | None = None) -> list[dict[str, Any]]:
     if not rows:
         return rows
     gl = gpu_limits or {}
@@ -170,7 +162,6 @@ def _compute_pct_fields(rows: list[dict[str, Any]], gpu_limits: Optional[dict] =
         r["mem_clk_pct"] = r["mem_clk"] / max_mem_clk * 100
     return rows
 
-
 def _downsample(points: list, max_pts: int = 800) -> list:
     if len(points) <= max_pts:
         return points
@@ -181,17 +172,14 @@ def _downsample(points: list, max_pts: int = 800) -> list:
     indices[-1] = len(points) - 1
     return [points[idx] for idx in indices]
 
-
-def _stats(vals: list[float]) -> Optional[dict[str, float]]:
+def _stats(vals: list[float]) -> dict[str, float] | None:
     if not vals:
         return None
     return {"min": min(vals), "max": max(vals), "avg": round(sum(vals) / len(vals), 1), "samples": len(vals)}
 
-
 # ---------------------------------------------------------------------------
 # SVG + interactive tooltip rendering
 # ---------------------------------------------------------------------------
-
 
 def _svg_polyline(
     pts: list[tuple[float, float]],
@@ -219,8 +207,7 @@ def _svg_polyline(
         return _pt + (1.0 - u) * ih
 
     coords = " ".join(f"{_x(t):.1f},{_y(v):.1f}" for t, v in pts)
-    return f'  <polyline points="{coords}" fill="none" stroke="{color}" stroke-width="1.5"/>'
-
+    return f'  <polyline points="{coords}" fill="none" stroke="{color}" stroke-width="1.5" stroke-linejoin="round"/>'
 
 def _time_axis_ticks(t0: int, t1: int, w: int, h: int, pad: tuple[int, int, int, int]) -> str:
     pl, pr, _pt, _pb = pad
@@ -234,10 +221,9 @@ def _time_axis_ticks(t0: int, t1: int, w: int, h: int, pad: tuple[int, int, int,
         ts_val = t0 + frac * span
         lbl = datetime.fromtimestamp(ts_val).strftime("%H:%M:%S")
         ticks += (
-            f'  <text x="{x}" y="{h - 5}" text-anchor="middle" font-size="10" fill="#94a3b8">{lbl} {SYS_TZ_NAME}</text>'
+            f'  <text x="{x}" y="{h - 8}" text-anchor="middle" font-size="10" fill="#64748b">{lbl} {SYS_TZ_NAME}</text>'
         )
     return ticks
-
 
 def _y_axis_grid(
     w: int, h: int, pad: tuple[int, int, int, int], y_min: float, y_max: float, n_ticks: int, unit: str
@@ -251,12 +237,11 @@ def _y_axis_grid(
         y = _pt + (1.0 - frac) * ih
         grid += f'  <line x1="{pl}" y1="{y}" x2="{w - pr}" y2="{y}" stroke="#334155" stroke-width="0.5"/>'
         label = f"{val:.0f}{unit}"
-        grid += f'  <text x="{pl - 5}" y="{y + 4}" text-anchor="end" font-size="10" fill="#94a3b8">{label}</text>'
+        grid += f'  <text x="{pl - 6}" y="{y + 4}" text-anchor="end" font-size="10" fill="#64748b">{label}</text>'
     return grid
 
-
 def _render_combined_chart(  # noqa: C901
-    data: dict[str, list[dict[str, Any]]], title: str, throttle_temp_c: float = 100.0, gpu_limits: Optional[dict] = None
+    data: dict[str, list[dict[str, Any]]], title: str, throttle_temp_c: float = 100.0, gpu_limits: dict | None = None
 ) -> str:
     all_pts: list[dict[str, Any]] = []
     for gpu_rows in data.values():
@@ -303,10 +288,13 @@ def _render_combined_chart(  # noqa: C901
         pct = y_max_pct * i / n_gridlines
         y = pt_pad + (1.0 - pct / y_max_pct) * ih
         grid += f'  <line x1="{pl}" y1="{y}" x2="{w - pr}" y2="{y}" stroke="#334155" stroke-width="0.5"/>'
-        grid += f'  <text x="{pl - 5}" y="{y + 4}" text-anchor="end" font-size="10" fill="#94a3b8">{pct:.0f}%</text>'
+        grid += f'  <text x="{pl - 6}" y="{y + 4}" text-anchor="end" font-size="10" fill="#64748b">{pct:.0f}%</text>'
     if y_max_pct > 100:
         y100 = pt_pad + (1.0 - 100.0 / y_max_pct) * ih
-        grid += f'  <line x1="{pl}" y1="{y100}" x2="{w - pr}" y2="{y100}" stroke="#ef4444" stroke-width="0.5" stroke-dasharray="4,4"/>'
+        grid += (
+            f'  <line x1="{pl}" y1="{y100}" x2="{w - pr}" y2="{y100}"'
+            f' stroke="#475569" stroke-width="1" stroke-dasharray="4,3"/>'
+        )
 
     t0, t1 = avg_pts[0]["t"], avg_pts[-1]["t"]
     grid += _time_axis_ticks(t0, t1, w, h, pad)
@@ -342,8 +330,8 @@ def _render_combined_chart(  # noqa: C901
         ref = ref_100.get(metric_key, "")
         display = f"{lbl} (100%={ref})" if ref else lbl
         legend += (
-            f'  <rect x="{lx}" y="{h - 18}" width="8" height="8" fill="{color}"/>'
-            + f'  <text x="{lx + 10}" y="{h - 10}" font-size="9" fill="#94a3b8">{display}</text>'
+            f'  <rect x="{lx}" y="{h - 42}" width="10" height="10" fill="{color}"/>'
+            + f'  <text x="{lx + 14}" y="{h - 33}" font-size="9" fill="#94a3b8">{display}</text>'
         )
         lx += len(display) * 5 + 16
 
@@ -351,17 +339,17 @@ def _render_combined_chart(  # noqa: C901
 
     tooltip_fields: list[tuple] = [
         ("power_pct", "Power", "%"),
-        ("power_raw", "  \u21b3 actual", "W"),
+        ("power_raw", " \u21b3 actual", "W"),
         ("temp_pct", "Temperature", "%"),
-        ("temp_raw", "  \u21b3 actual", "\u00b0C"),
+        ("temp_raw", " \u21b3 actual", "\u00b0C"),
         ("gfx_clk_pct", "GFX Clock", "%"),
-        ("gfx_clk_raw", "  \u21b3 actual", " MHz"),
+        ("gfx_clk_raw", " \u21b3 actual", " MHz"),
         ("gfx_util", "GFX Util", "%"),
         ("vram_pct", "VRAM Util", "%"),
-        ("vram_used_raw", "  \u21b3 used", " MB"),
+        ("vram_used_raw", " \u21b3 used", " MB"),
         ("mem_engine", "MEM Engine", "%"),
         ("mem_clk_pct", "MEM Clock", "%"),
-        ("mem_clk_raw", "  \u21b3 actual", " MHz"),
+        ("mem_clk_raw", " \u21b3 actual", " MHz"),
     ]
     for i, (k, lbl, u) in enumerate(tooltip_fields):
         for mk, _, mc in COMBINED_METRICS:
@@ -387,7 +375,7 @@ def _render_combined_chart(  # noqa: C901
     fields_json = json.dumps(fields_for_js)
 
     script = f"""
-    <script>
+  <script>
 (function() {{
     const cid = "{cid}";
     const data = {data_json};
@@ -398,7 +386,10 @@ def _render_combined_chart(  # noqa: C901
     if (!svg || !data.length) return;
     const pl={pl}, pr={pr}, pt={pt_pad}, pb={pb}, W={w}, H={h};
     const iw = W - pl - pr, t0 = data[0].t, t1 = data[data.length-1].t, span = Math.max(1, t1 - t0);
-    function bisect(ts) {{ let lo=0,hi=data.length-1; while(lo<hi){{ const m=(lo+hi)>>1; if(data[m].t<ts)lo=m+1;else hi=m; }} if(lo>0&&Math.abs(data[lo-1].t-ts)<Math.abs(data[lo].t-ts))lo--; return lo; }}
+    function bisect(ts) {{ let lo=0,hi=data.length-1;
+      while(lo<hi){{ const m=(lo+hi)>>1; if(data[m].t<ts)lo=m+1;else hi=m; }}
+      if(lo>0&&Math.abs(data[lo-1].t-ts)<Math.abs(data[lo].t-ts))lo--;
+      return lo; }}
     svg.addEventListener("mousemove", function(e) {{
         const rect=svg.getBoundingClientRect(), scaleX=W/rect.width, mx=(e.clientX-rect.left)*scaleX;
         if(mx<pl||mx>W-pr){{ xline.style.display="none";tip.style.display="none";return; }}
@@ -406,7 +397,10 @@ def _render_combined_chart(  # noqa: C901
         xline.setAttribute("x1",x);xline.setAttribute("x2",x);xline.style.display="";
         const date=new Date((d.t+{SYS_TZ_OFFSET})*1000), timeStr=date.toISOString().substr(11,8)+' {SYS_TZ_NAME}';
         let html='<b>'+timeStr+'</b><br>';
-        fields.forEach(f=>{{ const v=d[f.key]; if(v!==undefined&&v!==null) html+='<span style="color:'+f.color+'">\\u25cf</span> '+f.label+': '+(typeof v==="number"?v.toFixed(1):v)+f.unit+'<br>'; }});
+        fields.forEach(f=>{{ const v=d[f.key];
+          if(v!==undefined&&v!==null) html+='<span style="color:'+f.color
+            +'">\\u25cf</span> '+f.label+': '
+            +(typeof v==="number"?v.toFixed(1):v)+f.unit+'<br>'; }});
         tip.innerHTML=html;tip.style.display="block";
         const tipX=(e.clientX-rect.left)+16, tipY=(e.clientY-rect.top)-10;
         tip.style.left=(tipX+tip.offsetWidth>rect.width?tipX-tip.offsetWidth-32:tipX)+"px";
@@ -414,22 +408,22 @@ def _render_combined_chart(  # noqa: C901
     }});
     svg.addEventListener("mouseleave", function(){{ xline.style.display="none";tip.style.display="none"; }});
 }})();
-    </script>"""
+  </script>"""
 
     return f"""
-    <div class="chart-card">
+  <div class="chart-card">
     <div class="chart-title">{escape(title)}</div>
     <div style="position:relative">
-    <svg id="{cid}_svg" viewBox="0 0 {w} {h}" width="100%" preserveAspectRatio="xMidYMid meet">
-    {grid}
-    {lines}
-    {legend}
-    </svg>
-    <line id="{cid}_xline" x1="0" y1="0" x2="0" y2="{h}" stroke="#fff" stroke-width="0.5" style="display:none"/>
-    <div id="{cid}_tip" class="chart-tooltip"></div>
-    </div></div>
-    {script}"""
-
+      <svg id="{cid}_svg" viewBox="0 0 {w} {h}" width="100%" preserveAspectRatio="xMidYMid meet">
+{grid}
+{lines}
+{legend}
+        <line id="{cid}_xline" x1="0" y1="{pt_pad}" x2="0" y2="{h - pb}"
+          stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,2" style="display:none"/>
+      </svg>
+      <div id="{cid}_tip" class="chart-tooltip"></div>
+    </div>
+{script}  </div>"""
 
 def _render_metric_chart(
     data: dict[str, list[dict[str, Any]]], key: str, title: str, unit: str, y_max_override: float = 0
@@ -461,8 +455,8 @@ def _render_metric_chart(
         color = GPU_COLORS[ci]
         lines += _svg_polyline(pts, color, w, h, pad, y_min, y_max)
         legend += (
-            f'  <rect x="{lx}" y="{h - 18}" width="8" height="8" fill="{color}"/>'
-            + f'  <text x="{lx + 10}" y="{h - 10}" font-size="9" fill="#94a3b8">GPU {gpu_id}</text>'
+            f'  <rect x="{lx}" y="{h - 42}" width="10" height="10" fill="{color}"/>'
+            + f'  <text x="{lx + 14}" y="{h - 33}" font-size="10" fill="#94a3b8">GPU {gpu_id}</text>'
         )
         lx += 62
 
@@ -487,7 +481,7 @@ def _render_metric_chart(
     fields_json = json.dumps(tip_fields)
 
     script = f"""
-    <script>
+  <script>
 (function() {{
     const cid = "{cid}";
     const data = {data_json};
@@ -498,7 +492,10 @@ def _render_metric_chart(
     if (!svg || !data.length) return;
     const pl={pl}, pr={pr}, pt={pt_pad}, pb={pb}, W={w}, H={h};
     const iw = W - pl - pr, t0 = data[0].t, t1 = data[data.length-1].t, span = Math.max(1, t1 - t0);
-    function bisect(ts) {{ let lo=0,hi=data.length-1; while(lo<hi){{ const m=(lo+hi)>>1; if(data[m].t<ts)lo=m+1;else hi=m; }} if(lo>0&&Math.abs(data[lo-1].t-ts)<Math.abs(data[lo].t-ts))lo--; return lo; }}
+    function bisect(ts) {{ let lo=0,hi=data.length-1;
+      while(lo<hi){{ const m=(lo+hi)>>1; if(data[m].t<ts)lo=m+1;else hi=m; }}
+      if(lo>0&&Math.abs(data[lo-1].t-ts)<Math.abs(data[lo].t-ts))lo--;
+      return lo; }}
     svg.addEventListener("mousemove", function(e) {{
         const rect=svg.getBoundingClientRect(), scaleX=W/rect.width, mx=(e.clientX-rect.left)*scaleX;
         if(mx<pl||mx>W-pr){{ xline.style.display="none";tip.style.display="none";return; }}
@@ -506,7 +503,10 @@ def _render_metric_chart(
         xline.setAttribute("x1",x);xline.setAttribute("x2",x);xline.style.display="";
         const date=new Date((d.t+{SYS_TZ_OFFSET})*1000), timeStr=date.toISOString().substr(11,8)+' {SYS_TZ_NAME}';
         let html='<b>'+timeStr+'</b><br>';
-        fields.forEach(f=>{{ const v=d[f.key]; if(v!==undefined&&v!==null) html+='<span style="color:'+f.color+'">\\u25cf</span> '+f.label+': '+(typeof v==="number"?v.toFixed(1):v)+f.unit+'<br>'; }});
+        fields.forEach(f=>{{ const v=d[f.key];
+          if(v!==undefined&&v!==null) html+='<span style="color:'+f.color
+            +'">\\u25cf</span> '+f.label+': '
+            +(typeof v==="number"?v.toFixed(1):v)+f.unit+'<br>'; }});
         tip.innerHTML=html;tip.style.display="block";
         const tipX=(e.clientX-rect.left)+16, tipY=(e.clientY-rect.top)-10;
         tip.style.left=(tipX+tip.offsetWidth>rect.width?tipX-tip.offsetWidth-32:tipX)+"px";
@@ -514,22 +514,22 @@ def _render_metric_chart(
     }});
     svg.addEventListener("mouseleave", function(){{ xline.style.display="none";tip.style.display="none"; }});
 }})();
-    </script>"""
+  </script>"""
 
     return f"""
-    <div class="chart-card">
+  <div class="chart-card">
     <div class="chart-title">{escape(title)}</div>
     <div style="position:relative">
-    <svg id="{cid}_svg" viewBox="0 0 {w} {h}" width="100%" preserveAspectRatio="xMidYMid meet">
-    {grid}
-    {lines}
-    {legend}
-    </svg>
-    <line id="{cid}_xline" x1="0" y1="0" x2="0" y2="{h}" stroke="#fff" stroke-width="0.5" style="display:none"/>
-    <div id="{cid}_tip" class="chart-tooltip"></div>
-    </div></div>
-    {script}"""
-
+      <svg id="{cid}_svg" viewBox="0 0 {w} {h}" width="100%" preserveAspectRatio="xMidYMid meet">
+{grid}
+{lines}
+{legend}
+        <line id="{cid}_xline" x1="0" y1="{pt_pad}" x2="0" y2="{h - pb}"
+          stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,2" style="display:none"/>
+      </svg>
+      <div id="{cid}_tip" class="chart-tooltip"></div>
+    </div>
+{script}  </div>"""
 
 def _render_gpu_bar_chart(data: dict[str, list[dict[str, Any]]], metrics: list[tuple[str, str, str]]) -> str:
     gpu_ids = sorted(data.keys(), key=lambda g: int(g) if g.isdigit() else 0)
@@ -553,7 +553,10 @@ def _render_gpu_bar_chart(data: dict[str, list[dict[str, Any]]], metrics: list[t
     bars = ""
     for gi, gpu_id in enumerate(gpu_ids):
         gx = pad_l + gi * group_w
-        bars += f'  <text x="{gx + group_w / 2}" y="{h - 10}" text-anchor="middle" font-size="11" fill="#94a3b8">GPU {gpu_id}</text>'
+        bars += (
+            f'  <text x="{gx + group_w / 2}" y="{h - 10}"'
+            f' text-anchor="middle" font-size="11" fill="#94a3b8">GPU {gpu_id}</text>'
+        )
         for bi, (key, _label, color) in enumerate(metrics):
             val = avgs[gpu_id][key]
             bh = (val / global_max) * bar_area_h if global_max > 0 else 0
@@ -561,31 +564,33 @@ def _render_gpu_bar_chart(data: dict[str, list[dict[str, Any]]], metrics: list[t
             by = pad_t + bar_area_h - bh
             bars += f'  <rect x="{bx}" y="{by}" width="{bar_w * 0.8}" height="{bh}" fill="{color}" rx="2"/>'
             if val > 0:
-                bars += f'  <text x="{bx + bar_w * 0.4}" y="{by - 4}" text-anchor="middle" font-size="9" fill="#e2e8f0">{val:.0f}</text>'
+                bars += (
+                    f'  <text x="{bx + bar_w * 0.4}" y="{by - 4}"'
+                    f' text-anchor="middle" font-size="9" fill="#94a3b8">{val:.0f}</text>'
+                )
     legend = ""
     lx = pad_l + 10
     for _, lbl, color in metrics:
         legend += (
-            f'  <rect x="{lx}" y="{h - 18}" width="8" height="8" fill="{color}"/>'
-            + f'  <text x="{lx + 10}" y="{h - 10}" font-size="9" fill="#94a3b8">{lbl}</text>'
+            f'  <rect x="{lx}" y="{h - 28}" width="10" height="10" fill="{color}"/>'
+            + f'  <text x="{lx + 14}" y="{h - 19}" font-size="10" fill="#94a3b8">{lbl}</text>'
         )
         lx += len(lbl) * 7 + 28
 
     return f"""
-    <div class="chart-card">
+  <div class="chart-card">
     <div class="chart-title">Per-GPU Averages</div>
     <div style="position:relative">
-    <svg viewBox="0 0 {w} {h}" width="100%" preserveAspectRatio="xMidYMid meet">
-    {bars}
-    {legend}
-    </svg>
-    </div></div>"""
-
+      <svg viewBox="0 0 {w} {h}" width="100%" preserveAspectRatio="xMidYMid meet">
+{bars}
+{legend}
+      </svg>
+    </div>
+  </div>"""
 
 # ---------------------------------------------------------------------------
 # Health checks + per-GPU table from enriched summary.json
 # ---------------------------------------------------------------------------
-
 
 def _load_analysis(run_dir: str) -> dict[str, Any]:
     path = os.path.join(run_dir, "summary.json")
@@ -596,7 +601,6 @@ def _load_analysis(run_dir: str) -> dict[str, Any]:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
-
 
 def _render_health_checks(analysis: dict[str, Any]) -> str:
     anomalies = analysis.get("anomalies", {})
@@ -664,12 +668,11 @@ def _render_health_checks(analysis: dict[str, Any]) -> str:
         rows += f"<tr><td>Monitor Valid.</td><td>{_badge(mvs == 'OK', mvs, mvs)}</td></tr>"
 
     return f"""
-    <div class="section-title">Health Checks</div>
-    <table>
+  <div class="section-title">Health Checks</div>
+  <table>
     <tr><th>Check</th><th>Status</th></tr>
     {rows}
-    </table>"""
-
+  </table>"""
 
 def _render_per_gpu_table(analysis: dict[str, Any]) -> str:
     per_gpu = analysis.get("per_gpu", {})
@@ -680,8 +683,8 @@ def _render_per_gpu_table(analysis: dict[str, Any]) -> str:
     for gid in sorted(per_gpu, key=lambda g: int(g) if g.isdigit() else 0):
         st = per_gpu[gid]
 
-        def _v(key: str, field: str = "avg") -> str:
-            s = st.get(key)
+        def _v(key: str, field: str = "avg", _st: dict = st) -> str:
+            s = _st.get(key)
             if not s:
                 return "N/A"
             return f"{s[field]:.0f}" if field != "avg" else f"{s['avg']:.1f}"
@@ -694,22 +697,22 @@ def _render_per_gpu_table(analysis: dict[str, Any]) -> str:
             + f"<td>{_v('gfx_util')}</td>"
             + f"<td>{_v('vram_pct')}</td>"
             + f"<td>{st.get('active_samples', 'N/A')}</td>"
-            + f"</tr>"
+            + "</tr>"
         )
 
     pattern = analysis.get("workload_pattern", "")
     note = ""
     if pattern == "serial":
-        note = '<div class="hint">Serial workload detected \u2014 stats show active-window averages per GPU.</div>'
+        note = '<p class="hint">Serial workload detected \u2014 stats show active-window averages per GPU.</p>'
 
     return f"""
-    <div class="section-title">Per-GPU Statistics (steady-state)</div>
-    <table>
-    <tr><th>GPU</th><th>Power (W)</th><th>Temp (\u00b0C)</th><th>GFX Clk (MHz)</th><th>GFX Util (%)</th><th>VRAM (%)</th><th>Active Samples</th></tr>
+  <div class="section-title">Per-GPU Statistics (steady-state)</div>
+  <table>
+    <tr><th>GPU</th><th>Power (W)</th><th>Temp (\u00b0C)</th><th>GFX Clk (MHz)</th>
+    <th>GFX Util (%)</th><th>VRAM (%)</th><th>Active Samples</th></tr>
     {rows}
-    </table>
-    {note}"""
-
+  </table>
+  {note}"""
 
 # ---------------------------------------------------------------------------
 # Main HTML assembly
@@ -717,30 +720,47 @@ def _render_per_gpu_table(analysis: dict[str, Any]) -> str:
 
 CSS = """
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; padding: 24px; }
-    .header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1px solid #334155; border-radius: 8px; padding: 24px; margin-bottom: 20px; }
+    body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: #0f172a; color: #e2e8f0; padding: 24px; }
+    .header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      border: 1px solid #334155; border-radius: 8px;
+      padding: 24px; margin-bottom: 20px; }
     .header h1 { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
-    .result-badge { display: inline-block; padding: 3px 12px; border-radius: 4px; font-weight: 600; font-size: 13px; }
+    .result-badge { display: inline-block; padding: 3px 12px;
+      border-radius: 4px; font-weight: 600; font-size: 13px; }
     .result-badge.pass { background: #166534; color: #4ade80; }
     .result-badge.fail { background: #7f1d1d; color: #f87171; }
     .result-badge.skip { background: #374151; color: #9ca3af; }
-    .meta-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-top: 12px; font-size: 13px; color: #94a3b8; }
+    .meta-grid { display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 8px; margin-top: 12px; font-size: 13px; color: #94a3b8; }
     .meta-grid span { color: #e2e8f0; }
-    .chart-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; margin-bottom: 16px; position: relative; }
-    .chart-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; color: #f1f5f9; }
-    .chart-tooltip { display: none; position: absolute; background: rgba(15,23,42,0.95); border: 1px solid #475569; border-radius: 6px; padding: 8px 12px; font-size: 12px; line-height: 1.5; pointer-events: none; z-index: 100; white-space: nowrap; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
-    .section-title { font-size: 16px; font-weight: 600; margin: 24px 0 12px; color: #f1f5f9; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 16px; }
-    th { background: #1e293b; padding: 8px 12px; text-align: left; border-bottom: 2px solid #334155; color: #94a3b8; font-weight: 600; }
+    .chart-card { background: #1e293b; border: 1px solid #334155;
+      border-radius: 8px; padding: 16px;
+      margin-bottom: 16px; position: relative; }
+    .chart-title { font-size: 14px; font-weight: 600;
+      margin-bottom: 8px; color: #f1f5f9; }
+    .chart-tooltip { display: none; position: absolute;
+      background: rgba(15,23,42,0.95);
+      border: 1px solid #475569; border-radius: 6px;
+      padding: 8px 12px; font-size: 12px; line-height: 1.5;
+      pointer-events: none; z-index: 100; white-space: nowrap;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+    .section-title { font-size: 16px; font-weight: 600;
+      margin: 24px 0 12px; color: #f1f5f9; }
+    table { width: 100%; border-collapse: collapse;
+      font-size: 13px; margin-bottom: 16px; }
+    th { background: #1e293b; padding: 8px 12px; text-align: left;
+      border-bottom: 2px solid #334155; color: #94a3b8;
+      font-weight: 600; }
     td { padding: 6px 12px; border-bottom: 1px solid #1e293b; }
     tr:hover td { background: rgba(51, 65, 85, 0.3); }
     .hint { font-size: 12px; color: #64748b; margin-top: 4px; }
     svg { display: block; }
 """
 
-
 def generate_report(run_dir: str, test_name: str, result: str, duration: int, output: str) -> None:
-    global _chart_id_counter  # noqa: PLW0603
+    global _chart_id_counter
     _chart_id_counter = 0
 
     meta = _load_command_metadata(run_dir)
@@ -815,7 +835,7 @@ def generate_report(run_dir: str, test_name: str, result: str, duration: int, ou
                 )
             cu_table += "</table>"
             if len(cu_data) > 50:
-                cu_table += f'<div class="hint">Showing 50 of {len(cu_data)} samples with CU_OCCUPANCY > 0</div>'
+                cu_table += f'<p class="hint">Showing 50 of {len(cu_data)} samples with CU_OCCUPANCY > 0</p>'
 
     health_html = _render_health_checks(analysis)
     per_gpu_html = _render_per_gpu_table(analysis)
@@ -831,35 +851,35 @@ def generate_report(run_dir: str, test_name: str, result: str, duration: int, ou
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>{escape(test_name)} \u2014 Monitoring Report</title>
-<style>{CSS}</style>
+  <meta charset="UTF-8">
+  <title>{escape(test_name)} \u2014 Monitoring Report</title>
+  <style>{CSS}</style>
 </head>
 <body>
-<div class="header">
-<h1>{escape(test_name)} <span class="result-badge {result_class}">{escape(result)}</span></h1>
-<div class="meta-grid">
-<div>Duration: <span>{duration}s</span></div>
-<div>Timestamp: <span>{escape(str(meta.get('timestamp', 'N/A')))}</span></div>
-<div>Hostname: <span>{escape(str(meta.get('hostname', 'N/A')))}</span></div>
-<div>ROCm: <span>{escape(str(meta.get('rocm_version', 'N/A')))}</span></div>
-<div>GPU: <span>{escape(str(meta.get('gpu_model', 'N/A')))}</span></div>
-<div>GPUs: <span>{escape(str(meta.get('num_gpus', 'N/A')))}</span></div>
-<div>Samples: <span>{len(parsed)}</span></div>
-<div>Interval: <span>{escape(str(meta.get('sample_interval', '1s')))}</span></div>
-</div>
-<div class="hint">
+  <div class="header">
+    <h1>{escape(test_name)} <span class="result-badge {result_class}">{escape(result)}</span></h1>
+    <div class="meta-grid">
+      <div>Duration: <span>{duration}s</span></div>
+      <div>Timestamp: <span>{escape(str(meta.get('timestamp', 'N/A')))}</span></div>
+      <div>Hostname: <span>{escape(str(meta.get('hostname', 'N/A')))}</span></div>
+      <div>ROCm: <span>{escape(str(meta.get('rocm_version', 'N/A')))}</span></div>
+      <div>GPU: <span>{escape(str(meta.get('gpu_model', 'N/A')))}</span></div>
+      <div>GPUs: <span>{escape(str(meta.get('num_gpus', 'N/A')))}</span></div>
+      <div>Samples: <span>{len(parsed)}</span></div>
+      <div>Interval: <span>{escape(str(meta.get('sample_interval', '1s')))}</span></div>
+    </div>
+    <p class="hint" style="margin-top:8px">
 Workload: {escape(meta.get('workload_function', ''))} \u2014 {escape(meta.get('goal', ''))}
-</div>
-</div>
+    </p>
+  </div>
 
 {charts_html}
 
-<div class="section-title">Summary Statistics (all GPUs)</div>
-<table>
-<tr><th>Metric</th><th>Min</th><th>Max</th><th>Avg</th><th>Samples</th></tr>
+  <div class="section-title">Summary Statistics (all GPUs)</div>
+  <table>
+    <tr><th>Metric</th><th>Min</th><th>Max</th><th>Avg</th><th>Samples</th></tr>
 {stats_rows}
-</table>
+  </table>
 
 {health_html}
 
@@ -867,15 +887,14 @@ Workload: {escape(meta.get('workload_function', ''))} \u2014 {escape(meta.get('g
 
 {cu_table}
 
-<div class="hint" style="margin-top:24px">
+  <p class="hint" style="margin-top:24px">
 Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} \u2014 Hover over charts to see values
-</div>
+  </p>
 </body>
 </html>"""
 
     with open(output, "w") as f:
         f.write(html)
-
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

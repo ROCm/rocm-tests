@@ -14,9 +14,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import time
-from pathlib import Path
 
 import pytest
 
@@ -32,7 +32,7 @@ from tests.common.gpu_monitored.validation import (
 )
 from tests.e2e.rvs.conftest import (
     gpu_conf_dir,  # noqa: F401
-    rvs_binary,  # noqa: F401
+    rvs_binary,  # noqa: F401, F811
     rvs_find_conf,  # noqa: F401
     rvs_source,  # noqa: F401
 )

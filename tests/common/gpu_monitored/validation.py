@@ -12,18 +12,18 @@ Layers:
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import logging
 import re
 import subprocess
-from datetime import datetime, timedelta
-from typing import Optional
 
 from framework.executors.local_executor import run_cmd_get_stdout_stderr
 
 logger = logging.getLogger(__name__)
 
 _CRASH_PATTERNS = re.compile(
-    r"(segfault|segmentation fault|core dump|SIGBUS|SIGSEGV|" r"Kernel panic|device reset|GPU hang|unrecoverable)",
+    r"(segfault|segmentation fault|core dump|SIGBUS|SIGSEGV|"
+    r"Kernel panic|device reset|GPU hang|unrecoverable)",
     re.IGNORECASE,
 )
 
@@ -138,7 +138,7 @@ def pretest_health_probe(lookback_min: int = 30) -> tuple[bool, dict]:
     return total == 0, summary
 
 
-def capture_dmesg(cmake_executor=None) -> Optional[str]:
+def capture_dmesg(cmake_executor=None) -> str | None:
     """Capture current dmesg output. Falls back through multiple methods."""
     methods = [
         ["dmesg"],
@@ -158,7 +158,7 @@ def capture_dmesg(cmake_executor=None) -> Optional[str]:
     return None
 
 
-def dmesg_delta(before: Optional[str], after: Optional[str]) -> Optional[str]:
+def dmesg_delta(before: str | None, after: str | None) -> str | None:
     """Return new dmesg lines that appeared between before and after snapshots."""
     if before is None or after is None:
         return None
@@ -168,7 +168,7 @@ def dmesg_delta(before: Optional[str], after: Optional[str]) -> Optional[str]:
     return "\n".join(new_lines) if new_lines else ""
 
 
-def validate_rvs_result(stdout: str, stderr: str, exit_code: int, dmesg_new: Optional[str]) -> tuple[bool, str]:
+def validate_rvs_result(stdout: str, stderr: str, exit_code: int, dmesg_new: str | None) -> tuple[bool, str]:
     """5-layer validation of RVS test output.
 
     Returns:
@@ -184,7 +184,10 @@ def validate_rvs_result(stdout: str, stderr: str, exit_code: int, dmesg_new: Opt
         layer2_msg = f"Layer 2 FAIL: {abort_count} ABORT(s) detected"
         layer2_failed = True
     elif false_count > 0:
-        layer2_msg = f"Layer 2 FAIL: {false_count} test(s) reported pass: FALSE " f"({true_count} passed)"
+        layer2_msg = (
+            f"Layer 2 FAIL: {false_count} test(s) reported pass: FALSE "
+            f"({true_count} passed)"
+        )
         layer2_failed = True
     elif true_count > 0:
         layer2_msg = f"Layer 2 PASS: {true_count} test(s) reported pass: TRUE"
@@ -198,7 +201,7 @@ def validate_hipblaslt_result(
     stdout: str,
     stderr: str,
     exit_code: int,
-    dmesg_new: Optional[str],
+    dmesg_new: str | None,
     shapes_passed: int = 0,
     shapes_failed: int = 0,
 ) -> tuple[bool, str]:
@@ -213,7 +216,10 @@ def validate_hipblaslt_result(
     total = shapes_passed + shapes_failed
     layer2_failed = False
     if shapes_failed > 0:
-        layer2_msg = f"Layer 2 FAIL: {shapes_failed}/{total} shapes failed " f"({shapes_passed} passed)"
+        layer2_msg = (
+            f"Layer 2 FAIL: {shapes_failed}/{total} shapes failed "
+            f"({shapes_passed} passed)"
+        )
         layer2_failed = True
     elif shapes_passed > 0:
         layer2_msg = f"Layer 2 PASS: {shapes_passed}/{total} shapes passed"
@@ -227,7 +233,7 @@ def _validate_common_layers(
     stdout: str,
     stderr: str,
     exit_code: int,
-    dmesg_new: Optional[str],
+    dmesg_new: str | None,
     layer2_msg: str,
     layer2_failed: bool,
 ) -> tuple[bool, str]:
@@ -242,7 +248,7 @@ def _validate_common_layers(
     if crash_hits:
         messages.append(f"Layer 1 FAIL: {len(crash_hits)} crash indicator(s) in output")
         for h in crash_hits[:3]:
-            messages.append(f"  → {h.strip()[:120]}")
+            messages.append(f"  \u2192 {h.strip()[:120]}")
         failed = True
     else:
         messages.append("Layer 1 PASS: no crash indicators")
@@ -262,15 +268,18 @@ def _validate_common_layers(
         if critical:
             messages.append(f"Layer 3 FAIL: {len(critical)} critical kernel event(s) during test")
             for c in critical[:3]:
-                messages.append(f"  → {c.strip()[:120]}")
+                messages.append(f"  \u2192 {c.strip()[:120]}")
             failed = True
         else:
-            messages.append(f"Layer 3 PASS: {len(dmesg_new.splitlines())} new kernel messages, " f"none critical")
+            messages.append(
+                f"Layer 3 PASS: {len(dmesg_new.splitlines())} new kernel messages, "
+                f"none critical"
+            )
 
     # Layer 4: Silent death detection
     has_output = bool(stdout.strip()) or bool(stderr.strip())
     if not has_output and exit_code != 0:
-        messages.append(f"Layer 4 FAIL: silent death — no output but exit code {exit_code}")
+        messages.append(f"Layer 4 FAIL: silent death \u2014 no output but exit code {exit_code}")
         failed = True
     elif not has_output and exit_code == 0:
         messages.append("Layer 4 WARN: no output but exit code 0 (possible no-op)")

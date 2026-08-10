@@ -5,14 +5,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
 class TestSpec:
     name: str
     goal: str
-    workload_profile: Optional[dict] = None
+    workload_profile: dict | None = None
 
 
 ALL_TESTS = [
@@ -34,7 +33,7 @@ ALL_TESTS = [
 ]
 
 
-def get_test(name: str) -> Optional[TestSpec]:
+def get_test(name: str) -> TestSpec | None:
     """Find test by name (case-insensitive)."""
     name = name.lower()
     for t in ALL_TESTS:
