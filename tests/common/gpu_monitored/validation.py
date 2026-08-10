@@ -23,8 +23,7 @@ from framework.executors.local_executor import run_cmd_get_stdout_stderr
 logger = logging.getLogger(__name__)
 
 _CRASH_PATTERNS = re.compile(
-    r"(segfault|segmentation fault|core dump|SIGBUS|SIGSEGV|"
-    r"Kernel panic|device reset|GPU hang|unrecoverable)",
+    r"(segfault|segmentation fault|core dump|SIGBUS|SIGSEGV|" r"Kernel panic|device reset|GPU hang|unrecoverable)",
     re.IGNORECASE,
 )
 
@@ -104,7 +103,9 @@ def pretest_health_probe(lookback_min: int = 30) -> tuple[bool, dict]:
     try:
         res = subprocess.run(
             ["dmesg", "-T"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
     except (subprocess.TimeoutExpired, OSError, FileNotFoundError) as e:
         summary["reason"] = f"{type(e).__name__}: {e}"
@@ -167,9 +168,7 @@ def dmesg_delta(before: Optional[str], after: Optional[str]) -> Optional[str]:
     return "\n".join(new_lines) if new_lines else ""
 
 
-def validate_rvs_result(
-    stdout: str, stderr: str, exit_code: int, dmesg_new: Optional[str]
-) -> tuple[bool, str]:
+def validate_rvs_result(stdout: str, stderr: str, exit_code: int, dmesg_new: Optional[str]) -> tuple[bool, str]:
     """5-layer validation of RVS test output.
 
     Returns:
@@ -185,24 +184,23 @@ def validate_rvs_result(
         layer2_msg = f"Layer 2 FAIL: {abort_count} ABORT(s) detected"
         layer2_failed = True
     elif false_count > 0:
-        layer2_msg = (
-            f"Layer 2 FAIL: {false_count} test(s) reported pass: FALSE "
-            f"({true_count} passed)"
-        )
+        layer2_msg = f"Layer 2 FAIL: {false_count} test(s) reported pass: FALSE " f"({true_count} passed)"
         layer2_failed = True
     elif true_count > 0:
         layer2_msg = f"Layer 2 PASS: {true_count} test(s) reported pass: TRUE"
     else:
         layer2_msg = "Layer 2 SKIP: no RVS pass/fail markers found in output"
 
-    return _validate_common_layers(
-        stdout, stderr, exit_code, dmesg_new, layer2_msg, layer2_failed
-    )
+    return _validate_common_layers(stdout, stderr, exit_code, dmesg_new, layer2_msg, layer2_failed)
 
 
 def validate_hipblaslt_result(
-    stdout: str, stderr: str, exit_code: int, dmesg_new: Optional[str],
-    shapes_passed: int = 0, shapes_failed: int = 0,
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+    dmesg_new: Optional[str],
+    shapes_passed: int = 0,
+    shapes_failed: int = 0,
 ) -> tuple[bool, str]:
     """5-layer validation of hipBLASLt bench output.
 
@@ -215,19 +213,14 @@ def validate_hipblaslt_result(
     total = shapes_passed + shapes_failed
     layer2_failed = False
     if shapes_failed > 0:
-        layer2_msg = (
-            f"Layer 2 FAIL: {shapes_failed}/{total} shapes failed "
-            f"({shapes_passed} passed)"
-        )
+        layer2_msg = f"Layer 2 FAIL: {shapes_failed}/{total} shapes failed " f"({shapes_passed} passed)"
         layer2_failed = True
     elif shapes_passed > 0:
         layer2_msg = f"Layer 2 PASS: {shapes_passed}/{total} shapes passed"
     else:
         layer2_msg = "Layer 2 WARN: no shapes executed"
 
-    return _validate_common_layers(
-        stdout, stderr, exit_code, dmesg_new, layer2_msg, layer2_failed
-    )
+    return _validate_common_layers(stdout, stderr, exit_code, dmesg_new, layer2_msg, layer2_failed)
 
 
 def _validate_common_layers(
@@ -272,10 +265,7 @@ def _validate_common_layers(
                 messages.append(f"  → {c.strip()[:120]}")
             failed = True
         else:
-            messages.append(
-                f"Layer 3 PASS: {len(dmesg_new.splitlines())} new kernel messages, "
-                f"none critical"
-            )
+            messages.append(f"Layer 3 PASS: {len(dmesg_new.splitlines())} new kernel messages, " f"none critical")
 
     # Layer 4: Silent death detection
     has_output = bool(stdout.strip()) or bool(stderr.strip())

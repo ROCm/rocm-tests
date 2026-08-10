@@ -152,9 +152,7 @@ def _parse_rows(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     return parsed
 
 
-def _compute_pct_fields(
-    rows: list[dict[str, Any]], gpu_limits: Optional[dict] = None
-) -> list[dict[str, Any]]:
+def _compute_pct_fields(rows: list[dict[str, Any]], gpu_limits: Optional[dict] = None) -> list[dict[str, Any]]:
     if not rows:
         return rows
     gl = gpu_limits or {}
@@ -224,9 +222,7 @@ def _svg_polyline(
     return f'  <polyline points="{coords}" fill="none" stroke="{color}" stroke-width="1.5"/>'
 
 
-def _time_axis_ticks(
-    t0: int, t1: int, w: int, h: int, pad: tuple[int, int, int, int]
-) -> str:
+def _time_axis_ticks(t0: int, t1: int, w: int, h: int, pad: tuple[int, int, int, int]) -> str:
     pl, pr, _pt, _pb = pad
     span = max(1, t1 - t0)
     iw = w - pl - pr
@@ -254,14 +250,9 @@ def _y_axis_grid(
         frac = i / n_ticks
         val = y_min + frac * (y_max - y_min)
         y = _pt + (1.0 - frac) * ih
-        grid += (
-            f'  <line x1="{pl}" y1="{y}" x2="{w - pr}" y2="{y}" stroke="#334155" stroke-width="0.5"/>'
-        )
+        grid += f'  <line x1="{pl}" y1="{y}" x2="{w - pr}" y2="{y}" stroke="#334155" stroke-width="0.5"/>'
         label = f"{val:.0f}{unit}"
-        grid += (
-            f'  <text x="{pl - 5}" y="{y + 4}" text-anchor="end" '
-            f'font-size="10" fill="#94a3b8">{label}</text>'
-        )
+        grid += f'  <text x="{pl - 5}" y="{y + 4}" text-anchor="end" ' f'font-size="10" fill="#94a3b8">{label}</text>'
     return grid
 
 
@@ -312,12 +303,8 @@ def _render_combined_chart(  # noqa: C901
     for i in range(n_gridlines + 1):
         pct = y_max_pct * i / n_gridlines
         y = pt_pad + (1.0 - pct / y_max_pct) * ih
-        grid += (
-            f'  <line x1="{pl}" y1="{y}" x2="{w - pr}" y2="{y}" stroke="#334155" stroke-width="0.5"/>'
-        )
-        grid += (
-            f'  <text x="{pl - 5}" y="{y + 4}" text-anchor="end" '
-            f'font-size="10" fill="#94a3b8">{pct:.0f}%</text>'
+        grid += f'  <line x1="{pl}" y1="{y}" x2="{w - pr}" y2="{y}" stroke="#334155" stroke-width="0.5"/>'
+            f'  <text x="{pl - 5}" y="{y + 4}" text-anchor="end" ' f'font-size="10" fill="#94a3b8">{pct:.0f}%</text>'
         )
     if y_max_pct > 100:
         y100 = pt_pad + (1.0 - 100.0 / y_max_pct) * ih
@@ -580,10 +567,7 @@ def _render_gpu_bar_chart(data: dict[str, list[dict[str, Any]]], metrics: list[t
             bh = (val / global_max) * bar_area_h if global_max > 0 else 0
             bx = gx + (bi + 0.5) * bar_w
             by = pad_t + bar_area_h - bh
-            bars += (
-                f'  <rect x="{bx}" y="{by}" width="{bar_w * 0.8}" height="{bh}" '
-                f'fill="{color}" rx="2"/>'
-            )
+            bars += f'  <rect x="{bx}" y="{by}" width="{bar_w * 0.8}" height="{bh}" ' f'fill="{color}" rx="2"/>'
             if val > 0:
                 bars += (
                     f'  <text x="{bx + bar_w * 0.4}" y="{by - 4}" text-anchor="middle" '

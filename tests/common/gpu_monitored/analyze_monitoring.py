@@ -343,9 +343,7 @@ def detect_workload_pattern(by_gpu: dict[str, list[dict]]) -> str:
     return "mixed"
 
 
-def compute_per_gpu(
-    by_gpu: dict[str, list[dict]], steady: dict[str, tuple[int, int]], pattern: str
-) -> dict[str, dict]:
+def compute_per_gpu(by_gpu: dict[str, list[dict]], steady: dict[str, tuple[int, int]], pattern: str) -> dict[str, dict]:
     result: dict[str, dict] = {}
     for gpu_id in sorted(by_gpu, key=lambda g: int(g) if g.isdigit() else 0):
         rows = by_gpu[gpu_id]
@@ -402,9 +400,7 @@ def detect_imbalance(per_gpu: dict[str, dict], pattern: str) -> list[dict]:
     return flags
 
 
-def detect_throttling(
-    by_gpu: dict[str, list[dict]], steady: dict[str, tuple[int, int]]
-) -> list[dict]:
+def detect_throttling(by_gpu: dict[str, list[dict]], steady: dict[str, tuple[int, int]]) -> list[dict]:
     events: list[dict] = []
     for gpu_id, rows in by_gpu.items():
         s, e = steady.get(gpu_id, (0, max(0, len(rows) - 1)))
@@ -416,10 +412,7 @@ def detect_throttling(
             continue
         avg_clk = sum(clks) / len(clks)
         floor = avg_clk * (1 - THROTTLE_CLK_DROP_PCT / 100)
-        hit = sum(
-            1 for r in ss
-            if r["hotspot_temp"] >= _get_gpu_limits()["throttle_temp_c"] and r["gfx_clk"] < floor
-        )
+        hit = sum(1 for r in ss if r["hotspot_temp"] >= _get_gpu_limits()["throttle_temp_c"] and r["gfx_clk"] < floor)
         if hit > 0:
             events.append(
                 {
@@ -516,9 +509,7 @@ def analyze_mem_temp(by_gpu: dict[str, list[dict]], steady: dict[str, tuple[int,
     return result
 
 
-def compute_steady_state_metrics(
-    by_gpu: dict[str, list[dict]], steady: dict[str, tuple[int, int]]
-) -> dict:
+def compute_steady_state_metrics(by_gpu: dict[str, list[dict]], steady: dict[str, tuple[int, int]]) -> dict:
     """Aggregate steady-state samples across all GPUs and compute
     ``start_offset_s``/``end_offset_s`` relative to the *global* t0.
     """
@@ -561,9 +552,7 @@ def compute_steady_state_metrics(
     }
 
 
-def validate_monitoring(  # noqa: C901
-    test_name: str, per_gpu: dict, pattern: str, run_dir: str = ""
-) -> dict:
+def validate_monitoring(test_name: str, per_gpu: dict, pattern: str, run_dir: str = "") -> dict:  # noqa: C901
     """Check monitoring data against expected workload profiles.
     Returns warnings only — never changes pass/fail.
     """
@@ -608,8 +597,7 @@ def validate_monitoring(  # noqa: C901
                     default=0,
                 )
                 warnings.append(
-                    f"No GPU's active window reached expected "
-                    f"{min_util}% gfx util (best was {worst}% avg)"
+                    f"No GPU's active window reached expected " f"{min_util}% gfx util (best was {worst}% avg)"
                 )
             if min_vram_pct > 0:
                 any_meets_vram = False
