@@ -233,10 +233,7 @@ def _time_axis_ticks(t0: int, t1: int, w: int, h: int, pad: tuple[int, int, int,
         x = pl + frac * iw
         ts_val = t0 + frac * span
         lbl = datetime.fromtimestamp(ts_val).strftime("%H:%M:%S")
-        ticks += (
-            f'  <text x="{x}" y="{h - 5}" text-anchor="middle" '
-            f'font-size="10" fill="#94a3b8">{lbl} {SYS_TZ_NAME}</text>'
-        )
+        ticks += f'  <text x="{x}" y="{h - 5}" text-anchor="middle" font-size="10" fill="#94a3b8">{lbl} {SYS_TZ_NAME}</text>'
     return ticks
 
 
@@ -252,7 +249,7 @@ def _y_axis_grid(
         y = _pt + (1.0 - frac) * ih
         grid += f'  <line x1="{pl}" y1="{y}" x2="{w - pr}" y2="{y}" stroke="#334155" stroke-width="0.5"/>'
         label = f"{val:.0f}{unit}"
-        grid += f'  <text x="{pl - 5}" y="{y + 4}" text-anchor="end" ' f'font-size="10" fill="#94a3b8">{label}</text>'
+        grid += f'  <text x="{pl - 5}" y="{y + 4}" text-anchor="end" font-size="10" fill="#94a3b8">{label}</text>'
     return grid
 
 
@@ -304,14 +301,10 @@ def _render_combined_chart(  # noqa: C901
         pct = y_max_pct * i / n_gridlines
         y = pt_pad + (1.0 - pct / y_max_pct) * ih
         grid += f'  <line x1="{pl}" y1="{y}" x2="{w - pr}" y2="{y}" stroke="#334155" stroke-width="0.5"/>'
-            f'  <text x="{pl - 5}" y="{y + 4}" text-anchor="end" ' f'font-size="10" fill="#94a3b8">{pct:.0f}%</text>'
-        )
+        grid += f'  <text x="{pl - 5}" y="{y + 4}" text-anchor="end" font-size="10" fill="#94a3b8">{pct:.0f}%</text>'
     if y_max_pct > 100:
         y100 = pt_pad + (1.0 - 100.0 / y_max_pct) * ih
-        grid += (
-            f'  <line x1="{pl}" y1="{y100}" x2="{w - pr}" y2="{y100}" '
-            f'stroke="#ef4444" stroke-width="0.5" stroke-dasharray="4,4"/>'
-        )
+        grid += f'  <line x1="{pl}" y1="{y100}" x2="{w - pr}" y2="{y100}" stroke="#ef4444" stroke-width="0.5" stroke-dasharray="4,4"/>'
 
     t0, t1 = avg_pts[0]["t"], avg_pts[-1]["t"]
     grid += _time_axis_ticks(t0, t1, w, h, pad)
@@ -348,7 +341,7 @@ def _render_combined_chart(  # noqa: C901
         display = f"{lbl} (100%={ref})" if ref else lbl
         legend += (
             f'  <rect x="{lx}" y="{h - 18}" width="8" height="8" fill="{color}"/>'
-            f'  <text x="{lx + 10}" y="{h - 10}" font-size="9" fill="#94a3b8">{display}</text>'
+            + f'  <text x="{lx + 10}" y="{h - 10}" font-size="9" fill="#94a3b8">{display}</text>'
         )
         lx += len(display) * 5 + 16
 
@@ -467,7 +460,7 @@ def _render_metric_chart(
         lines += _svg_polyline(pts, color, w, h, pad, y_min, y_max)
         legend += (
             f'  <rect x="{lx}" y="{h - 18}" width="8" height="8" fill="{color}"/>'
-            f'  <text x="{lx + 10}" y="{h - 10}" font-size="9" fill="#94a3b8">GPU {gpu_id}</text>'
+            + f'  <text x="{lx + 10}" y="{h - 10}" font-size="9" fill="#94a3b8">GPU {gpu_id}</text>'
         )
         lx += 62
 
@@ -558,27 +551,21 @@ def _render_gpu_bar_chart(data: dict[str, list[dict[str, Any]]], metrics: list[t
     bars = ""
     for gi, gpu_id in enumerate(gpu_ids):
         gx = pad_l + gi * group_w
-        bars += (
-            f'  <text x="{gx + group_w / 2}" y="{h - 10}" text-anchor="middle" '
-            f'font-size="11" fill="#94a3b8">GPU {gpu_id}</text>'
-        )
+        bars += f'  <text x="{gx + group_w / 2}" y="{h - 10}" text-anchor="middle" font-size="11" fill="#94a3b8">GPU {gpu_id}</text>'
         for bi, (key, _label, color) in enumerate(metrics):
             val = avgs[gpu_id][key]
             bh = (val / global_max) * bar_area_h if global_max > 0 else 0
             bx = gx + (bi + 0.5) * bar_w
             by = pad_t + bar_area_h - bh
-            bars += f'  <rect x="{bx}" y="{by}" width="{bar_w * 0.8}" height="{bh}" ' f'fill="{color}" rx="2"/>'
+            bars += f'  <rect x="{bx}" y="{by}" width="{bar_w * 0.8}" height="{bh}" fill="{color}" rx="2"/>'
             if val > 0:
-                bars += (
-                    f'  <text x="{bx + bar_w * 0.4}" y="{by - 4}" text-anchor="middle" '
-                    f'font-size="9" fill="#e2e8f0">{val:.0f}</text>'
-                )
+                bars += f'  <text x="{bx + bar_w * 0.4}" y="{by - 4}" text-anchor="middle" font-size="9" fill="#e2e8f0">{val:.0f}</text>'
     legend = ""
     lx = pad_l + 10
     for _, lbl, color in metrics:
         legend += (
             f'  <rect x="{lx}" y="{h - 18}" width="8" height="8" fill="{color}"/>'
-            f'  <text x="{lx + 10}" y="{h - 10}" font-size="9" fill="#94a3b8">{lbl}</text>'
+            + f'  <text x="{lx + 10}" y="{h - 10}" font-size="9" fill="#94a3b8">{lbl}</text>'
         )
         lx += len(lbl) * 7 + 28
 
@@ -699,13 +686,13 @@ def _render_per_gpu_table(analysis: dict[str, Any]) -> str:
 
         rows += (
             f"<tr><td>GPU {gid}</td>"
-            f"<td>{_v('power')}</td>"
-            f"<td>{_v('hotspot_temp')}</td>"
-            f"<td>{_v('gfx_clk')}</td>"
-            f"<td>{_v('gfx_util')}</td>"
-            f"<td>{_v('vram_pct')}</td>"
-            f"<td>{st.get('active_samples', 'N/A')}</td>"
-            f"</tr>"
+            + f"<td>{_v('power')}</td>"
+            + f"<td>{_v('hotspot_temp')}</td>"
+            + f"<td>{_v('gfx_clk')}</td>"
+            + f"<td>{_v('gfx_util')}</td>"
+            + f"<td>{_v('vram_pct')}</td>"
+            + f"<td>{st.get('active_samples', 'N/A')}</td>"
+            + f"</tr>"
         )
 
     pattern = analysis.get("workload_pattern", "")
