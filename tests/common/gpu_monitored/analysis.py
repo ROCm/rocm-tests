@@ -6,6 +6,8 @@ The underlying `analyze_monitoring` module lives in the same package
 (`tests.common.gpu_monitored.analyze_monitoring`).
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 
 from tests.common.gpu_monitored.analyze_monitoring import (

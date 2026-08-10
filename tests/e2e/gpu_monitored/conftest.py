@@ -9,6 +9,8 @@ and HTML report generation.
 and are NOT re-declared here.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -22,16 +24,20 @@ from framework.executors.local_executor import run_cmd_get_stdout_stderr
 from tests.common.gpu_monitored.analysis import analyze_and_write
 from tests.common.gpu_monitored.monitoring import Monitor, count_csv_samples
 from tests.common.gpu_monitored.report import write_report
-from tests.common.gpu_monitored.validation import capture_dmesg, dmesg_delta, validate_rvs_result
+from tests.common.gpu_monitored.validation import (
+    capture_dmesg,
+    dmesg_delta,
+    pretest_health_probe,
+    validate_rvs_result,
+)
 from tests.e2e.rvs.conftest import (
-    gpu_conf_dir,
-    rvs_binary,
-    rvs_find_conf,
-    rvs_source,
+    gpu_conf_dir,  # noqa: F401
+    rvs_binary,  # noqa: F401
+    rvs_find_conf,  # noqa: F401
+    rvs_source,  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -193,8 +199,17 @@ def run_monitored_rvs(
     ) -> dict:
         rvs_bin = rvs_binary
         ld = ld_path["LD_LIBRARY_PATH"]
+        rocm_lib = os.path.join(rock_dir, "lib")
+        if rocm_lib not in ld:
+            ld = f"{rocm_lib}:{ld}"
 
         cmake_executor = request.config._cmake_executor if hasattr(request.config, "_cmake_executor") else None
+
+        # Write pretest_health.json artifact
+        _clean, health_summary = pretest_health_probe(lookback_min=5)
+        with open(run_dir / "pretest_health.json", "w") as f:
+            json.dump(health_summary, f, indent=2)
+
         dmesg_before = capture_dmesg(cmake_executor)
 
         start_time = time.time()

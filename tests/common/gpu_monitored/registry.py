@@ -2,15 +2,17 @@
 # SPDX-License-Identifier: MIT
 """Test registry -- workload profiles for monitoring validation."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Optional
 
 
 @dataclass
 class TestSpec:
     name: str
     goal: str
-    workload_profile: Optional[Dict] = None
+    workload_profile: Optional[dict] = None
 
 
 ALL_TESTS = [

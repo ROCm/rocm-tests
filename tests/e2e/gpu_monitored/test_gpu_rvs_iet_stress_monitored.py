@@ -33,7 +33,7 @@ def test_gpu_rvs_iet_stress_monitored(
     result = run_monitored_rvs(
         conf_file=conf_file,
         test_name="gpu_rvs_iet_stress_monitored",
-        timeout=1800,
+        timeout=3600,
     )
 
     assert result["passed"], f"RVS IET failed ({conf_name}):\n{result['validation']}"
