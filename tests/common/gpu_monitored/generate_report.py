@@ -306,9 +306,7 @@ def _render_combined_chart(  # noqa: C901
         grid += f'  <text x="{pl - 5}" y="{y + 4}" text-anchor="end" font-size="10" fill="#94a3b8">{pct:.0f}%</text>'
     if y_max_pct > 100:
         y100 = pt_pad + (1.0 - 100.0 / y_max_pct) * ih
-        grid += (
-            f'  <line x1="{pl}" y1="{y100}" x2="{w - pr}" y2="{y100}" stroke="#ef4444" stroke-width="0.5" stroke-dasharray="4,4"/>'
-        )
+        grid += f'  <line x1="{pl}" y1="{y100}" x2="{w - pr}" y2="{y100}" stroke="#ef4444" stroke-width="0.5" stroke-dasharray="4,4"/>'
 
     t0, t1 = avg_pts[0]["t"], avg_pts[-1]["t"]
     grid += _time_axis_ticks(t0, t1, w, h, pad)
@@ -555,9 +553,7 @@ def _render_gpu_bar_chart(data: dict[str, list[dict[str, Any]]], metrics: list[t
     bars = ""
     for gi, gpu_id in enumerate(gpu_ids):
         gx = pad_l + gi * group_w
-        bars += (
-            f'  <text x="{gx + group_w / 2}" y="{h - 10}" text-anchor="middle" font-size="11" fill="#94a3b8">GPU {gpu_id}</text>'
-        )
+        bars += f'  <text x="{gx + group_w / 2}" y="{h - 10}" text-anchor="middle" font-size="11" fill="#94a3b8">GPU {gpu_id}</text>'
         for bi, (key, _label, color) in enumerate(metrics):
             val = avgs[gpu_id][key]
             bh = (val / global_max) * bar_area_h if global_max > 0 else 0
@@ -565,9 +561,7 @@ def _render_gpu_bar_chart(data: dict[str, list[dict[str, Any]]], metrics: list[t
             by = pad_t + bar_area_h - bh
             bars += f'  <rect x="{bx}" y="{by}" width="{bar_w * 0.8}" height="{bh}" fill="{color}" rx="2"/>'
             if val > 0:
-                bars += (
-                    f'  <text x="{bx + bar_w * 0.4}" y="{by - 4}" text-anchor="middle" font-size="9" fill="#e2e8f0">{val:.0f}</text>'
-                )
+                bars += f'  <text x="{bx + bar_w * 0.4}" y="{by - 4}" text-anchor="middle" font-size="9" fill="#e2e8f0">{val:.0f}</text>'
     legend = ""
     lx = pad_l + 10
     for _, lbl, color in metrics:
