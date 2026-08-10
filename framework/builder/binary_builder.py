@@ -889,7 +889,7 @@ def provision_openmpi_runtime(
         f" && ./configure --prefix={shlex.quote(str(install_dir))} --with-hwloc=internal --disable-mpi-fortran"
         f" && make -j{os.cpu_count() or 4} && make install"
     )
-    proc = subprocess.run(
+    proc = subprocess.run(  # nosec B602 — all path components are shlex.quote'd above
         build_cmd,
         shell=True,
         capture_output=True,

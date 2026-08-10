@@ -115,9 +115,9 @@ def _unwrap_entries(data: Any) -> list[dict]:
         List of per-device entry dicts.  Empty list on unexpected structure.
     """
     if isinstance(data, dict):
-        return data.get("gpu_data", [])
+        return list(data.get("gpu_data", []))
     # Guard against unexpected bare-list responses.
-    return data if isinstance(data, list) else []
+    return list(data) if isinstance(data, list) else []
 
 
 def _to_mb(node: Any) -> int:
@@ -388,12 +388,14 @@ def _parse_util(entry: dict) -> int | None:
 
 def _parse_ecc(entry: dict) -> int | None:
     """Extract total correctable ECC error count from a pre-parsed metric entry dict."""
-    return entry.get("ecc", {}).get("total_correctable_count")
+    val = entry.get("ecc", {}).get("total_correctable_count")
+    return int(val) if val is not None else None
 
 
 def _parse_clock(entry: dict) -> str | None:
     """Extract the GPU performance level (clock state) from a pre-parsed metric entry dict."""
-    return entry.get("clock", {}).get("performance_level")
+    val = entry.get("clock", {}).get("performance_level")
+    return str(val) if val is not None else None
 
 
 # ---------------------------------------------------------------------------
