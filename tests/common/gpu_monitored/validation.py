@@ -22,8 +22,7 @@ from framework.executors.local_executor import run_cmd_get_stdout_stderr
 logger = logging.getLogger(__name__)
 
 _CRASH_PATTERNS = re.compile(
-    r"(segfault|segmentation fault|core dump|SIGBUS|SIGSEGV|"
-    r"Kernel panic|device reset|GPU hang|unrecoverable)",
+    r"(segfault|segmentation fault|core dump|SIGBUS|SIGSEGV|" r"Kernel panic|device reset|GPU hang|unrecoverable)",
     re.IGNORECASE,
 )
 
@@ -184,10 +183,7 @@ def validate_rvs_result(stdout: str, stderr: str, exit_code: int, dmesg_new: str
         layer2_msg = f"Layer 2 FAIL: {abort_count} ABORT(s) detected"
         layer2_failed = True
     elif false_count > 0:
-        layer2_msg = (
-            f"Layer 2 FAIL: {false_count} test(s) reported pass: FALSE "
-            f"({true_count} passed)"
-        )
+        layer2_msg = f"Layer 2 FAIL: {false_count} test(s) reported pass: FALSE " f"({true_count} passed)"
         layer2_failed = True
     elif true_count > 0:
         layer2_msg = f"Layer 2 PASS: {true_count} test(s) reported pass: TRUE"
@@ -216,10 +212,7 @@ def validate_hipblaslt_result(
     total = shapes_passed + shapes_failed
     layer2_failed = False
     if shapes_failed > 0:
-        layer2_msg = (
-            f"Layer 2 FAIL: {shapes_failed}/{total} shapes failed "
-            f"({shapes_passed} passed)"
-        )
+        layer2_msg = f"Layer 2 FAIL: {shapes_failed}/{total} shapes failed " f"({shapes_passed} passed)"
         layer2_failed = True
     elif shapes_passed > 0:
         layer2_msg = f"Layer 2 PASS: {shapes_passed}/{total} shapes passed"
@@ -271,10 +264,7 @@ def _validate_common_layers(
                 messages.append(f"  \u2192 {c.strip()[:120]}")
             failed = True
         else:
-            messages.append(
-                f"Layer 3 PASS: {len(dmesg_new.splitlines())} new kernel messages, "
-                f"none critical"
-            )
+            messages.append(f"Layer 3 PASS: {len(dmesg_new.splitlines())} new kernel messages, " f"none critical")
 
     # Layer 4: Silent death detection
     has_output = bool(stdout.strip()) or bool(stderr.strip())

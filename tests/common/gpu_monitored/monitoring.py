@@ -73,8 +73,7 @@ class Monitor:
             if self._monitor_proc.poll() is not None:
                 rc = self._monitor_proc.returncode
                 logger.warning(
-                    "amd-smi monitor exited immediately (rc=%d) — "
-                    "monitoring CSV will be empty",
+                    "amd-smi monitor exited immediately (rc=%d) — " "monitoring CSV will be empty",
                     rc,
                 )
 

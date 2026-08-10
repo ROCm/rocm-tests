@@ -39,6 +39,7 @@ except ImportError:  # pragma: no cover - script-style invocation
 
     _csv_schema = _CsvSchemaFallback()
 
+
 def _get_system_tz() -> tuple:
     """Return (utc_offset_seconds, tz_abbreviation) for the system's local
     timezone. Uses timezone-aware ``datetime.fromtimestamp`` so it runs
@@ -50,6 +51,7 @@ def _get_system_tz() -> tuple:
     offset_sec = int((local - utc).total_seconds())
     tz_name = _time.strftime("%Z") or "UTC"
     return offset_sec, tz_name
+
 
 SYS_TZ_OFFSET, SYS_TZ_NAME = _get_system_tz()
 
@@ -76,16 +78,19 @@ COMBINED_METRICS = [
 
 _chart_id_counter = 0
 
+
 def _next_chart_id() -> str:
     global _chart_id_counter
     _chart_id_counter += 1
     return f"chart{_chart_id_counter}"
+
 
 def _load_csv(path: str) -> list[dict[str, str]]:
     if not os.path.exists(path):
         return []
     with open(path, newline="") as f:
         return list(csv.DictReader(f))
+
 
 def _load_command_metadata(run_dir: str) -> dict[str, str]:
     meta: dict[str, str] = {}
@@ -97,6 +102,7 @@ def _load_command_metadata(run_dir: str) -> dict[str, str]:
                     k, v = line.split(":", 1)
                     meta[k.strip()] = v.strip()
     return meta
+
 
 def _sf(v, default=0.0):
     """Safe float conversion — returns default for empty/N/A/NaN/Inf/invalid."""
@@ -110,6 +116,7 @@ def _sf(v, default=0.0):
     if math.isnan(fv) or math.isinf(fv):
         return default
     return fv
+
 
 def _parse_rows(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     parsed: list[dict[str, Any]] = []
@@ -144,6 +151,7 @@ def _parse_rows(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
         )
     return parsed
 
+
 def _compute_pct_fields(rows: list[dict[str, Any]], gpu_limits: dict | None = None) -> list[dict[str, Any]]:
     if not rows:
         return rows
@@ -162,6 +170,7 @@ def _compute_pct_fields(rows: list[dict[str, Any]], gpu_limits: dict | None = No
         r["mem_clk_pct"] = r["mem_clk"] / max_mem_clk * 100
     return rows
 
+
 def _downsample(points: list, max_pts: int = 800) -> list:
     if len(points) <= max_pts:
         return points
@@ -172,14 +181,17 @@ def _downsample(points: list, max_pts: int = 800) -> list:
     indices[-1] = len(points) - 1
     return [points[idx] for idx in indices]
 
+
 def _stats(vals: list[float]) -> dict[str, float] | None:
     if not vals:
         return None
     return {"min": min(vals), "max": max(vals), "avg": round(sum(vals) / len(vals), 1), "samples": len(vals)}
 
+
 # ---------------------------------------------------------------------------
 # SVG + interactive tooltip rendering
 # ---------------------------------------------------------------------------
+
 
 def _svg_polyline(
     pts: list[tuple[float, float]],
@@ -209,6 +221,7 @@ def _svg_polyline(
     coords = " ".join(f"{_x(t):.1f},{_y(v):.1f}" for t, v in pts)
     return f'  <polyline points="{coords}" fill="none" stroke="{color}" stroke-width="1.5" stroke-linejoin="round"/>'
 
+
 def _time_axis_ticks(t0: int, t1: int, w: int, h: int, pad: tuple[int, int, int, int]) -> str:
     pl, pr, _pt, _pb = pad
     span = max(1, t1 - t0)
@@ -225,6 +238,7 @@ def _time_axis_ticks(t0: int, t1: int, w: int, h: int, pad: tuple[int, int, int,
         )
     return ticks
 
+
 def _y_axis_grid(
     w: int, h: int, pad: tuple[int, int, int, int], y_min: float, y_max: float, n_ticks: int, unit: str
 ) -> str:
@@ -239,6 +253,7 @@ def _y_axis_grid(
         label = f"{val:.0f}{unit}"
         grid += f'  <text x="{pl - 6}" y="{y + 4}" text-anchor="end" font-size="10" fill="#64748b">{label}</text>'
     return grid
+
 
 def _render_combined_chart(  # noqa: C901
     data: dict[str, list[dict[str, Any]]], title: str, throttle_temp_c: float = 100.0, gpu_limits: dict | None = None
@@ -425,6 +440,7 @@ def _render_combined_chart(  # noqa: C901
     </div>
 {script}  </div>"""
 
+
 def _render_metric_chart(
     data: dict[str, list[dict[str, Any]]], key: str, title: str, unit: str, y_max_override: float = 0
 ) -> str:
@@ -531,6 +547,7 @@ def _render_metric_chart(
     </div>
 {script}  </div>"""
 
+
 def _render_gpu_bar_chart(data: dict[str, list[dict[str, Any]]], metrics: list[tuple[str, str, str]]) -> str:
     gpu_ids = sorted(data.keys(), key=lambda g: int(g) if g.isdigit() else 0)
     if not gpu_ids:
@@ -588,9 +605,11 @@ def _render_gpu_bar_chart(data: dict[str, list[dict[str, Any]]], metrics: list[t
     </div>
   </div>"""
 
+
 # ---------------------------------------------------------------------------
 # Health checks + per-GPU table from enriched summary.json
 # ---------------------------------------------------------------------------
+
 
 def _load_analysis(run_dir: str) -> dict[str, Any]:
     path = os.path.join(run_dir, "summary.json")
@@ -601,6 +620,7 @@ def _load_analysis(run_dir: str) -> dict[str, Any]:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
+
 
 def _render_health_checks(analysis: dict[str, Any]) -> str:
     anomalies = analysis.get("anomalies", {})
@@ -674,6 +694,7 @@ def _render_health_checks(analysis: dict[str, Any]) -> str:
     {rows}
   </table>"""
 
+
 def _render_per_gpu_table(analysis: dict[str, Any]) -> str:
     per_gpu = analysis.get("per_gpu", {})
     if not per_gpu:
@@ -713,6 +734,7 @@ def _render_per_gpu_table(analysis: dict[str, Any]) -> str:
     {rows}
   </table>
   {note}"""
+
 
 # ---------------------------------------------------------------------------
 # Main HTML assembly
@@ -758,6 +780,7 @@ CSS = """
     .hint { font-size: 12px; color: #64748b; margin-top: 4px; }
     svg { display: block; }
 """
+
 
 def generate_report(run_dir: str, test_name: str, result: str, duration: int, output: str) -> None:
     global _chart_id_counter
@@ -895,6 +918,7 @@ Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} \u2014 Hover over chart
 
     with open(output, "w") as f:
         f.write(html)
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
