@@ -168,7 +168,7 @@ no_implicit_optional = true
 show_error_codes    = true
 
 [[tool.mypy.overrides]]
-module = ["allure", "allure.*", "clickhouse_connect", "clickhouse_connect.*",
+module = ["allure", "allure.*", "certifi", "clickhouse_connect", "clickhouse_connect.*",
           "paramiko", "paramiko.*", "pexpect", "pexpect.*",
           "yaml", "tomli", "tomllib", "xdist", "xdist.*",
           "filelock", "filelock.*"]
