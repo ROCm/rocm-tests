@@ -169,7 +169,10 @@ def _run_shape(
         return False, msg
 
     if res.returncode != 0:
-        msg = f"NO DATA: shape {shape_num}/{total_shapes} " f"({trans_a}{trans_b} {m}x{n}x{k}x{batch}) produced no data row"
+        msg = (
+            f"NO DATA: shape {shape_num}/{total_shapes} "
+            f"({trans_a}{trans_b} {m}x{n}x{k}x{batch}) produced no data row"
+        )
         logger.warning("[hipblaslt] %s", msg)
         out_lines = (res.stdout + res.stderr).splitlines()[-5:]
         for line in out_lines:
@@ -190,10 +193,7 @@ def _run_shape(
         logger.info("%s", data_line)
         return True, data_line.strip()
 
-    msg = (
-        f"NO DATA: shape {shape_num}/{total_shapes} "
-        f"({trans_a}{trans_b} {m}x{n}x{k}x{batch}) produced no data row"
-    )
+    msg = f"NO DATA: shape {shape_num}/{total_shapes} " f"({trans_a}{trans_b} {m}x{n}x{k}x{batch}) produced no data row"
     logger.warning("[hipblaslt] %s", msg)
     return False, msg
 
