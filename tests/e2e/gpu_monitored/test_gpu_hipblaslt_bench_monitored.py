@@ -97,37 +97,65 @@ def _run_shape(
     lda = m if trans_a == "N" else k
     ldb = k if trans_b == "N" else n
     common_args = [
-        "--precision", "f16_r",
-        "--compute_type", "f32_r",
-        "--activation_type", "none",
-        "--iters", str(ITERS),
-        "--cold_iters", str(COLD_ITERS),
-        "--alpha", "1",
-        "--beta", "0",
+        "--precision",
+        "f16_r",
+        "--compute_type",
+        "f32_r",
+        "--activation_type",
+        "none",
+        "--iters",
+        str(ITERS),
+        "--cold_iters",
+        str(COLD_ITERS),
+        "--alpha",
+        "1",
+        "--beta",
+        "0",
     ]
     cmd = [
-        str(bench), "-v",
-        "--transA", trans_a, "--transB", trans_b,
-        "-m", str(m), "-n", str(n), "-k", str(k),
-        "--lda", str(lda), "--stride_a", str(m * k),
-        "--ldb", str(ldb), "--stride_b", str(k * n),
-        "--ldc", str(m), "--stride_c", str(m * n),
-        "--ldd", str(m), "--stride_d", str(m * n),
+        str(bench),
+        "-v",
+        "--transA",
+        trans_a,
+        "--transB",
+        trans_b,
+        "-m",
+        str(m),
+        "-n",
+        str(n),
+        "-k",
+        str(k),
+        "--lda",
+        str(lda),
+        "--stride_a",
+        str(m * k),
+        "--ldb",
+        str(ldb),
+        "--stride_b",
+        str(k * n),
+        "--ldc",
+        str(m),
+        "--stride_c",
+        str(m * n),
+        "--ldd",
+        str(m),
+        "--stride_d",
+        str(m * n),
         *common_args,
-        "--batch_count", str(batch),
+        "--batch_count",
+        str(batch),
     ]
     try:
         res = subprocess.run(
-            cmd, env=env, capture_output=True, text=True,
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
             cwd=str(cwd) if cwd else None,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as e:
-        msg = (
-            f"FAIL: watchdog timeout — shape {shape_num}/{total_shapes} "
-            f"({trans_a}{trans_b} {m}x{n}x{k}x{batch}) did not complete "
-            f"within {timeout}s"
-        )
+        msg = f"NO DATA: shape {shape_num}/{total_shapes} " f"({trans_a}{trans_b} {m}x{n}x{k}x{batch}) produced no data row"
         logger.warning("[hipblaslt] %s", msg)
         if e.stdout:
             out = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else e.stdout
@@ -203,7 +231,10 @@ def test_gpu_hipblaslt_bench_monitored(
     total_shapes = len(NN_SHAPES) + len(NT_SHAPES)
     logger.info(
         "Running %d GEMM shapes (%d NN + %d NT), %d iters each",
-        total_shapes, len(NN_SHAPES), len(NT_SHAPES), ITERS,
+        total_shapes,
+        len(NN_SHAPES),
+        len(NT_SHAPES),
+        ITERS,
     )
 
     # Build reproduce command for first shape
@@ -232,10 +263,19 @@ def test_gpu_hipblaslt_bench_monitored(
         for m, n, k, batch in NN_SHAPES:
             shape_num += 1
             ok, line = _run_shape(
-                bench, "N", "N", m, n, k, batch, env,
-                shape_num, total_shapes,
+                bench,
+                "N",
+                "N",
+                m,
+                n,
+                k,
+                batch,
+                env,
+                shape_num,
+                total_shapes,
                 print_header=(shape_num == 1),
-                cwd=run_dir, timeout=shape_timeout,
+                cwd=run_dir,
+                timeout=shape_timeout,
             )
             results_log.append(f"[{shape_num}/{total_shapes}] {line}")
             all_stdout.append(line)
@@ -248,10 +288,19 @@ def test_gpu_hipblaslt_bench_monitored(
         for m, n, k, batch in NT_SHAPES:
             shape_num += 1
             ok, line = _run_shape(
-                bench, "N", "T", m, n, k, batch, env,
-                shape_num, total_shapes,
+                bench,
+                "N",
+                "T",
+                m,
+                n,
+                k,
+                batch,
+                env,
+                shape_num,
+                total_shapes,
                 print_header=False,
-                cwd=run_dir, timeout=shape_timeout,
+                cwd=run_dir,
+                timeout=shape_timeout,
             )
             results_log.append(f"[{shape_num}/{total_shapes}] {line}")
             all_stdout.append(line)
@@ -279,8 +328,12 @@ def test_gpu_hipblaslt_bench_monitored(
     exit_code = 1 if failed > 0 else 0
 
     validation_failed, validation_msg = validate_hipblaslt_result(
-        combined_stdout, combined_stderr, exit_code, dmesg_new,
-        shapes_passed=passed, shapes_failed=failed,
+        combined_stdout,
+        combined_stderr,
+        exit_code,
+        dmesg_new,
+        shapes_passed=passed,
+        shapes_failed=failed,
     )
 
     (run_dir / "hipblaslt_results.txt").write_text("\n".join(results_log) + "\n")
@@ -312,11 +365,9 @@ def test_gpu_hipblaslt_bench_monitored(
     )
 
     logger.info("Validation:\n%s", validation_msg)
-    logger.info("Completed: %d/%d shapes passed, %d failed (%.1fs)",
-                passed, total_shapes, failed, duration)
+    logger.info("Completed: %d/%d shapes passed, %d failed (%.1fs)", passed, total_shapes, failed, duration)
     logger.info("Report: %s", run_dir / "report.html")
 
-    assert not validation_failed, (
-        f"hipBLASLt GEMM sweep validation failed:\n{validation_msg}\n"
-        + "\n".join(line for line in results_log if "FAIL" in line or "TIMEOUT" in line or "NO DATA" in line)
+    assert not validation_failed, f"hipBLASLt GEMM sweep validation failed:\n{validation_msg}\n" + "\n".join(
+        line for line in results_log if "FAIL" in line or "TIMEOUT" in line or "NO DATA" in line
     )
