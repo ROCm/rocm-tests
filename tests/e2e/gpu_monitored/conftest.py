@@ -32,7 +32,7 @@ from tests.common.gpu_monitored.validation import (
 )
 from tests.e2e.rvs.conftest import (
     gpu_conf_dir,  # noqa: F401
-    rvs_binary,  # noqa: F401, F811
+    rvs_binary,  # noqa: F401
     rvs_find_conf,  # noqa: F401
     rvs_source,  # noqa: F401
 )
@@ -176,7 +176,7 @@ def kernel_health_probe():
 def run_monitored_rvs(
     gpu_monitor,
     run_dir,
-    rvs_binary,
+    rvs_binary,  # noqa: F811
     rock_dir,
     ld_path,
     request,
