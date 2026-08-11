@@ -76,6 +76,10 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+env:
+  RESULTS_TABLE: rocmtests_nightly_results
 
 jobs:
   setup_matrix:
@@ -270,3 +274,58 @@ jobs:
 
           with open(summary_path, "a") as f:
               f.write("\n".join(lines) + "\n")
+
+  upload_results:
+    name: "Upload Nightly Results to ClickHouse"
+    needs: [setup_matrix, e2e_nightly, report]
+    if: always()
+    runs-on: ubuntu-latest
+    environment: clickhouse-ingest
+    steps:
+      - name: Checkout rocm-tests
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download all platform counts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: test-counts-*
+          path: all-counts
+          merge-multiple: false
+
+      - name: Download all platform json reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: test-report-*
+          path: all-reports
+          merge-multiple: false
+
+      - name: Set up Python for results upload
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: 3.12
+
+      - name: Install ClickHouse results backend dependencies
+        run: python -m pip install --root-user-action=ignore --no-cache-dir -r requirements-results.txt
+
+      - name: Upload nightly results to ClickHouse
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLICKHOUSE_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+          CLICKHOUSE_PORT: ${{ secrets.CLICKHOUSE_PORT }}
+          CLICKHOUSE_USERNAME: ${{ secrets.CLICKHOUSE_USERNAME }}
+          CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          CLICKHOUSE_DATABASE: ${{ secrets.CLICKHOUSE_DATABASE }}
+          SOURCE_REPO: ${{ inputs.source_repo || 'ROCm/rockrel' }}
+          ARTIFACT_SOURCE: ${{ inputs.artifact_source || 'multi_arch_release.yml' }}
+        run: |
+          python -m framework.results.backends.clickhouse \
+            --run-id "${{ github.run_id }}" \
+            --github-repo "${{ github.repository }}" \
+            --source-repo "${SOURCE_REPO}" \
+            --artifact-source "${ARTIFACT_SOURCE}" \
+            --table "${RESULTS_TABLE}" \
+            --testplan testplan.ini \
+            --counts-dir all-counts \
+            --reports-dir all-reports
