@@ -317,13 +317,15 @@ jobs:
           CLICKHOUSE_USERNAME: ${{ secrets.CLICKHOUSE_USERNAME }}
           CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
           CLICKHOUSE_DATABASE: ${{ secrets.CLICKHOUSE_DATABASE }}
+          SOURCE_REPO: ${{ inputs.source_repo || 'ROCm/rockrel' }}
+          ARTIFACT_SOURCE: ${{ inputs.artifact_source || 'multi_arch_release.yml' }}
         run: |
           python -m framework.results.backends.clickhouse \
             --run-id "${{ github.run_id }}" \
             --github-repo "${{ github.repository }}" \
-            --source-repo "${{ inputs.source_repo || 'ROCm/rockrel' }}" \
-            --artifact-source "${{ inputs.artifact_source || 'multi_arch_release.yml' }}" \
+            --source-repo "${SOURCE_REPO}" \
+            --artifact-source "${ARTIFACT_SOURCE}" \
             --table "${RESULTS_TABLE}" \
             --testplan testplan.ini \
             --counts-dir all-counts \
-            --reports-dir all-reports 
+            --reports-dir all-reports
