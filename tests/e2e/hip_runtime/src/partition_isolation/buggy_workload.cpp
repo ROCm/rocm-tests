@@ -37,15 +37,15 @@
 #include <unistd.h>
 
 // ---------------------------------------------------------------------------
-// Signal handling for GPU fault delivery on gfx94x
+// Signal handling for GPU fault delivery
 //
-// On some AMD GPU architectures (e.g. MI300A/MI308X) the ROCm runtime delivers
-// GPU memory faults as SIGABRT to the owning process rather than returning a
-// non-success code from hipDeviceSynchronize().  Without a handler the process
-// terminates with exit 134 (128 + SIGABRT) before it can print the success
-// sentinel and exit cleanly.
+// On some AMD GPU architectures the ROCm runtime delivers GPU memory faults
+// as SIGABRT to the owning process rather than returning a non-success code
+// from hipDeviceSynchronize().  Without a handler the process terminates with
+// exit 134 (128 + SIGABRT) before it can print the success sentinel and exit
+// cleanly.
 //
-// We install a longjmp-based handler so that each scenario's synchronize call
+// Install a longjmp-based handler so that each scenario's synchronize call
 // is wrapped in a sigsetjmp guard.  If the signal fires, we treat it as "fault
 // observed" (equivalent to hipDeviceSynchronize returning non-success) and
 // perform a safe hipDeviceReset() before returning true.
@@ -195,7 +195,7 @@ static bool run_null_deref()
         fprintf(stderr, "    fault signal caught (sig=%d) during null-deref — treating as fault observed\n",
                 g_fault_signal);
         fflush(stderr);
-        // Skip hipDeviceReset() here: on gfx942 (MI308X) calling hipDeviceReset()
+        // Skip hipDeviceReset() here: on gfx942 calling hipDeviceReset()
         // after a null-deref SIGABRT triggers a secondary SIGSEGV inside the HIP
         // runtime fault-handler thread.  We return true unconditionally; main() will
         // call _exit(0) which bypasses all destructors and atexit handlers safely.
@@ -272,7 +272,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // Install signal handlers before touching the GPU.  On gfx94x the ROCm
+    // Install signal handlers before touching the GPU.
     // runtime may deliver GPU memory faults as SIGABRT rather than returning a
     // non-success code from hipDeviceSynchronize().
     signal(SIGABRT, fault_signal_handler);
