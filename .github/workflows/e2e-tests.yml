@@ -261,6 +261,7 @@ jobs:
             --md-report --md-report-verbose=1 --md-report-color=never \
             --md-report-flavor gfm --md-report-output=md_summary.md --md-report-tee \
             --md-report-show-duration --tb=short \
+            --json-report --json-report-file=test_report.json \
             -v \
             -m "${TESTS_FILTERS}" \
             "${KEYWORD_ARGS[@]}"
@@ -408,6 +409,15 @@ jobs:
         with:
           name: test-counts-${{ inputs.name }}
           path: test-counts/counts.json
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Upload json test report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report-${{ inputs.name }}
+          path: test_report.json
           retention-days: 1
           if-no-files-found: ignore
 
