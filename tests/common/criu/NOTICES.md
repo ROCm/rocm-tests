@@ -1,7 +1,7 @@
 # Third-Party Notices — CRIU
 
 The shared CRIU machinery under `tests/common/criu/` **fetches, builds, and installs** the
-third-party CRIU project **on the test node at test time**. CRIU's source and binaries are not
+third-party CRIU project **on the test node at test run time**. CRIU's source and binaries are not
 vendored, committed, or redistributed as part of the rocm-tests repository — the checkout lands
 in the gitignored `output/` build tree and the built binary/plugin are installed on the node
 itself.
