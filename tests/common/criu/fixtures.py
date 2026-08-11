@@ -25,6 +25,7 @@ import re
 
 import pytest
 
+from framework.common.workspace_layout import REMOTE_WORKSPACE_DIR
 from framework.executors.cpu_executor import CpuExecutor
 
 logger = logging.getLogger(__name__)
@@ -50,8 +51,9 @@ _DEFAULT_CRIU_VERSION = "v4.1"
 # Shell-safe git ref (tag/branch) pattern -- validated before interpolation.
 _CRIU_VERSION_RE = re.compile(r"^[A-Za-z0-9._/\-]+$")
 
-# Path the installer module is transferred to inside a remote/target environment.
-_REMOTE_INSTALLER = "/tmp/rocm_test_criu_installer.py"
+# The installer is transferred to a persistent path under the managed ``run-rocm-tests`` workspace
+# so it works across baremetal (local/SSH) and container executors alike.
+_INSTALLER_NAME = "rocm_test_criu_installer.py"
 
 _INSTALL_HINT = (
     "CRIU + amdgpu_plugin is required by this suite. When missing it is auto-installed on the "
@@ -73,8 +75,19 @@ def _criu_ready(probe_exec) -> tuple[bool, str]:
     return True, ""
 
 
+def _installer_dest(probe_exec) -> str:
+    """Return a persistent workspace path for the transferred installer (baremetal + container).
+
+    Uses the executor's managed workspace when available (SSH resolves the remote home); otherwise a
+    ``$HOME/run-rocm-tests/...`` path expanded in the target shell (local baremetal / container).
+    """
+    if hasattr(probe_exec, "workspace_path_for"):
+        return str(probe_exec.workspace_path_for(_INSTALLER_NAME, category="generated"))
+    return f"$HOME/{REMOTE_WORKSPACE_DIR}/output/generated/{_INSTALLER_NAME}"
+
+
 def _ship_installer(probe_exec):
-    """Base64-transfer installer.py into a remote/target environment.
+    """Base64-transfer installer.py to a persistent workspace path in the remote/target environment.
 
     Returns ``(remote_path, None)`` on success or ``(None, transfer_result)`` on failure, so the
     caller can surface the failed ExecutionResult.
@@ -82,10 +95,12 @@ def _ship_installer(probe_exec):
     installer_src = os.path.join(os.path.dirname(__file__), "installer.py")
     with open(installer_src, "rb") as handle:
         payload = base64.b64encode(handle.read()).decode()
-    transfer = probe_exec.run(f"echo {payload} | base64 -d > {_REMOTE_INSTALLER}")
+    dest = _installer_dest(probe_exec)
+    # Create the workspace dir if absent; $HOME expands in the target shell.
+    transfer = probe_exec.run(f'mkdir -p "$(dirname "{dest}")" && echo {payload} | base64 -d > "{dest}"')
     if not transfer.ok:
         return None, transfer
-    return _REMOTE_INSTALLER, None
+    return dest, None
 
 
 def _install_host(external_build, probe_exec, is_remote: bool, version: str, timeout: float):
@@ -103,7 +118,7 @@ def _install_host(external_build, probe_exec, is_remote: bool, version: str, tim
             return failure
     else:
         script_path = os.path.join(os.path.dirname(__file__), "installer.py")
-    return probe_exec.run(f"python3 {script_path} --src-dir {src_dir} {version}", timeout=timeout)
+    return probe_exec.run(f'python3 "{script_path}" --src-dir {src_dir} {version}', timeout=timeout)
 
 
 def _install_target(probe_exec, version: str, timeout: float):
@@ -115,7 +130,7 @@ def _install_target(probe_exec, version: str, timeout: float):
     script_path, failure = _ship_installer(probe_exec)
     if failure is not None:
         return failure
-    return probe_exec.run(f"python3 {script_path} {version}", timeout=timeout)
+    return probe_exec.run(f'python3 "{script_path}" {version}', timeout=timeout)
 
 
 def _ensure(probe_exec, framework_config, install_fn) -> str:
