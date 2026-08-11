@@ -168,8 +168,10 @@ no_implicit_optional = true
 show_error_codes    = true
 
 [[tool.mypy.overrides]]
-module = ["allure", "allure.*", "paramiko", "paramiko.*",
-          "pexpect", "pexpect.*", "yaml", "tomli", "tomllib", "xdist", "xdist.*"]
+module = ["allure", "allure.*", "certifi", "clickhouse_connect", "clickhouse_connect.*",
+          "paramiko", "paramiko.*", "pexpect", "pexpect.*",
+          "yaml", "tomli", "tomllib", "xdist", "xdist.*",
+          "filelock", "filelock.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
@@ -191,6 +193,7 @@ disable = [
     "R0801",  # duplicate-code — Linux/Windows adapter symmetry
     "W0212",  # protected-access — tests validly inspect private state
     "W0511",  # fixme/todo — tracked in issues
+    "E0401",  # import-error — optional third-party packages (clickhouse_connect, allure, paramiko) not installed in lint env
     "E1101",  # generated-members — allure, paramiko lack stubs
 ]
 
