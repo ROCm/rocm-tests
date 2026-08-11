@@ -5,7 +5,7 @@
 Runs hipblaslt-bench shapes under continuous amd-smi monitoring, then performs
 validation, anomaly detection, and generates an HTML report.
 
-Shapes are derived from ROCmTestInternal's hipBLASLt_GEMM.sh.
+Shapes are derived from hipBLASLt GEMM workloads.
 """
 
 from __future__ import annotations
