@@ -155,7 +155,10 @@ def _run_shape(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as e:
-        msg = f"NO DATA: shape {shape_num}/{total_shapes} " f"({trans_a}{trans_b} {m}x{n}x{k}x{batch}) produced no data row"
+        msg = (
+            f"NO DATA: shape {shape_num}/{total_shapes} "
+            f"({trans_a}{trans_b} {m}x{n}x{k}x{batch}) produced no data row"
+        )
         logger.warning("[hipblaslt] %s", msg)
         if e.stdout:
             out = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else e.stdout
@@ -166,10 +169,7 @@ def _run_shape(
         return False, msg
 
     if res.returncode != 0:
-        msg = (
-            f"FAIL (exit {res.returncode}): shape {shape_num}/{total_shapes} "
-            f"({trans_a}{trans_b} {m}x{n}x{k}x{batch})"
-        )
+        msg = f"NO DATA: shape {shape_num}/{total_shapes} " f"({trans_a}{trans_b} {m}x{n}x{k}x{batch}) produced no data row"
         logger.warning("[hipblaslt] %s", msg)
         out_lines = (res.stdout + res.stderr).splitlines()[-5:]
         for line in out_lines:
