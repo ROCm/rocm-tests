@@ -92,6 +92,12 @@ def rocm_examples_build_dir(cmake_build_dir, cmake_executor, rock_dir: str, rocm
     """Configure and build the ROCm/rocm-examples CTest suite."""
     _install_system_deps(cmake_executor)
     _install_runtime_python_deps(cmake_executor, rock_dir)
+    # tolerate_build_failure: rocm-examples bundles samples for optional ROCm
+    # components (e.g. Applications/monte_carlo_pi needs hipCUB headers) that some
+    # installs -- notably the nightly split-artifact rockrel install -- do not
+    # ship. Keep building the rest instead of aborting; the per-category test
+    # reports any sample whose binary was not produced as "binary not available"
+    # (skip) rather than a hard failure.
     return cmake_build_dir(
         src=str(rocm_examples_repo),
         subdir=_SUBDIR,
@@ -99,4 +105,5 @@ def rocm_examples_build_dir(cmake_build_dir, cmake_executor, rock_dir: str, rocm
         compiler_mode="optional_cxx_hip",
         artifact="bin/HIP-Basic/hip_bit_extract",
         label="rocm_examples",
+        tolerate_build_failure=True,
     )
