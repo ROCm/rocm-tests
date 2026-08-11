@@ -13,11 +13,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import subprocess
 import time
-from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -63,7 +62,7 @@ ITERS = 600
 COLD_ITERS = 10
 
 
-def _find_hipblaslt_bench(rock_dir: str) -> Optional[Path]:
+def _find_hipblaslt_bench(rock_dir: str) -> Path | None:
     """Locate hipblaslt-bench binary from the ROCm install."""
     installed = Path(rock_dir) / "bin" / "hipblaslt-bench"
     if installed.is_file() and os.access(installed, os.X_OK):
@@ -83,16 +82,16 @@ def _run_shape(
     shape_num: int,
     total_shapes: int,
     print_header: bool,
-    cwd: Optional[Path] = None,
-    timeout: Optional[int] = None,
+    cwd: Path | None = None,
+    timeout: int | None = None,
 ) -> tuple[bool, str]:
     """Run a single GEMM shape. Returns (success, output_line).
 
     Leading dimensions follow BLAS convention:
-        transA == "N" -> A stored M×K -> lda = M
-        transA == "T" -> A stored K×M -> lda = K
-        transB == "N" -> B stored K×N -> ldb = K
-        transB == "T" -> B stored N×K -> ldb = N
+        transA == "N" -> A stored MxK -> lda = M
+        transA == "T" -> A stored KxM -> lda = K
+        transB == "N" -> B stored KxN -> ldb = K
+        transB == "T" -> B stored NxK -> ldb = N
     """
     lda = m if trans_a == "N" else k
     ldb = k if trans_b == "N" else n
