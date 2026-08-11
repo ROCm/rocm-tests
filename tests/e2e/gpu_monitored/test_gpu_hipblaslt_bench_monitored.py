@@ -19,7 +19,6 @@ import subprocess
 import time
 
 import pytest
-
 from tests.common.gpu_monitored.analysis import analyze_and_write
 from tests.common.gpu_monitored.monitoring import count_csv_samples
 from tests.common.gpu_monitored.report import write_report
