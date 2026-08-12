@@ -98,6 +98,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # vLLM upstream unit-test port (ML framework suite). The full parametrized
+    # suite is a weekly soak; the focused int4 AWQ case overrides ci.weekly ->
+    # ci.nightly at the function level.
+    "tests/e2e/frameworks/vllm": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/hwq_heuristic": [
         "hw.gpu",
         "layer.runtime",
