@@ -26,22 +26,41 @@ from tests.common.gpu_monitored.validation import (
 logger = logging.getLogger(__name__)
 
 _BENCH_CMD_ARGS = [
-    "-f", "gesvd",
-    "--precision", "d",
-    "--left_svect", "S",
-    "--right_svect", "S",
-    "-m", "250",
-    "-n", "250",
+    "-f",
+    "gesvd",
+    "--precision",
+    "d",
+    "--left_svect",
+    "S",
+    "--right_svect",
+    "S",
+    "-m",
+    "250",
+    "-n",
+    "250",
 ]
 
 _PASS_MARKERS = ("cpu_time_us", "gpu_time_us")
 
 _FAIL_PATTERNS = (
-    "Error", "error", "crash", "Core dump", "Fault",
-    "Memory access fault", "abort", "No such file",
-    "reboot", "hang", "hung", "interrupt", "panic",
-    "stuck", "memleak", "Memory corruption",
-    "out-of-bound", "Out of memory",
+    "Error",
+    "error",
+    "crash",
+    "Core dump",
+    "Fault",
+    "Memory access fault",
+    "abort",
+    "No such file",
+    "reboot",
+    "hang",
+    "hung",
+    "interrupt",
+    "panic",
+    "stuck",
+    "memleak",
+    "Memory corruption",
+    "out-of-bound",
+    "Out of memory",
 )
 
 
@@ -127,7 +146,8 @@ def test_rocsolver_bench(
         while time.monotonic() < deadline:
             iteration += 1
             rc, stdout, stderr = run_cmd_get_stdout_stderr(
-                str(bin_path), *_BENCH_CMD_ARGS,
+                str(bin_path),
+                *_BENCH_CMD_ARGS,
                 timeout=300,
                 quiet=True,
             )
