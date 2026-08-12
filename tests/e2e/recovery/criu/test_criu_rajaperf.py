@@ -12,9 +12,9 @@ from __future__ import annotations
 import logging
 
 import pytest
-from tests.common.criu import steps as criu
 
 from framework.reporting.allure_reporter import step
+from tests.common.criu import steps as criu
 
 logger = logging.getLogger(__name__)
 
