@@ -101,7 +101,10 @@ def rocm_examples_build_dir(cmake_build_dir, cmake_executor, rock_dir: str, rocm
     return cmake_build_dir(
         src=str(rocm_examples_repo),
         subdir=_SUBDIR,
-        extra_cmake_args=[f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}"],
+        extra_cmake_args=[
+            f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}",
+            "-DCMAKE_DISABLE_FIND_PACKAGE_rpp=ON",
+        ],
         compiler_mode="optional_cxx_hip",
         artifact="bin/HIP-Basic/hip_bit_extract",
         label="rocm_examples",
