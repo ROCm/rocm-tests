@@ -30,6 +30,16 @@ ALL_TESTS = [
         goal="hipBLASLt GEMM perf sweep with monitoring",
         workload_profile={"min_util": 30, "min_vram_pct": 0, "serial": True},
     ),
+    TestSpec(
+        name="gpu_cudamemtest_monitored",
+        goal="GPU memory robustness with power/temp monitoring",
+        workload_profile={"min_util": 70, "min_vram_pct": 30},
+    ),
+    TestSpec(
+        name="gpu_transferbench_monitored",
+        goal="TransferBench GPU-to-GPU bandwidth sweep with monitoring",
+        workload_profile={"min_util": 30, "min_vram_pct": 0},
+    ),
 ]
 
 

@@ -1,6 +1,6 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""5-layer validation framework for GPU workloads (RVS and hipBLASLt).
+"""5-layer validation framework for GPU workloads (RVS, hipBLASLt, cudamemtest).
 
 Layers:
     1. Crash/kernel indicators in stdout (segfault, core dump, device reset)
@@ -41,6 +41,23 @@ DMESG_CATEGORY_RULES: list[tuple[str, re.Pattern]] = [
     ("thermal", re.compile(r"thermal throttle", re.IGNORECASE)),
     ("hw_error", re.compile(r"Hardware Error", re.IGNORECASE)),
 ]
+
+# cudamemtest-specific patterns
+_MEMTEST_ERROR = re.compile(
+    r"\[ERROR\]\s|"
+    r"^\s*ERROR:\s+\S|"
+    r"\bMemory access fault\b|"
+    r"\bHIP error:",
+    re.IGNORECASE | re.MULTILINE,
+)
+_MEMTEST_WATCHDOG = re.compile(
+    r"\[cudamemtest\]\s*FAIL:\s*watchdog timeout",
+    re.IGNORECASE,
+)
+_MEMTEST_RAN = re.compile(
+    r"\[cudamemtest\]\s+Ran\s+(\d+)/10\s+sub-test",
+    re.IGNORECASE,
+)
 
 
 def _filter_dmesg_recent(dmesg_output: str, cutoff: datetime) -> str:
@@ -222,6 +239,54 @@ def validate_hipblaslt_result(
     return _validate_common_layers(stdout, stderr, exit_code, dmesg_new, layer2_msg, layer2_failed)
 
 
+def validate_cudamemtest_result(
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+    dmesg_new: str | None,
+    subtests_ran: int = 0,
+    subtests_failed: int = 0,
+) -> tuple[bool, str]:
+    """5-layer validation of cudamemtest output.
+
+    Layer 2 checks for:
+    - Watchdog timeout sentinels
+    - Memory/runtime error patterns ([ERROR], Memory access fault, HIP error)
+    - Sub-test pass/fail counts
+
+    Returns:
+        (failed: bool, message: str) — failed=True means test should be marked FAIL
+    """
+    combined = stdout + "\n" + stderr
+
+    # Layer 2: cudamemtest-specific pass/fail
+    layer2_failed = False
+
+    if _MEMTEST_WATCHDOG.search(combined):
+        layer2_msg = "Layer 2 FAIL: watchdog timeout (sub-test did not complete)"
+        layer2_failed = True
+    else:
+        err_count = len(_MEMTEST_ERROR.findall(combined))
+        if err_count > 0:
+            layer2_msg = f"Layer 2 FAIL: {err_count} memory/runtime error(s) detected"
+            layer2_failed = True
+        elif subtests_failed > 0:
+            layer2_msg = (
+                f"Layer 2 FAIL: {subtests_failed}/{subtests_ran + subtests_failed} "
+                f"sub-test(s) failed ({subtests_ran} passed)"
+            )
+            layer2_failed = True
+        elif subtests_ran > 0:
+            layer2_msg = (
+                f"Layer 2 PASS: {subtests_ran}/10 sub-test(s) completed, "
+                f"0 memory errors"
+            )
+        else:
+            layer2_msg = "Layer 2 WARN: no sub-tests executed"
+
+    return _validate_common_layers(stdout, stderr, exit_code, dmesg_new, layer2_msg, layer2_failed)
+
+
 def _validate_common_layers(
     stdout: str,
     stderr: str,
@@ -287,3 +352,61 @@ def _validate_common_layers(
 
     messages.append("--- 5/5 layers evaluated ---")
     return failed, "\n".join(messages)
+
+
+def validate_transferbench_result(
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+    dmesg_new: str | None,
+    timed_out: bool = False,
+) -> tuple[bool, str]:
+    """5-layer validation of TransferBench rsweep output.
+
+    Layer 2 checks for:
+    - Watchdog timeout sentinel
+    - [ERROR] lines from TransferBench
+    - Transfer data lines (Transfer N | X.XX GB/s)
+    - Aggregate (CPU) summary line
+
+    Returns:
+        (failed: bool, message: str) — failed=True means test should be marked FAIL
+    """
+    combined = stdout + "\n" + stderr
+
+    # Layer 2: TransferBench-specific pass/fail
+    layer2_failed = False
+
+    if timed_out or "[transferbench] FAIL: watchdog timeout" in combined:
+        layer2_msg = (
+            "Layer 2 FAIL: watchdog timeout (rsweep did not complete)"
+        )
+        layer2_failed = True
+    else:
+        errors = len(re.findall(r"\[ERROR\]\s*\w+", combined))
+        if errors > 0:
+            layer2_msg = (
+                f"Layer 2 FAIL: {errors} TransferBench error(s)"
+            )
+            layer2_failed = True
+        else:
+            # Count transfer data lines (ASCII | or Unicode │)
+            transfers = len(re.findall(
+                r"Transfer\s+\d+\s*[│|]\s*[\d.]+\s*GB/s", stdout,
+            ))
+            has_aggregate = bool(re.search(
+                r"Aggregate\s*\(CPU\)\s*[│|]\s*[\d.]+\s*GB/s", stdout,
+            ))
+
+            if transfers == 0:
+                layer2_msg = (
+                    "Layer 2 FAIL: no transfer results in output"
+                )
+                layer2_failed = True
+            else:
+                agg_str = ", aggregate OK" if has_aggregate else ""
+                layer2_msg = (
+                    f"Layer 2 PASS: {transfers} transfer(s){agg_str}"
+                )
+
+    return _validate_common_layers(stdout, stderr, exit_code, dmesg_new, layer2_msg, layer2_failed)
