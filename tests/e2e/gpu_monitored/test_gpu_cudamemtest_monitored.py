@@ -63,14 +63,19 @@ def _build_cuda_memtest(rock_dir: str, build_dir: Path) -> Path | None:
     # Reset to pinned commit (clone_repo may have checked out ref already,
     # but be defensive for shallow/partial clones)
     rc, _out, _err = run_cmd_get_stdout_stderr(
-        "git", "reset", "--hard", _PINNED_COMMIT,
-        cwd=str(src_dir), timeout=30, quiet=True,
+        "git",
+        "reset",
+        "--hard",
+        _PINNED_COMMIT,
+        cwd=str(src_dir),
+        timeout=30,
+        quiet=True,
     )
     if rc != 0:
         logger.warning(
-            "cuda_memtest: git reset to %s failed (rc=%d); "
-            "building against current HEAD",
-            _PINNED_COMMIT[:12], rc,
+            "cuda_memtest: git reset to %s failed (rc=%d); " "building against current HEAD",
+            _PINNED_COMMIT[:12],
+            rc,
         )
 
     binary.unlink(missing_ok=True)
@@ -83,7 +88,10 @@ def _build_cuda_memtest(rock_dir: str, build_dir: Path) -> Path | None:
                 continue
             tmp = src_dir / f"hip_{f.name}"
             hip_rc, hip_stdout, _hip_err = run_cmd_get_stdout_stderr(
-                hipify, str(f), timeout=60, quiet=True,
+                hipify,
+                str(f),
+                timeout=60,
+                quiet=True,
             )
             if hip_rc == 0 and hip_stdout:
                 tmp.write_text(hip_stdout)
@@ -130,15 +138,20 @@ def _build_cuda_memtest(rock_dir: str, build_dir: Path) -> Path | None:
 
     build_cmd = f"{hipcc} -DENABLE_NVML=0 {srcs} -o cuda_memtest"
     build_rc, _build_out, build_err = run_cmd_get_stdout_stderr(
-        "bash", "-c", build_cmd,
-        cwd=str(src_dir), timeout=600, quiet=True,
+        "bash",
+        "-c",
+        build_cmd,
+        cwd=str(src_dir),
+        timeout=600,
+        quiet=True,
         env=build_env,
     )
 
     if not binary.is_file():
         logger.error(
             "cuda_memtest: build FAILED (hipcc rc=%d); stderr:\n%s",
-            build_rc, build_err[:2000],
+            build_rc,
+            build_err[:2000],
         )
         return None
 
@@ -159,8 +172,10 @@ def _run_subtest(
     cmd_parts = [
         str(bin_path),
         "--disable_all",
-        "--enable_test", str(test_num),
-        "--num_passes", str(NUM_PASSES),
+        "--enable_test",
+        str(test_num),
+        "--num_passes",
+        str(NUM_PASSES),
     ]
     if extra_args:
         cmd_parts.extend(extra_args)
@@ -194,9 +209,7 @@ def test_gpu_cudamemtest_monitored(
 
     bin_path = _build_cuda_memtest(rock_dir, bld)
     if bin_path is None:
-        pytest.skip(
-            "cuda_memtest binary not found and build from source failed"
-        )
+        pytest.skip("cuda_memtest binary not found and build from source failed")
 
     rocm_lib = os.path.join(rock_dir, "lib")
     ld = ld_path["LD_LIBRARY_PATH"]
@@ -205,9 +218,7 @@ def test_gpu_cudamemtest_monitored(
 
     os.environ["LD_LIBRARY_PATH"] = ld
 
-    per_iter_timeout = (
-        int(os.environ.get("CUDAMEMTEST_PER_ITER_TIMEOUT", "0")) or None
-    )
+    per_iter_timeout = int(os.environ.get("CUDAMEMTEST_PER_ITER_TIMEOUT", "0")) or None
     memtest_duration = int(os.environ.get("CUDAMEMTEST_DURATION", "3600"))
     extra_args: list[str] = []
     memtest_blocks = os.environ.get("CUDAMEMTEST_MAX_BLOCKS", "")
@@ -215,9 +226,9 @@ def test_gpu_cudamemtest_monitored(
         extra_args = ["--max_num_blocks", memtest_blocks]
 
     logger.info(
-        "Running cuda_memtest: %d sub-tests, duration budget %ds, "
-        "per-iter timeout %s",
-        len(SUBTESTS), memtest_duration,
+        "Running cuda_memtest: %d sub-tests, duration budget %ds, " "per-iter timeout %s",
+        len(SUBTESTS),
+        memtest_duration,
         f"{per_iter_timeout}s" if per_iter_timeout else "none",
     )
 
@@ -241,7 +252,8 @@ def test_gpu_cudamemtest_monitored(
                 break
 
             rc, stdout, stderr = _run_subtest(
-                bin_path, test_num,
+                bin_path,
+                test_num,
                 extra_args=extra_args,
                 timeout=per_iter_timeout,
             )
@@ -256,7 +268,9 @@ def test_gpu_cudamemtest_monitored(
                 f"--- stderr ---\n{stderr}\n"
             )
             logger.info(
-                "[cudamemtest] enable_test %d finished (rc=%d)", test_num, rc,
+                "[cudamemtest] enable_test %d finished (rc=%d)",
+                test_num,
+                rc,
             )
 
             if rc == 124 or rc == -9:
@@ -273,18 +287,12 @@ def test_gpu_cudamemtest_monitored(
                     failed += 1
                     break
                 else:
-                    msg = (
-                        f"[{test_num}/10] FAIL (killed after "
-                        f"{actual_timeout}s): enable_test {test_num}"
-                    )
+                    msg = f"[{test_num}/10] FAIL (killed after " f"{actual_timeout}s): enable_test {test_num}"
                     logger.warning("[cudamemtest] %s", msg)
                     results_log.append(msg)
                     failed += 1
             elif rc != 0:
-                msg = (
-                    f"[{test_num}/10] FAIL (exit {rc}): "
-                    f"enable_test {test_num}"
-                )
+                msg = f"[{test_num}/10] FAIL (exit {rc}): " f"enable_test {test_num}"
                 logger.warning("[cudamemtest] %s", msg)
                 results_log.append(msg)
                 failed += 1
@@ -297,13 +305,13 @@ def test_gpu_cudamemtest_monitored(
     ran = passed + failed
 
     logger.info(
-        "[cudamemtest] Ran %d/10 sub-test(s), %d passed, %d failed "
-        "(%.1fs)", ran, passed, failed, duration,
+        "[cudamemtest] Ran %d/10 sub-test(s), %d passed, %d failed " "(%.1fs)",
+        ran,
+        passed,
+        failed,
+        duration,
     )
-    all_stdout.append(
-        f"  [cudamemtest] Ran {ran}/10 sub-test(s), "
-        f"first_fail_rc={'0' if failed == 0 else '1'}\n"
-    )
+    all_stdout.append(f"  [cudamemtest] Ran {ran}/10 sub-test(s), " f"first_fail_rc={'0' if failed == 0 else '1'}\n")
 
     dmesg_after = capture_dmesg()
     dmesg_new = dmesg_delta(dmesg_before, dmesg_after)
@@ -318,18 +326,18 @@ def test_gpu_cudamemtest_monitored(
     exit_code = 1 if failed > 0 else 0
 
     validation_failed, validation_msg = validate_cudamemtest_result(
-        combined_stdout, combined_stderr, exit_code, dmesg_new,
-        subtests_ran=passed, subtests_failed=failed,
+        combined_stdout,
+        combined_stderr,
+        exit_code,
+        dmesg_new,
+        subtests_ran=passed,
+        subtests_failed=failed,
     )
 
-    (run_dir / "cudamemtest_results.txt").write_text(
-        "\n".join(results_log) + "\n"
-    )
+    (run_dir / "cudamemtest_results.txt").write_text("\n".join(results_log) + "\n")
     (run_dir / "validation.txt").write_text(validation_msg + "\n")
 
-    timeout_part = (
-        f"timeout {per_iter_timeout} " if per_iter_timeout else ""
-    )
+    timeout_part = f"timeout {per_iter_timeout} " if per_iter_timeout else ""
     extra_str = (" " + " ".join(extra_args)) if extra_args else ""
     reproduce_cmd = (
         f"# cuda_memtest cycles through enable_test 1..10 "
@@ -369,9 +377,6 @@ def test_gpu_cudamemtest_monitored(
     logger.info("Validation:\n%s", validation_msg)
     logger.info("Report: %s", run_dir / "report.html")
 
-    assert not validation_failed, (
-        f"cudamemtest validation failed:\n{validation_msg}\n"
-        + "\n".join(
-            line for line in results_log if "FAIL" in line
-        )
+    assert not validation_failed, f"cudamemtest validation failed:\n{validation_msg}\n" + "\n".join(
+        line for line in results_log if "FAIL" in line
     )

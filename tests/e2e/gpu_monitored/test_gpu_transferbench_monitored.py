@@ -49,7 +49,10 @@ def _positive_env_int(name: str, default: int) -> int:
     except ValueError as e:
         logger.warning(
             "Ignoring invalid %s=%r (%s); using default %d",
-            name, raw, e, default,
+            name,
+            raw,
+            e,
+            default,
         )
         return default
     return value
@@ -94,15 +97,20 @@ def _build_transferbench(rock_dir: str, build_dir: Path) -> Path | None:
 
     cpu_count = os.cpu_count() or 4
     build_rc, _build_out, build_err = run_cmd_get_stdout_stderr(
-        "make", "-j", str(cpu_count),
-        cwd=str(src_dir), timeout=600, quiet=True,
+        "make",
+        "-j",
+        str(cpu_count),
+        cwd=str(src_dir),
+        timeout=600,
+        quiet=True,
         env=build_env,
     )
 
     if not (binary.is_file() and os.access(binary, os.X_OK)):
         logger.error(
             "TransferBench: build FAILED (make rc=%d); stderr:\n%s",
-            build_rc, build_err[:2000],
+            build_rc,
+            build_err[:2000],
         )
         return None
 
@@ -134,9 +142,7 @@ def test_gpu_transferbench_monitored(
         bld.mkdir(parents=True, exist_ok=True)
         bin_path = _build_transferbench(rock_dir, bld)
     if bin_path is None:
-        pytest.skip(
-            "TransferBench binary not found and build from source failed"
-        )
+        pytest.skip("TransferBench binary not found and build from source failed")
 
     # Sweep configuration
     sweep_time_limit = _positive_env_int("SWEEP_TIME_LIMIT", _DEFAULT_SWEEP_TIME_LIMIT)
@@ -158,14 +164,13 @@ def test_gpu_transferbench_monitored(
     if rocm_bin not in os.environ.get("PATH", ""):
         os.environ["PATH"] = f"{rocm_bin}:{os.environ.get('PATH', '')}"
 
-    per_iter_timeout = (
-        int(os.environ.get("TRANSFERBENCH_TIMEOUT", "0")) or None
-    )
+    per_iter_timeout = int(os.environ.get("TRANSFERBENCH_TIMEOUT", "0")) or None
 
     logger.info(
-        "Running TransferBench rsweep: SWEEP_TIME_LIMIT=%d "
-        "SWEEP_MIN=%d SWEEP_MAX=%d, timeout %s",
-        sweep_time_limit, sweep_min, sweep_max,
+        "Running TransferBench rsweep: SWEEP_TIME_LIMIT=%d " "SWEEP_MIN=%d SWEEP_MAX=%d, timeout %s",
+        sweep_time_limit,
+        sweep_min,
+        sweep_max,
         f"{per_iter_timeout}s" if per_iter_timeout else "none (default 3600s)",
     )
 
@@ -174,7 +179,8 @@ def test_gpu_transferbench_monitored(
 
     with gpu_monitor(cu_occupancy=False):
         rc, stdout, stderr = run_cmd_get_stdout_stderr(
-            str(bin_path), "rsweep",
+            str(bin_path),
+            "rsweep",
             timeout=per_iter_timeout or 3600,
             quiet=True,
         )
@@ -183,12 +189,12 @@ def test_gpu_transferbench_monitored(
 
     # Log output
     (run_dir / "transferbench_output.log").write_text(
-        f"=== TransferBench rsweep (exit_code={rc}) ===\n"
-        f"--- stdout ---\n{stdout}\n"
-        f"--- stderr ---\n{stderr}\n"
+        f"=== TransferBench rsweep (exit_code={rc}) ===\n" f"--- stdout ---\n{stdout}\n" f"--- stderr ---\n{stderr}\n"
     )
     logger.info(
-        "[transferbench] rsweep finished (rc=%d, %.1fs)", rc, duration,
+        "[transferbench] rsweep finished (rc=%d, %.1fs)",
+        rc,
+        duration,
     )
 
     dmesg_after = capture_dmesg()
@@ -203,21 +209,22 @@ def test_gpu_transferbench_monitored(
     timed_out = (rc == 124 or rc == -9) and per_iter_timeout is not None
     if timed_out:
         stdout += (
-            f"\n  [transferbench] FAIL: watchdog timeout — rsweep did "
-            f"not complete within {per_iter_timeout}s."
+            f"\n  [transferbench] FAIL: watchdog timeout — rsweep did " f"not complete within {per_iter_timeout}s."
         )
 
     exit_code = rc if rc >= 0 else 1
 
     validation_failed, validation_msg = validate_transferbench_result(
-        stdout, stderr, exit_code, dmesg_new, timed_out=timed_out,
+        stdout,
+        stderr,
+        exit_code,
+        dmesg_new,
+        timed_out=timed_out,
     )
 
     (run_dir / "validation.txt").write_text(validation_msg + "\n")
 
-    timeout_part = (
-        f"timeout {per_iter_timeout} " if per_iter_timeout else ""
-    )
+    timeout_part = f"timeout {per_iter_timeout} " if per_iter_timeout else ""
     reproduce_cmd = (
         f"SWEEP_TIME_LIMIT={sweep_time_limit} "
         f"SWEEP_MIN={sweep_min} SWEEP_MAX={sweep_max} "
@@ -253,6 +260,4 @@ def test_gpu_transferbench_monitored(
     logger.info("Validation:\n%s", validation_msg)
     logger.info("Report: %s", run_dir / "report.html")
 
-    assert not validation_failed, (
-        f"TransferBench validation failed:\n{validation_msg}"
-    )
+    assert not validation_failed, f"TransferBench validation failed:\n{validation_msg}"

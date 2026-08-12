@@ -44,11 +44,8 @@ DMESG_CATEGORY_RULES: list[tuple[str, re.Pattern]] = [
 
 # cudamemtest-specific patterns
 _MEMTEST_ERROR = re.compile(
-    r"\[ERROR\]\s|"
-    r"^\s*ERROR:\s+\S|"
-    r"\bMemory access fault\b|"
-    r"\bHIP error:",
-    re.IGNORECASE | re.MULTILINE,
+     r"\[ERROR\]\s|" r"^\s*ERROR:\s+\S|" r"\bMemory access fault\b|" r"\bHIP error:",
+     re.IGNORECASE | re.MULTILINE,
 )
 _MEMTEST_WATCHDOG = re.compile(
     r"\[cudamemtest\]\s*FAIL:\s*watchdog timeout",
@@ -277,10 +274,7 @@ def validate_cudamemtest_result(
             )
             layer2_failed = True
         elif subtests_ran > 0:
-            layer2_msg = (
-                f"Layer 2 PASS: {subtests_ran}/10 sub-test(s) completed, "
-                f"0 memory errors"
-            )
+            layer2_msg = f"Layer 2 PASS: {subtests_ran}/10 sub-test(s) completed, " f"0 memory errors"
         else:
             layer2_msg = "Layer 2 WARN: no sub-tests executed"
 
@@ -378,35 +372,33 @@ def validate_transferbench_result(
     layer2_failed = False
 
     if timed_out or "[transferbench] FAIL: watchdog timeout" in combined:
-        layer2_msg = (
-            "Layer 2 FAIL: watchdog timeout (rsweep did not complete)"
-        )
+        layer2_msg = "Layer 2 FAIL: watchdog timeout (rsweep did not complete)"
         layer2_failed = True
     else:
         errors = len(re.findall(r"\[ERROR\]\s*\w+", combined))
         if errors > 0:
-            layer2_msg = (
-                f"Layer 2 FAIL: {errors} TransferBench error(s)"
-            )
+            layer2_msg = f"Layer 2 FAIL: {errors} TransferBench error(s)"
             layer2_failed = True
         else:
             # Count transfer data lines (ASCII | or Unicode │)
-            transfers = len(re.findall(
-                r"Transfer\s+\d+\s*[│|]\s*[\d.]+\s*GB/s", stdout,
-            ))
-            has_aggregate = bool(re.search(
-                r"Aggregate\s*\(CPU\)\s*[│|]\s*[\d.]+\s*GB/s", stdout,
-            ))
+            transfers = len(
+                re.findall(
+                    r"Transfer\s+\d+\s*[│|]\s*[\d.]+\s*GB/s",
+                    stdout,
+                )
+            )
+            has_aggregate = bool(
+                re.search(
+                    r"Aggregate\s*\(CPU\)\s*[│|]\s*[\d.]+\s*GB/s",
+                    stdout,
+                )
+            )
 
             if transfers == 0:
-                layer2_msg = (
-                    "Layer 2 FAIL: no transfer results in output"
-                )
+                layer2_msg = "Layer 2 FAIL: no transfer results in output"
                 layer2_failed = True
             else:
                 agg_str = ", aggregate OK" if has_aggregate else ""
-                layer2_msg = (
-                    f"Layer 2 PASS: {transfers} transfer(s){agg_str}"
-                )
+                layer2_msg = f"Layer 2 PASS: {transfers} transfer(s){agg_str}"
 
     return _validate_common_layers(stdout, stderr, exit_code, dmesg_new, layer2_msg, layer2_failed)
