@@ -136,7 +136,6 @@ def test_rocsolver_bench(
     iteration = 0
     all_passed = True
     all_messages: list[str] = []
-    first_fail_output = ""
     console_log = run_dir / "console_output.log"
 
     with console_log.open("w") as log_fh:
@@ -160,8 +159,6 @@ def test_rocsolver_bench(
                 msg = f"Iteration {iteration}: non-zero exit code {rc}"
                 logger.warning("[rocsolver-bench] %s", msg)
                 all_messages.append(msg)
-                if all_passed:
-                    first_fail_output = stdout + "\n" + stderr
                 all_passed = False
                 continue
 
@@ -169,8 +166,6 @@ def test_rocsolver_bench(
             if not passed:
                 logger.warning("[rocsolver-bench] Iteration %d: %s", iteration, msg)
                 all_messages.append(f"Iteration {iteration}: {msg}")
-                if all_passed:
-                    first_fail_output = stdout + "\n" + stderr
                 all_passed = False
             else:
                 all_messages.append(f"Iteration {iteration}: PASS")
