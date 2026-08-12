@@ -40,47 +40,8 @@ _REPO_URL = "https://github.com/ComputationalRadiationPhysics/cuda_memtest.git"
 _PINNED_COMMIT = "0cd3a996ce82682fcf50fa6f433b6f1f2ce1353d"
 
 
-def _build_cuda_memtest(rock_dir: str, build_dir: Path) -> Path | None:
-    """Build cuda_memtest from source using hipify + hipcc.
-
-    Returns path to the built binary, or None on failure.
-    """
-    src_dir = build_dir / "cuda_memtest"
-    binary = src_dir / "cuda_memtest"
-
-    if binary.is_file():
-        logger.info("cuda_memtest binary already built: %s", binary)
-        return binary
-
-    logger.info("Building cuda_memtest from source in %s", src_dir)
-
-    try:
-        clone_repo(_REPO_URL, src_dir, ref=_PINNED_COMMIT)
-    except Exception as e:
-        logger.error("cuda_memtest: git clone failed: %s", e)
-        return None
-
-    # Reset to pinned commit (clone_repo may have checked out ref already,
-    # but be defensive for shallow/partial clones)
-    rc, _out, _err = run_cmd_get_stdout_stderr(
-        "git",
-        "reset",
-        "--hard",
-        _PINNED_COMMIT,
-        cwd=str(src_dir),
-        timeout=30,
-        quiet=True,
-    )
-    if rc != 0:
-        logger.warning(
-            "cuda_memtest: git reset to %s failed (rc=%d); " "building against current HEAD",
-            _PINNED_COMMIT[:12],
-            rc,
-        )
-
-    binary.unlink(missing_ok=True)
-
-    # Hipify .cu / .cpp files
+def _hipify_sources(rock_dir: str, src_dir: Path) -> None:
+    """Hipify .cu / .cpp source files in place."""
     hipify = os.path.join(rock_dir, "bin", "hipify-perl")
     for pattern in ("cuda_memtest.*", "misc.*", "tests.cu"):
         for f in src_dir.glob(pattern):
@@ -98,6 +59,9 @@ def _build_cuda_memtest(rock_dir: str, build_dir: Path) -> Path | None:
                 f.unlink()
                 tmp.rename(f)
 
+
+def _patch_sources(src_dir: Path) -> None:
+    """Apply HIP compatibility patches to source files."""
     # Patch header for HIP build
     header = src_dir / "cuda_memtest.h"
     if header.is_file():
@@ -122,8 +86,49 @@ def _build_cuda_memtest(rock_dir: str, build_dir: Path) -> Path | None:
                 src.write_text(new)
             break
 
-    # Compile with hipcc — set ROCM_PATH so hipcc resolves the correct
-    # clang++ and rocm_agent_enumerator from this rock_dir install.
+
+def _build_cuda_memtest(rock_dir: str, build_dir: Path) -> Path | None:
+    """Build cuda_memtest from source using hipify + hipcc.
+
+    Returns path to the built binary, or None on failure.
+    """
+    src_dir = build_dir / "cuda_memtest"
+    binary = src_dir / "cuda_memtest"
+
+    if binary.is_file():
+        logger.info("cuda_memtest binary already built: %s", binary)
+        return binary
+
+    logger.info("Building cuda_memtest from source in %s", src_dir)
+
+    try:
+        clone_repo(_REPO_URL, src_dir, ref=_PINNED_COMMIT)
+    except Exception as e:
+        logger.error("cuda_memtest: git clone failed: %s", e)
+        return None
+
+    rc, _out, _err = run_cmd_get_stdout_stderr(
+        "git",
+        "reset",
+        "--hard",
+        _PINNED_COMMIT,
+        cwd=str(src_dir),
+        timeout=30,
+        quiet=True,
+    )
+    if rc != 0:
+        logger.warning(
+            "cuda_memtest: git reset to %s failed (rc=%d); " "building against current HEAD",
+            _PINNED_COMMIT[:12],
+            rc,
+        )
+
+    binary.unlink(missing_ok=True)
+
+    _hipify_sources(rock_dir, src_dir)
+    _patch_sources(src_dir)
+
+    # Compile with hipcc
     hipcc = os.path.join(rock_dir, "bin", "hipcc")
     build_env = dict(os.environ)
     build_env["ROCM_PATH"] = rock_dir
@@ -131,10 +136,7 @@ def _build_cuda_memtest(rock_dir: str, build_dir: Path) -> Path | None:
     build_env["HIP_CLANG_PATH"] = os.path.join(rock_dir, "lib", "llvm", "bin")
 
     cu_file = src_dir / "cuda_memtest.cu"
-    if cu_file.is_file():
-        srcs = "cuda_memtest.cu misc.cpp tests.cu"
-    else:
-        srcs = "cuda_memtest.cpp misc.cpp tests.cpp"
+    srcs = "cuda_memtest.cu misc.cpp tests.cu" if cu_file.is_file() else "cuda_memtest.cpp misc.cpp tests.cpp"
 
     build_cmd = f"{hipcc} -DENABLE_NVML=0 {srcs} -o cuda_memtest"
     build_rc, _build_out, build_err = run_cmd_get_stdout_stderr(
