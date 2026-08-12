@@ -44,8 +44,8 @@ DMESG_CATEGORY_RULES: list[tuple[str, re.Pattern]] = [
 
 # cudamemtest-specific patterns
 _MEMTEST_ERROR = re.compile(
-     r"\[ERROR\]\s|" r"^\s*ERROR:\s+\S|" r"\bMemory access fault\b|" r"\bHIP error:",
-     re.IGNORECASE | re.MULTILINE,
+    r"\[ERROR\]\s|" r"^\s*ERROR:\s+\S|" r"\bMemory access fault\b|" r"\bHIP error:",
+    re.IGNORECASE | re.MULTILINE,
 )
 _MEMTEST_WATCHDOG = re.compile(
     r"\[cudamemtest\]\s*FAIL:\s*watchdog timeout",
