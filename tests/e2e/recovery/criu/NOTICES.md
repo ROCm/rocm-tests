@@ -3,8 +3,8 @@
 The tests under `tests/e2e/recovery/criu/` **fetch, build, and run** third-party open-source
 projects **at test run time**. No project's source or binaries are vendored, committed, or
 redistributed as part of the rocm-tests repository — clones land in the gitignored `output/`
-build directory (cuda_memtest, RAJAPerf). (CRIU, the checkpoint/restore tool these tests drive,
-is covered separately by `tests/common/criu/NOTICES.md`.)
+build directory (cuda_memtest, pytorch/examples, RAJAPerf). (CRIU, the checkpoint/restore tool
+these tests drive, is covered separately by `tests/common/criu/NOTICES.md`.)
 
 This file documents each component, exactly how it is used, and the resulting license
 obligations. It is an engineering-compliance summary, not legal advice; final sign-off for any
@@ -17,6 +17,7 @@ product distribution should come from AMD OSS/legal review.
 | Component | Upstream | Pinned ref | License |
 |---|---|---|---|
 | cuda_memtest | https://github.com/ComputationalRadiationPhysics/cuda_memtest | commit `0cd3a996ce82682fcf50fa6f433b6f1f2ce1353d` | University of Illinois/NCSA Open Source License (permissive) |
+| pytorch/examples (MNIST) | https://github.com/pytorch/examples | latest `main` (shallow clone) | BSD-3-Clause (permissive) |
 | RAJAPerf | https://github.com/LLNL/rajaperf | default branch (pinnable via `ROCM_TEST_RAJAPERF_REF`) | BSD-3-Clause (permissive) |
 
 ### cuda_memtest
@@ -25,6 +26,13 @@ product distribution should come from AMD OSS/legal review.
    `hipHostGetDevicePointer`.
 3. Build a standalone binary with `hipcc`.
 4. Run the binary as a subprocess.
+
+### pytorch/examples (MNIST)
+1. Shallow `git clone` of the default branch into
+   `output/test-binaries/recovery/pyt_examples/examples`.
+2. **Not modified** and **not built.** `examples/mnist/main.py` is run as a subprocess using
+   the test container's **ambient** ROCm PyTorch (no `pip install`, no `requirements.txt`).
+3. Used only to produce a live training process that CRIU checkpoints and restores.
 
 ### RAJAPerf
 1. `git clone --recursive` into `output/test-binaries/recovery/rajaperf` (default branch, or the
@@ -44,16 +52,19 @@ product distribution should come from AMD OSS/legal review.
   *distribution*, which does not occur here.
 - **cuda_memtest (NCSA)** permits use, modification, and redistribution with attribution. The
   hipify/`sed` modifications are allowed; the built binary is not redistributed.
+- **pytorch/examples (BSD-3-Clause)** is used unmodified via arm's-length subprocess invocation
+  and is not redistributed. BSD-3-Clause's retain-the-notice conditions trigger only on
+  *redistribution*, which does not occur here.
 - **RAJAPerf (BSD-3-Clause)** permits use, modification, and redistribution. It is built
   **unmodified** and its binary is not redistributed, so no obligation is triggered.
 - **Modification imposes no obligation.** NCSA and BSD-3-Clause are permissive: modifying sources
   (cuda_memtest's hipify + `sed`) requires nothing on its own — it does **not** require marking
   changed files or disclosing the diff. Their retain-the-notice conditions trigger only on
-  *redistribution*, which does not occur. RAJAPerf is not modified.
+  *redistribution*, which does not occur. pytorch/examples and RAJAPerf are not modified.
 - **If distribution is ever added** (e.g. bundling the sources or built binaries): retain the NCSA
   copyright notices and disclaimer for cuda_memtest; retain the BSD-3-Clause copyright notice,
-  conditions, and disclaimer for RAJAPerf (and its submodules) and honor the no-endorsement clause.
-  This is out of scope for the current runtime-fetch model.
+  conditions, and disclaimer for pytorch/examples and for RAJAPerf (and its submodules), and honor
+  the no-endorsement clause. This is out of scope for the current runtime-fetch model.
 
 ---
 
@@ -71,6 +82,13 @@ Forked and maintained since 2013 by:
   Helmholtz-Zentrum Dresden-Rossendorf
 ```
 Full license text: `LICENSE` in the cuda_memtest repository.
+
+### pytorch/examples — BSD 3-Clause License
+```
+Copyright (c) 2017, Pytorch contributors. All rights reserved.
+Licensed under the BSD 3-Clause License.
+```
+Full license text: `LICENSE` in the pytorch/examples repository.
 
 ### RAJAPerf — BSD-3-Clause License
 ```

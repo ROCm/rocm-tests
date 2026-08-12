@@ -4,5 +4,6 @@
 """CRIU checkpoint/restore recovery test suite.
 
 Holds the workload builds (``conftest.py``) and CRIU checkpoint/restore test functions for
-cuda_memtest and LLNL RAJAPerf. Shared CRIU machinery lives in ``tests.common.criu``.
+cuda_memtest, the PyTorch MNIST example, and LLNL RAJAPerf. Shared CRIU machinery lives in
+``tests.common.criu``.
 """
