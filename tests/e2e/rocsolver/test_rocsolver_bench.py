@@ -89,10 +89,7 @@ def _check_output_for_errors(stdout: str, stderr: str) -> tuple[bool, str]:
                 break
 
     if fail_lines:
-        msg = (
-            f"FAIL: {len(fail_lines)} error line(s) detected\n"
-            + "\n".join(f"  -> {fl}" for fl in fail_lines[:5])
-        )
+        msg = f"FAIL: {len(fail_lines)} error line(s) detected\n" + "\n".join(f"  -> {fl}" for fl in fail_lines[:5])
         return False, msg
 
     # Check for pass markers
@@ -153,10 +150,7 @@ def test_rocsolver_bench(
             )
 
             # Write full console output for this iteration
-            log_fh.write(
-                f"=== Iteration {iteration} (exit_code={rc}) ===\n"
-                f"{stdout}\n"
-            )
+            log_fh.write(f"=== Iteration {iteration} (exit_code={rc}) ===\n" f"{stdout}\n")
             if stderr.strip():
                 log_fh.write(f"--- stderr ---\n{stderr}\n")
             log_fh.write("\n")
@@ -183,7 +177,8 @@ def test_rocsolver_bench(
 
     logger.info(
         "[rocsolver-bench] Completed %d iteration(s) in %d seconds",
-        iteration, duration_sec,
+        iteration,
+        duration_sec,
     )
 
     # Check dmesg for kernel-level issues
@@ -200,17 +195,14 @@ def test_rocsolver_bench(
     if dmesg_new:
         dmesg_clean = False
         logger.error(
-            "[rocsolver-bench] dmesg has new entries during test — "
-            "check dmesg.log artifact for details",
+            "[rocsolver-bench] dmesg has new entries during test — " "check dmesg.log artifact for details",
         )
 
     pass_count = sum(1 for m in all_messages if "PASS" in m)
     fail_count = iteration - pass_count
 
     # Save results log
-    (run_dir / "rocsolver_bench_results.txt").write_text(
-        "\n".join(all_messages) + "\n"
-    )
+    (run_dir / "rocsolver_bench_results.txt").write_text("\n".join(all_messages) + "\n")
 
     summary = (
         f"rocsolver-bench gesvd: {iteration} iteration(s), "
@@ -219,11 +211,5 @@ def test_rocsolver_bench(
     )
     logger.info("[rocsolver-bench] %s", summary)
 
-    assert all_passed, (
-        f"rocsolver-bench failed:\n{summary}\n"
-        + "\n".join(m for m in all_messages if "FAIL" in m)[:500]
-    )
-    assert dmesg_clean, (
-        "dmesg has new entries during rocsolver-bench — "
-        "check dmesg.log artifact for details"
-    )
+    assert all_passed, f"rocsolver-bench failed:\n{summary}\n" + "\n".join(m for m in all_messages if "FAIL" in m)[:500]
+    assert dmesg_clean, "dmesg has new entries during rocsolver-bench — " "check dmesg.log artifact for details"
