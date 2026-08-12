@@ -168,4 +168,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # Apex fused-kernel L0 unit-test suite (ML frameworks): builds the Apex HIP
+    # extensions and runs the L0 unittest suite in a container via target_executor.
+    "tests/e2e/ml_frameworks/apex": [
+        "hw.multi_gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
 }
