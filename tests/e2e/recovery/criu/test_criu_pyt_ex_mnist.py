@@ -13,9 +13,9 @@ import logging
 import re
 
 import pytest
-from tests.common.criu import steps as criu
 
 from framework.reporting.allure_reporter import report_metric, step
+from tests.common.criu import steps as criu
 
 logger = logging.getLogger(__name__)
 
