@@ -168,15 +168,4 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
-    # CRIU checkpoint/restore stress suite.
-    # Single-GPU / single-node HIP workload (cuda_memtest) that is checkpointed and
-    # restored with CRIU + amdgpu_plugin. Weekly cadence because the happy-path case
-    # is a soak run; runtime.* is declared per test function.
-    "tests/e2e/recovery/criu": [
-        "hw.gpu",
-        "layer.runtime",
-        "ci.weekly",
-        "e2e.stack",
-        "os.linux",
-    ],
 }
