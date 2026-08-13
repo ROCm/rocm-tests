@@ -41,27 +41,21 @@ def _mixbench_failure(test_name: str, marker: str) -> dict:
 
 
 def _parse_mixbench_output(text: str) -> dict:
-    """Parse mixbench stdout into a structured throughput result mapping.
+    """Parse mixbench-hip stdout into a structured throughput result mapping.
 
-    The benchmark variant is inferred from the banner ("alternating" selects
-    ``mixbench_alt``, "read-only" selects ``mixbench_ro``, otherwise ``sanity``).
-    The CSV block begins three lines after the line containing "CSV" and excludes
-    the final line; each column is sliced into single/double/half precision and
-    integer throughput groups, and every field must match the numeric pattern.
+    mixbench-hip outputs only the sanity benchmark variant. The CSV block begins
+    three lines after the line containing "CSV" and excludes the final line; each
+    column is sliced into single/double/half precision and integer throughput
+    groups, and every field must match the numeric pattern.
 
     Args:
-        text: Captured mixbench standard output.
+        text: Captured mixbench-hip standard output.
 
     Returns:
         A result mapping whose ``status`` is ``True`` when the CSV section is
         well-formed, ``False`` when data is missing or non-numeric.
     """
-    if "alternating" in text:
-        test_name = "mixbench_alt"
-    elif "read-only" in text:
-        test_name = "mixbench_ro"
-    else:
-        test_name = "sanity"
+    test_name = "sanity"
 
     lines = text.splitlines()
     csv_index = [idx for idx, line in enumerate(lines) if "CSV" in line][0]  # noqa: RUF015
