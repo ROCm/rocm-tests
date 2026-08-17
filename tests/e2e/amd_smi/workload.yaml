@@ -1,0 +1,334 @@
+version: 1.0
+jobs:
+  transferbench:
+    name: transferbench
+    docker: registry-sc-harbor.amd.com/framework/therock-main:771_gfx950_7.12.0a20260128_ubuntu24.04_py3.12_pytorch_release-2.9_latest
+    cleanup: |
+      echo "Cleaning up TransferBench artifacts..."
+      rm -rf /tmp/TransferBench /tmp/lastSweep.cfg
+    build: |
+      set -e
+      if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; else SUDO=""; fi
+
+      # ROCm PATH resolution (before binary checks so rocm bin is searchable)
+      export ROCM_PATH=${ROCM_PATH:-/opt/rocm}
+      for d in /opt/rocm-*/bin /opt/rocm/bin "${ROCM_PATH}/bin"; do
+        [ -d "$d" ] && export PATH="$d:$PATH"
+      done
+
+      # Resolve binary: PATH (incl. ROCm) > build dir > apt
+      if command -v TransferBench >/dev/null 2>&1; then
+        echo "TransferBench already available: $(command -v TransferBench)"
+        exit 0
+      elif [ -x /tmp/TransferBench/build/TransferBench ]; then
+        echo "TransferBench cached at /tmp/TransferBench/build/TransferBench"
+        exit 0
+      elif $SUDO apt install transferbench -y 2>/dev/null; then
+        echo "TransferBench installed via apt"
+        exit 0
+      fi
+
+      # Dependency install is non-fatal; cmake/make will fail clearly if
+      # critical packages are truly missing.
+      $SUDO apt update 2>/dev/null || true
+      $SUDO apt install -y libnuma-dev cmake git \
+        hip-dev hip-runtime-amd rocm-device-libs 2>/dev/null || \
+        $SUDO apt install -y libnuma-dev cmake git 2>/dev/null || true
+
+      if [ -z "$ROCM_PATH" ]; then
+        PIP_ROCM_LOCATION=$(pip show rocm 2>/dev/null | grep "^Location:" | awk '{print $2}')
+        if [ -n "$PIP_ROCM_LOCATION" ] && [ -d "$PIP_ROCM_LOCATION/_rocm_sdk_core" ]; then
+          export ROCM_PATH="$PIP_ROCM_LOCATION/_rocm_sdk_core"
+        fi
+      fi
+      export ROCM_PATH=${ROCM_PATH:-/opt/rocm}
+      export HIP_PLATFORM=amd
+
+      HIP_DIR=""
+      for d in "${ROCM_PATH}/lib/cmake/hip" "${ROCM_PATH}/hip/lib/cmake/hip" "/opt/rocm/lib/cmake/hip" /opt/rocm-*/lib/cmake/hip; do
+        if [ -f "$d/hip-config.cmake" ] || [ -f "$d/hipConfig.cmake" ]; then
+          HIP_DIR="$d"; break
+        fi
+      done
+      if [ -z "$HIP_DIR" ]; then
+        HIP_DIR=$(dirname "$(find /opt /usr -name 'hip-config.cmake' -o -name 'hipConfig.cmake' 2>/dev/null | head -1)" 2>/dev/null || true)
+      fi
+      if [ -n "$HIP_DIR" ]; then
+        echo "Found hip cmake config at: $HIP_DIR"
+      else
+        echo "WARNING: hip-config.cmake not found anywhere, cmake may fail"
+      fi
+
+      if [ ! -d "${ROCM_PATH}/amdgcn/bitcode" ] && [ -d "${ROCM_PATH}/lib/llvm/amdgcn/bitcode" ]; then
+        echo "Device libs missing at ${ROCM_PATH}/amdgcn, creating symlink"
+        $SUDO ln -sf lib/llvm/amdgcn "${ROCM_PATH}/amdgcn"
+      fi
+
+      if [ ! -x /tmp/TransferBench/build/TransferBench ]; then
+        rm -rf /tmp/TransferBench
+        cd /tmp
+        git clone https://github.com/ROCm/TransferBench --depth=1
+        cd TransferBench
+        mkdir -p build && cd build
+        CMAKE_ARGS="-DCMAKE_PREFIX_PATH=${ROCM_PATH} -DROCM_PATH=${ROCM_PATH} -DBUILD_LOCAL_GPU_TARGET_ONLY=ON"
+        if [ -n "$HIP_DIR" ]; then
+          CMAKE_ARGS="$CMAKE_ARGS -Dhip_DIR=${HIP_DIR}"
+        fi
+        cmake .. $CMAKE_ARGS 2>&1
+        make -j$(nproc) 2>&1
+        for dest in "${ROCM_PATH}/bin" "/usr/local/bin"; do
+          if $SUDO cp TransferBench "$dest/" 2>/dev/null; then
+            echo "Installed to $dest/"
+            break
+          fi
+        done
+      fi
+      echo "TransferBench build complete"
+    run: |
+      set -e
+      if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; else SUDO=""; fi
+
+      # Ensure ROCm bin dirs are on PATH
+      for d in /opt/rocm-*/bin /opt/rocm/bin; do
+        [ -d "$d" ] && export PATH="$d:$PATH"
+      done
+
+      TB_BIN=""
+      if command -v TransferBench >/dev/null 2>&1; then
+        TB_BIN="TransferBench"
+      elif [ -x /tmp/TransferBench/build/TransferBench ]; then
+        TB_BIN="/tmp/TransferBench/build/TransferBench"
+      fi
+
+      if [ -z "$TB_BIN" ]; then
+        echo "ERROR: TransferBench not found (build step may have failed)"; exit 1
+      fi
+
+      # Detect GPU count; in DPX/NPS2 mode the logical count doubles
+      # which causes rsweep to generate cross-partition DMA paths that
+      # produce validation mismatches.  Use p2p bandwidth test when more
+      # than 8 logical GPUs are visible; rsweep otherwise.
+      GPU_COUNT=$(rocm_agent_enumerator 2>/dev/null | grep -c 'gfx' || echo 0)
+      echo "Detected $GPU_COUNT logical GPU(s)"
+
+      $SUDO rm -f /tmp/lastSweep.cfg 2>/dev/null || true
+      if [ "$GPU_COUNT" -gt 8 ]; then
+        echo "=== Running TransferBench p2p bandwidth (DPX detected) ==="
+        SWEEP_TIME_LIMIT=30 NUM_ITERATIONS=10 $TB_BIN
+      else
+        echo "=== Running TransferBench rsweep (SWEEP_TIME_LIMIT=30) ==="
+        SWEEP_TIME_LIMIT=30 $TB_BIN rsweep
+      fi
+      echo "=== TransferBench completed ==="
+  hipbone:
+    name: hipbone
+    docker: registry-sc-harbor.amd.com/framework/therock-main:771_gfx950_7.12.0a20260128_ubuntu24.04_py3.12_pytorch_release-2.9_latest
+    cleanup: |
+      echo "Cleaning up hipBone artifacts..."
+      rm -rf /tmp/hipBone
+    build: |
+      set -e
+      if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; else SUDO=""; fi
+
+      # ── ROCm detection (needed for both build and runtime) ─────────
+      if [ -z "$ROCM_PATH" ]; then
+        PIP_ROCM_LOCATION=$(pip show rocm 2>/dev/null | grep "^Location:" | awk '{print $2}')
+        if [ -n "$PIP_ROCM_LOCATION" ] && [ -d "$PIP_ROCM_LOCATION/_rocm_sdk_core" ]; then
+          export ROCM_PATH="$PIP_ROCM_LOCATION/_rocm_sdk_core"
+        fi
+      fi
+      export ROCM_PATH=${ROCM_PATH:-/opt/rocm}
+
+      _has_device_libs() {
+        [ -d "$1/amdgcn/bitcode" ] || [ -d "$1/lib/llvm/amdgcn/bitcode" ]
+      }
+      if ! _has_device_libs "$ROCM_PATH"; then
+        for d in /opt/rocm-*/amdgcn/bitcode /opt/rocm/amdgcn/bitcode; do
+          if [ -d "$d" ]; then
+            export ROCM_PATH="$(cd "$d/../.." && pwd)"
+            echo "Pip ROCm lacks device libs; using system ROCm: $ROCM_PATH"
+            break
+          fi
+        done
+      fi
+
+      export PATH="${ROCM_PATH}/bin:$PATH"
+      export LD_LIBRARY_PATH="${ROCM_PATH}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      export LIBRARY_PATH="${ROCM_PATH}/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+
+      for d in /opt/rocm-*/lib /opt/rocm/lib; do
+        [ -d "$d" ] && export LIBRARY_PATH="$d${LIBRARY_PATH:+:$LIBRARY_PATH}"
+        [ -d "$d" ] && export LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      done
+
+      for d in "${ROCM_PATH}/lib/llvm/bin" /opt/rocm-*/lib/llvm/bin /opt/rocm/lib/llvm/bin; do
+        if [ -x "$d/clang++" ]; then
+          export HIP_CLANG_PATH="$d"
+          break
+        fi
+      done
+
+      export LDFLAGS="${LDFLAGS:-} -lhsa-runtime64"
+      export OCCA_OPENCL_ENABLED=0
+      export OCCA_CUDA_ENABLED=0
+
+      if [ -x /tmp/hipBone/hipBone ]; then
+        echo "hipBone cached at /tmp/hipBone/hipBone"
+        exit 0
+      fi
+
+      echo "Building hipBone from source..."
+      $SUDO apt update 2>/dev/null || true
+      $SUDO apt install -y libopenblas-dev libopenmpi-dev openmpi-bin git hsa-rocr-dev 2>/dev/null || \
+        $SUDO apt install -y libopenblas-dev libopenmpi-dev openmpi-bin git 2>/dev/null || true
+
+      rm -rf /tmp/hipBone
+      cd /tmp
+      git clone --recursive --shallow-submodules --depth=1 https://github.com/paranumal/hipBone.git
+      cd hipBone
+
+      export OPENBLAS_DIR=/usr/lib/x86_64-linux-gnu
+
+      grep -q "lhsa-runtime64" make.top 2>/dev/null || \
+        echo 'HIPBONE_LIBS += -lhsa-runtime64' >> make.top
+
+      rm -rf occa/src/occa/internal/modes/opencl
+      rm -rf occa/src/occa/internal/modes/cuda
+      rm -rf occa/src/occa/internal/modes/dpcpp
+      rm -rf occa/src/occa/internal/modes/metal
+
+      make -j$(nproc) verbose=true 2>&1
+      echo "hipBone build complete"
+    run: |
+      set -e
+
+      # ── Minimal env for OCCA JIT (hipcc needs ROCM_PATH + clang++) ──
+      if [ -z "$ROCM_PATH" ]; then
+        PIP_ROCM_LOCATION=$(pip show rocm 2>/dev/null | grep "^Location:" | awk '{print $2}')
+        if [ -n "$PIP_ROCM_LOCATION" ] && [ -d "$PIP_ROCM_LOCATION/_rocm_sdk_core" ]; then
+          export ROCM_PATH="$PIP_ROCM_LOCATION/_rocm_sdk_core"
+        fi
+      fi
+      export ROCM_PATH=${ROCM_PATH:-/opt/rocm}
+
+      _has_device_libs() {
+        [ -d "$1/amdgcn/bitcode" ] || [ -d "$1/lib/llvm/amdgcn/bitcode" ]
+      }
+      if ! _has_device_libs "$ROCM_PATH"; then
+        for d in /opt/rocm-*/amdgcn/bitcode /opt/rocm/amdgcn/bitcode; do
+          if [ -d "$d" ]; then
+            export ROCM_PATH="$(cd "$d/../.." && pwd)"
+            break
+          fi
+        done
+      fi
+
+      export PATH="${ROCM_PATH}/bin:$PATH"
+      export LD_LIBRARY_PATH="${ROCM_PATH}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+      for d in /opt/rocm-*/lib /opt/rocm/lib; do
+        [ -d "$d" ] && export LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      done
+
+      for d in "${ROCM_PATH}/lib/llvm/bin" /opt/rocm-*/lib/llvm/bin /opt/rocm/lib/llvm/bin; do
+        if [ -x "$d/clang++" ]; then
+          export HIP_CLANG_PATH="$d"
+          break
+        fi
+      done
+
+      HB_BIN="/tmp/hipBone/hipBone"
+      if [ ! -x "$HB_BIN" ]; then
+        echo "ERROR: hipBone binary not found (build step may have failed)"; exit 1
+      fi
+
+      # ── CORAL-2 benchmark (single GPU, p=14, 24^3 mesh) ─────────
+      # REF: https://github.com/paranumal/hipBone#how-to-run-hipbone
+      echo "=== Running hipBone CORAL-2 benchmark (single GPU) ==="
+      cd /tmp/hipBone
+      mpirun --allow-run-as-root -np 1 $HB_BIN -m HIP -nx 24 -ny 24 -nz 24 -p 14
+      echo "=== hipBone CORAL-2 benchmark completed ==="
+  amgsolve:
+    name: amgsolve
+    docker: registry-sc-harbor.amd.com/framework/therock-main:771_gfx950_7.12.0a20260128_ubuntu24.04_py3.12_pytorch_release-2.9_latest
+    cleanup: |
+      echo "Cleaning up AMGSolve artifacts..."
+      rm -rf /tmp/amg_build
+    build: |
+      set -e
+      if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; else SUDO=""; fi
+
+      # ── ROCm detection ──────────────────────────────────────────────
+      if [ -z "$ROCM_PATH" ]; then
+        PIP_ROCM_LOCATION=$(pip show rocm 2>/dev/null | grep "^Location:" | awk '{print $2}')
+        if [ -n "$PIP_ROCM_LOCATION" ] && [ -d "$PIP_ROCM_LOCATION/_rocm_sdk_core" ]; then
+          export ROCM_PATH="$PIP_ROCM_LOCATION/_rocm_sdk_core"
+        fi
+      fi
+      export ROCM_PATH=${ROCM_PATH:-/opt/rocm}
+
+      if [ ! -f "$ROCM_PATH/include/hip/hip_common.h" ]; then
+        for d in /opt/rocm-*/include/hip/hip_common.h /opt/rocm/include/hip/hip_common.h; do
+          if [ -f "$d" ]; then
+            export ROCM_PATH="$(cd "$(dirname "$d")/../.." && pwd)"
+            echo "Pip/incomplete ROCm lacks HIP headers; using: $ROCM_PATH"
+            break
+          fi
+        done
+      fi
+
+      export PATH="${ROCM_PATH}/bin:$PATH"
+
+      if [ -x /tmp/amg_build/AMG/test/amg ]; then
+        echo "AMG cached at /tmp/amg_build/AMG/test/amg"
+        exit 0
+      fi
+
+      echo "Building AMG from source..."
+      $SUDO apt update 2>/dev/null || true
+      $SUDO apt install -y build-essential git libnuma-dev \
+        hip-dev hip-runtime-amd rocm-device-libs 2>/dev/null || \
+        $SUDO apt install -y build-essential git libnuma-dev 2>/dev/null || true
+
+      rm -rf /tmp/amg_build
+      mkdir -p /tmp/amg_build && cd /tmp/amg_build
+
+      # Step 1: Build hypre with HIP (single-GPU, no MPI)
+      # REF: build_amg.sh -- ./configure --with-hip=yes --without-MPI
+      export HYPRE_DIR=/tmp/amg_build/install
+      git clone --depth=1 https://github.com/hypre-space/hypre.git
+      cd hypre/src
+      ./configure --with-hip=yes --without-MPI --without-umpire \
+        --prefix="$HYPRE_DIR" --libdir="$HYPRE_DIR/lib"
+      make -j$(nproc)
+      make install
+      cd /tmp/amg_build
+
+      # Step 2: Build AMG proxy app against hypre
+      # REF: build_amg.sh -- git clone AMG && make -j
+      git clone --depth=1 https://github.com/LLNL/AMG.git
+      cd AMG
+      make -j$(nproc)
+      echo "AMG build complete"
+    run: |
+      set -e
+
+      export ROCM_PATH=${ROCM_PATH:-/opt/rocm}
+      export PATH="${ROCM_PATH}/bin:$PATH"
+      if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+        export LD_LIBRARY_PATH="${ROCM_PATH}/lib:${LD_LIBRARY_PATH}"
+      else
+        export LD_LIBRARY_PATH="${ROCM_PATH}/lib"
+      fi
+
+      AMG_BIN="/tmp/amg_build/AMG/test/amg"
+      if [ ! -x "$AMG_BIN" ]; then
+        echo "ERROR: AMG binary not found (build step may have failed)"; exit 1
+      fi
+
+      # ── AMG Solve benchmark (single GPU, 248^3 grid) ────────────
+      # REF: run_amg.sh / hpc_conf.py -- ./amg -keepT -n 248 248 248
+      echo "=== Running AMG Solve benchmark ==="
+      cd /tmp/amg_build/AMG/test
+      $AMG_BIN -keepT -n 248 248 248 -printallstats
+      echo "=== AMG Solve benchmark completed ==="
