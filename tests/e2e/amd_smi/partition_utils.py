@@ -70,6 +70,11 @@ class _AmdSmiRunner:
         self.executor = executor
         self.rock_dir = rock_dir or ""
         self.amd_smi = f"{self.rock_dir}/bin/amd-smi" if self.rock_dir else "amd-smi"
+        # rocm_agent_enumerator / rocminfo may not be on PATH; prefer the rock_dir copy.
+        self.rocm_agent_enumerator = (
+            f"{self.rock_dir}/bin/rocm_agent_enumerator" if self.rock_dir else "rocm_agent_enumerator"
+        )
+        self.rocminfo = f"{self.rock_dir}/bin/rocminfo" if self.rock_dir else "rocminfo"
 
     def run(  # pylint: disable=unused-argument
         self,
@@ -421,9 +426,15 @@ class AmdSmiMemoryPartition:  # pylint: disable=too-many-instance-attributes
         return self._runner.run(cmd, privilege=privilege, timeout=timeout)
 
     def _gpu_gfx_ids(self) -> list[str]:
-        res = self._run("rocm_agent_enumerator")
+        res = self._run(self._runner.rocm_agent_enumerator)
         ids = [ln.strip() for ln in (res.output or "").splitlines() if ln.strip()]
-        return [gfx for gfx in ids if gfx and gfx != "gfx000"]
+        gfx_ids = [gfx for gfx in ids if gfx and gfx != "gfx000"]
+        # Fall back to the bare name if the rock_dir copy is absent / produced nothing.
+        if not gfx_ids and self._runner.rocm_agent_enumerator != "rocm_agent_enumerator":
+            res = self._run("rocm_agent_enumerator")
+            ids = [ln.strip() for ln in (res.output or "").splitlines() if ln.strip()]
+            gfx_ids = [gfx for gfx in ids if gfx and gfx != "gfx000"]
+        return gfx_ids
 
     def _is_mi350(self) -> bool:
         ids = self._gpu_gfx_ids()
@@ -441,7 +452,7 @@ class AmdSmiMemoryPartition:  # pylint: disable=too-many-instance-attributes
     def is_driver_loaded(self) -> bool:
         """True unless rocminfo reports the ROCk module is not loaded."""
         try:
-            out = self._run("rocminfo").output or ""
+            out = self._run(self._runner.rocminfo).output or ""
         except Exception as exc:  # pylint: disable=broad-except
             self.logger.error(f"Failed to run rocminfo while checking driver status: {exc}")
             return False
