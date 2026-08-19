@@ -42,15 +42,15 @@ _RCCL_SAMPLE_COUNT = 12
 
 @pytest.mark.gpu_count("ALL")
 @pytest.mark.runtime.fast
-def test_amdsmi_fclk_max_set_valid_range(target_executor, fclk_caps: FclkCaps):
+def test_amdsmi_fclk_max_set_valid_range(target_executor, fclk_caps: FclkCaps, amd_smi_bin: str):
     """Set fclk max to an in-range value and verify every GPU reflects it."""
-    assert_default_max(target_executor, fclk_caps.default_max)
+    assert_default_max(target_executor, fclk_caps.default_max, amd_smi_bin)
 
     new_max = fclk_caps.valid_set
-    set_fclk_max(target_executor, new_max)
+    set_fclk_max(target_executor, new_max, amd_smi_bin)
     time.sleep(SETTLE_SECS)
 
-    info = parse_fclk_per_gpu(metric_clock_output(target_executor))
+    info = parse_fclk_per_gpu(metric_clock_output(target_executor, amd_smi_bin))
     assert info, "Could not parse FCLK_0 info from 'amd-smi metric -c'"
     mismatched = [g for g in info if g["max_clk"] != new_max]
     assert not mismatched, f"fclk MAX_CLK not updated to {new_max}MHz on: {mismatched}"
@@ -58,11 +58,11 @@ def test_amdsmi_fclk_max_set_valid_range(target_executor, fclk_caps: FclkCaps):
 
 @pytest.mark.gpu_count("ALL")
 @pytest.mark.runtime.fast
-def test_amdsmi_fclk_max_set_below_min(target_executor, fclk_caps: FclkCaps):
+def test_amdsmi_fclk_max_set_below_min(target_executor, fclk_caps: FclkCaps, amd_smi_bin: str):
     """Attempt fclk max below the minimum and expect an explicit rejection."""
-    assert_default_max(target_executor, fclk_caps.default_max)
+    assert_default_max(target_executor, fclk_caps.default_max, amd_smi_bin)
 
-    output = combined_output(set_fclk_max(target_executor, fclk_caps.below_min))
+    output = combined_output(set_fclk_max(target_executor, fclk_caps.below_min, amd_smi_bin))
     expected = re.compile(r"CLK_LIMIT:\s*Cannot set fclk max value less than min", re.IGNORECASE)
     assert expected.search(
         output
@@ -71,14 +71,14 @@ def test_amdsmi_fclk_max_set_below_min(target_executor, fclk_caps: FclkCaps):
 
 @pytest.mark.gpu_count("ALL")
 @pytest.mark.runtime.fast
-def test_amdsmi_fclk_max_set_above_max(target_executor, fclk_caps: FclkCaps):
+def test_amdsmi_fclk_max_set_above_max(target_executor, fclk_caps: FclkCaps, amd_smi_bin: str):
     """Attempt fclk max above the maximum and expect a NOT_SUPPORTED reply."""
-    assert_default_max(target_executor, fclk_caps.default_max)
+    assert_default_max(target_executor, fclk_caps.default_max, amd_smi_bin)
 
     probe = fclk_caps.above_max
-    output = combined_output(set_fclk_max(target_executor, probe))
+    output = combined_output(set_fclk_max(target_executor, probe, amd_smi_bin))
     time.sleep(SETTLE_SECS)
-    metric_clock_output(target_executor)
+    metric_clock_output(target_executor, amd_smi_bin)
 
     expected = re.compile(
         rf"CLK_LIMIT:\s*\[AMDSMI_STATUS_NOT_SUPPORTED\]\s*Unable to set max of fclk to {probe}\s*MHz",
@@ -94,6 +94,7 @@ def test_amdsmi_fclk_max_enforced_under_rccl_workload(
     fclk_caps: FclkCaps,
     rock_dir: str,
     requested_gpu_count: int,
+    amd_smi_bin: str,
 ):
     """Cap fclk max under an RCCL all-reduce workload and verify enforcement."""
     all_reduce_perf = f"{rock_dir.rstrip('/')}/bin/all_reduce_perf" if rock_dir else "all_reduce_perf"
@@ -113,11 +114,11 @@ def test_amdsmi_fclk_max_enforced_under_rccl_workload(
     violations: list[str] = []
     with target_executor.start_background(rccl_cmd):
         time.sleep(_RCCL_WARMUP_SECS)
-        logger.info("Set fclk max output: %s", combined_output(set_fclk_max(target_executor, cap_mhz)))
+        logger.info("Set fclk max output: %s", combined_output(set_fclk_max(target_executor, cap_mhz, amd_smi_bin)))
 
         for i in range(_RCCL_SAMPLE_COUNT):
             time.sleep(SETTLE_SECS)
-            info = parse_fclk_per_gpu(metric_clock_output(target_executor))
+            info = parse_fclk_per_gpu(metric_clock_output(target_executor, amd_smi_bin))
             if not info:
                 violations.append(f"sample#{i} - failed to get fclk info.")
                 continue

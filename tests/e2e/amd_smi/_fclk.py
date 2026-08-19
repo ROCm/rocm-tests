@@ -68,29 +68,29 @@ def combined_output(result: ExecutionResult) -> str:
     return "\n".join(part for part in (result.stdout, result.stderr) if part)
 
 
-def metric_clock_output(executor) -> str:
+def metric_clock_output(executor, amd_smi: str = "amd-smi") -> str:
     """Return raw ``amd-smi metric -c`` output."""
-    return combined_output(executor.run("amd-smi metric -c"))
+    return combined_output(executor.run(f"{amd_smi} metric -c"))
 
 
-def set_fclk_max(executor, value_mhz: int) -> ExecutionResult:
+def set_fclk_max(executor, value_mhz: int, amd_smi: str = "amd-smi") -> ExecutionResult:
     """Run ``amd-smi set --clk-limit fclk max <value_mhz>`` with privilege."""
-    return executor.run(f"sudo -n amd-smi set --clk-limit fclk max {value_mhz}")
+    return executor.run(f"sudo -n {amd_smi} set --clk-limit fclk max {value_mhz}")
 
 
-def restore_default_max(executor, default_max: int) -> None:
+def restore_default_max(executor, default_max: int, amd_smi: str = "amd-smi") -> None:
     """Best-effort restore of the default fclk max; failures are logged only."""
     try:
-        set_fclk_max(executor, default_max)
+        set_fclk_max(executor, default_max, amd_smi)
         time.sleep(SETTLE_SECS)
-        metric_clock_output(executor)
+        metric_clock_output(executor, amd_smi)
     except Exception:  # pylint: disable=broad-exception-caught
         logger.exception("Failed to restore fclk max to %dMHz", default_max)
 
 
-def assert_default_max(executor, default_max: int) -> None:
+def assert_default_max(executor, default_max: int, amd_smi: str = "amd-smi") -> None:
     """Assert every GPU reports the documented default fclk MAX_CLK."""
-    info = parse_fclk_per_gpu(metric_clock_output(executor))
+    info = parse_fclk_per_gpu(metric_clock_output(executor, amd_smi))
     assert info, "Could not parse FCLK_0 info from 'amd-smi metric -c'"
     bad = [g for g in info if g["max_clk"] != default_max]
     assert not bad, f"Default fclk MAX_CLK mismatch (expected {default_max}MHz): {bad}"
