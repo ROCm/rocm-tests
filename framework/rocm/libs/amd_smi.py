@@ -399,6 +399,64 @@ def _parse_clock(entry: dict) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Clock-limit text parsing (``amd-smi metric -c``)
+# ---------------------------------------------------------------------------
+
+
+def _fclk_field(section: str, label: str) -> int | None:
+    """Return the integer MHz value of *label* within an ``FCLK_0`` text section."""
+    found = re.search(rf"{label}\s*:\s*(\d+)\s*MHz", section)
+    return int(found.group(1)) if found else None
+
+
+def parse_fclk_per_gpu(metric_output: str) -> list[dict]:
+    """Parse per-GPU ``FCLK_0`` CLK/MIN_CLK/MAX_CLK from ``amd-smi metric -c`` text.
+
+    The indented ``amd-smi`` text output groups each GPU under a header line
+    (``GPU: <id>`` or the older ``GPU <id>:``).  Within a GPU block, the
+    ``FCLK_0:`` subsection ends at the next sibling ``<NAME>_<digit>:`` line
+    (e.g. ``SOCCLK_0:``).
+
+    Args:
+        metric_output: Raw stdout from ``amd-smi metric -c``.
+
+    Returns:
+        One dict per GPU with keys ``gpu``, ``clk``, ``min_clk``, ``max_clk``
+        (integer MHz, or None when a field is absent).  Empty on no match.
+    """
+    results: list[dict] = []
+    # Match both "GPU: 0" and the older "GPU 0:" header styles.
+    gpu_header_re = re.compile(r"(?m)^\s*GPU\s*(?::\s*(\d+)|(\d+)\s*:)\s*$")
+    headers = list(gpu_header_re.finditer(metric_output))
+    if not headers:
+        return results
+
+    for idx, match in enumerate(headers):
+        gpu_id = int(match.group(1) or match.group(2))
+        block_start = match.end()
+        block_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(metric_output)
+        block = metric_output[block_start:block_end]
+
+        # FCLK_0 subsection: consecutive lines indented deeper than the label.
+        fclk_match = re.search(
+            r"(?ms)^(?P<indent>[ \t]*)FCLK_0\s*:\s*\n(?P<body>(?:(?P=indent)[ \t]+.*\n)+)",
+            block,
+        )
+        if not fclk_match:
+            continue
+        section = fclk_match.group("body")
+        results.append(
+            {
+                "gpu": gpu_id,
+                "clk": _fclk_field(section, "CLK"),
+                "min_clk": _fclk_field(section, "MIN_CLK"),
+                "max_clk": _fclk_field(section, "MAX_CLK"),
+            }
+        )
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
