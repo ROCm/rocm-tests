@@ -229,4 +229,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # amd-smi system-management validation. Clock-limit changes are node-wide,
+    # so tests acquire all GPUs (hw.multi_gpu) for exclusive access.
+    "tests/e2e/system_tools/amd_smi": [
+        "hw.multi_gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
 }
