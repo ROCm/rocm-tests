@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("rocm.test")
 
 
 @dataclass(frozen=True)
@@ -43,27 +43,39 @@ def _resolve_amd_smi(executor, rock_dir: str) -> str | None:
 def random_events_env(target_executor, rock_dir: str, run_ctx, request):
     """Pre-flight the node and yield a RandomEventsEnv; skip when prerequisites are absent."""
 
+    logger.info("preflight: resolving amd-smi binary (rock_dir=%s)", rock_dir or "not set")
     amd_smi = _resolve_amd_smi(target_executor, rock_dir)
     if not amd_smi:
         pytest.skip("amd-smi not found under --rock-dir or on PATH")
+    logger.info("preflight: amd-smi found at %s", amd_smi)
 
-    evt = target_executor.run(f"{amd_smi} event --help 2>&1 || true")
-    if "event" not in (evt.stdout or "").lower():
+    # Check that the 'event' subcommand exists without printing its full help text.
+    logger.info("preflight: checking amd-smi 'event' subcommand availability")
+    evt = target_executor.run(f"{amd_smi} event --help 2>&1 | grep -qi 'event' && echo SUPPORTED || echo UNSUPPORTED")
+    if "SUPPORTED" not in (evt.stdout or ""):
         pytest.skip("amd-smi 'event' subcommand not available on this node")
+    logger.info("preflight: amd-smi 'event' subcommand available")
 
+    logger.info("preflight: verifying passwordless sudo (required for GPU reset)")
     if not target_executor.run("sudo -n true").ok:
         pytest.skip("passwordless sudo not available -- required for amd-smi GPU reset")
+    logger.info("preflight: passwordless sudo confirmed")
 
+    logger.info("preflight: detecting AMD GPUs via amd-smi list")
     listing = target_executor.run(f"{amd_smi} list 2>/dev/null | grep -c '^GPU' || echo 0")
     match = re.search(r"\d+", listing.stdout or "")
-    if not match or int(match.group()) < 1:
+    gpu_count = int(match.group()) if match else 0
+    if gpu_count < 1:
         pytest.skip("no AMD GPUs detected by amd-smi")
+    logger.info("preflight: %d AMD GPU(s) detected", gpu_count)
 
     tag = re.sub(r"[^A-Za-z0-9_.-]", "_", request.node.name)
     scratch = f"/tmp/rocm_test_amdsmi_{run_ctx.run_id}_{tag}"  # nosec B108 - node-local scratch
+    logger.info("preflight: creating node scratch dir %s", scratch)
     target_executor.run(f"rm -rf {scratch} && mkdir -p {scratch}")
     rocm_path = rock_dir or "/opt/rocm"
     try:
         yield RandomEventsEnv(amd_smi=amd_smi, rocm_path=rocm_path, scratch_dir=scratch)
     finally:
+        logger.info("teardown: removing scratch dir %s", scratch)
         target_executor.run(f"rm -rf {scratch}")

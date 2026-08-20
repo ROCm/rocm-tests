@@ -95,9 +95,12 @@ def test_repeated_reset_event_stress(target_executor, random_events_env):
     env = random_events_env
     ex = target_executor
     fifo = f"{env.scratch_dir}/evt_fifo"
+
+    logger.info("setup: creating event FIFO at %s", fifo)
     ex.run(f"rm -f {fifo} && mkfifo {fifo}")
     since = (ex.run("date '+%Y-%m-%d %H:%M:%S'").stdout or "").strip()
 
+    logger.info("starting amd-smi event monitor in background (FIFO stdin hold)")
     monitor = ex.start_background(
         _monitor_cmd(env, fifo),
         log_path=os.path.join("output", "artifacts", "amd_smi", "repeated_reset_events.log"),
@@ -106,21 +109,30 @@ def test_repeated_reset_event_stress(target_executor, random_events_env):
     try:
         time.sleep(2)
         assert monitor.is_alive, "event monitor failed to start"
+        logger.info("event monitor running — beginning %d reset cycle(s) with %ds cooldown", _RESET_ITERS, _RESET_COOLDOWN)
 
         for i in range(1, _RESET_ITERS + 1):
             logger.info("reset iteration %d/%d", i, _RESET_ITERS)
             ex.run(_reset_cmd(env))
             time.sleep(_RESET_COOLDOWN)
             assert monitor.is_alive, f"event monitor crashed during iteration {i}"
+            logger.info("iteration %d complete — monitor still alive", i)
 
-        time.sleep(2)  # let final events flush before stopping
+        logger.info("all %d reset cycles done — waiting 2s for final events to flush", _RESET_ITERS)
+        time.sleep(2)
     finally:
+        logger.info("stopping event monitor")
         result = monitor.stop(timeout=15.0)
 
     metrics = _parse_event_log(result.stdout)
     logger.info("repeated-reset event metrics: %s", metrics)
+    logger.info("validating event log: NONE==0, PRE_RESET>=1, POST_RESET>=1, dup==0")
     _assert_event_log("repeated_reset", metrics)
+    logger.info("event log validation passed")
+
+    logger.info("checking journal for segfaults/coredumps since %s", since)
     assert _count_crashes(ex, since) == 0, "segfault/coredump entries detected in journal during test"
+    logger.info("no crashes detected — test complete")
 
 
 @pytest.mark.runtime.fast
@@ -132,6 +144,7 @@ def test_concurrent_event_monitoring(target_executor, random_events_env):
 
     monitors = []
     try:
+        logger.info("launching %d concurrent amd-smi event monitor(s)", _NUM_MONITORS)
         for m in range(_NUM_MONITORS):
             fifo = f"{env.scratch_dir}/evt_fifo_{m}"
             ex.run(f"rm -f {fifo} && mkfifo {fifo}")
@@ -142,25 +155,38 @@ def test_concurrent_event_monitoring(target_executor, random_events_env):
                     console_label=f"amdsmi/event-monitor-{m}",
                 )
             )
+            logger.info("monitor %d started", m)
 
+        logger.info("waiting 3s for all monitors to initialise before reset")
         time.sleep(3)
         assert all(mon.is_alive for mon in monitors), "one or more monitors failed to start"
+        logger.info("all %d monitor(s) alive — triggering GPU reset", _NUM_MONITORS)
 
         ex.run(_reset_cmd(env))
-        time.sleep(5)  # let reset events propagate to every monitor
+        logger.info("GPU reset issued — waiting 5s for events to propagate to all monitors")
+        time.sleep(5)
 
         assert all(mon.is_alive for mon in monitors), "a monitor crashed after reset (possible race condition)"
+        logger.info("all %d monitor(s) still alive after reset", _NUM_MONITORS)
     finally:
+        logger.info("stopping all %d event monitor(s)", _NUM_MONITORS)
         results = [mon.stop(timeout=15.0) for mon in monitors]
 
     reset_counts = []
     for idx, result in enumerate(results):
         metrics = _parse_event_log(result.stdout)
         logger.info("concurrent monitor %d metrics: %s", idx, metrics)
+        logger.info("validating monitor %d: NONE==0, PRE_RESET>=1, POST_RESET>=1, dup==0", idx)
         _assert_event_log(f"monitor_{idx}", metrics)
+        logger.info("monitor %d validation passed", idx)
         reset_counts.append(metrics["reset"])
 
+    logger.info("cross-monitor RESET counts: %s", reset_counts)
     if len(set(reset_counts)) > 1:
         logger.warning("monitors captured differing RESET counts (timing-dependent, non-fatal): %s", reset_counts)
+    else:
+        logger.info("all monitors captured consistent RESET counts")
 
+    logger.info("checking journal for segfaults/coredumps since %s", since)
     assert _count_crashes(ex, since) == 0, "segfault/coredump entries detected in journal during test"
+    logger.info("no crashes detected — test complete")
