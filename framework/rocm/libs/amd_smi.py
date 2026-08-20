@@ -161,20 +161,55 @@ def _to_scalar(node: Any) -> int | None:
 
 
 # ---------------------------------------------------------------------------
+# Binary resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_amd_smi_bin(executor: AbstractExecutor, rock_dir: str | None = None) -> str:
+    """Return a runnable ``amd-smi`` command for *executor*.
+
+    Prefers the system PATH entry; falls back to ``<rock_dir>/bin/amd-smi`` when
+    the executor cannot find ``amd-smi`` on PATH (TheRock installs it there and
+    does not always export it).  Resolution runs through the executor so it works
+    identically for local, container, and SSH backends.
+
+    Args:
+        executor: Any executor with a ``.run(command)`` method.
+        rock_dir: Optional TheRock/ROCm install root that provides
+            ``bin/amd-smi``.  Ignored when empty or None.
+
+    Returns:
+        The command string to invoke ``amd-smi`` — either ``"amd-smi"`` (on
+        PATH) or the absolute ``<rock_dir>/bin/amd-smi`` fallback.  Defaults to
+        ``"amd-smi"`` when neither can be confirmed.
+    """
+    if executor.run("command -v amd-smi").ok:
+        return "amd-smi"
+    if rock_dir:
+        candidate = f"{rock_dir.rstrip('/')}/bin/amd-smi"
+        if executor.run(f"test -f '{candidate}'").ok:
+            logger.debug("amd-smi not on PATH — using rock_dir binary at %s", candidate)
+            return candidate
+    return "amd-smi"
+
+
+# ---------------------------------------------------------------------------
 # Version helpers
 # ---------------------------------------------------------------------------
 
 
-def amd_smi_version(executor: AbstractExecutor) -> tuple[int, int, int] | None:
+def amd_smi_version(executor: AbstractExecutor, amd_smi_bin: str = "amd-smi") -> tuple[int, int, int] | None:
     """Return the ``amd-smi`` version as an ``(major, minor, patch)`` tuple.
 
     Args:
-        executor: Any executor with a ``.run(command)`` method.
+        executor:    Any executor with a ``.run(command)`` method.
+        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
+            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
 
     Returns:
         Version tuple, or None if not detectable.
     """
-    result = executor.run("amd-smi --version 2>/dev/null")
+    result = executor.run(f"{amd_smi_bin} --version 2>/dev/null")
     if not result.ok or not result.stdout.strip():
         return None
     m = re.search(r"(\d+)\.(\d+)\.(\d+)", result.stdout)
@@ -183,13 +218,17 @@ def amd_smi_version(executor: AbstractExecutor) -> tuple[int, int, int] | None:
     return None
 
 
-def require_amd_smi_version(executor: AbstractExecutor, major: int, minor: int = 0) -> None:
+def require_amd_smi_version(
+    executor: AbstractExecutor, major: int, minor: int = 0, amd_smi_bin: str = "amd-smi"
+) -> None:
     """Fail the current test if ``amd-smi`` version is below ``major.minor``.
 
     Args:
-        executor: Any executor with a ``.run()`` method.
-        major:    Minimum required major version.
-        minor:    Minimum required minor version (default 0).
+        executor:    Any executor with a ``.run()`` method.
+        major:       Minimum required major version.
+        minor:       Minimum required minor version (default 0).
+        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
+            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
 
     Raises:
         pytest.fail.Exception: When ``amd-smi`` is absent or below the required version —
@@ -197,7 +236,7 @@ def require_amd_smi_version(executor: AbstractExecutor, major: int, minor: int =
     """
     import pytest  # pylint: disable=import-outside-toplevel
 
-    ver = amd_smi_version(executor)
+    ver = amd_smi_version(executor, amd_smi_bin)
     if ver is None:
         pytest.fail(f"amd-smi not detectable — cannot assert >= {major}.{minor}")
     if ver[:2] < (major, minor):
@@ -209,14 +248,16 @@ def require_amd_smi_version(executor: AbstractExecutor, major: int, minor: int =
 # ---------------------------------------------------------------------------
 
 
-def list_devices(executor: AbstractExecutor) -> list[GpuDeviceInfo]:
+def list_devices(executor: AbstractExecutor, amd_smi_bin: str = "amd-smi") -> list[GpuDeviceInfo]:
     """Return device descriptors for all AMD GPUs visible to the executor.
 
     Parses ``amd-smi static --json`` using the ROCm 7.1.0+ schema.
     Works identically for local and remote executors.
 
     Args:
-        executor: Any executor with a ``.run(command)`` method.
+        executor:    Any executor with a ``.run(command)`` method.
+        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
+            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
 
     Returns:
         List of GpuDeviceInfo, one per detected GPU.  Empty on failure.
@@ -226,7 +267,7 @@ def list_devices(executor: AbstractExecutor) -> list[GpuDeviceInfo]:
         devices = list_devices(cpu_executor)
         assert len(devices) >= 1
     """
-    result = executor.run("amd-smi static --json")
+    result = executor.run(f"{amd_smi_bin} static --json")
     if not result.ok:
         logger.warning("amd-smi static failed (exit %d): %s", result.exit_code, result.stderr)
         return []
@@ -256,78 +297,90 @@ def list_devices(executor: AbstractExecutor) -> list[GpuDeviceInfo]:
 # ---------------------------------------------------------------------------
 
 
-def query_gpu_temp(executor: AbstractExecutor, gpu_index: int = 0) -> int | None:
+def query_gpu_temp(executor: AbstractExecutor, gpu_index: int = 0, amd_smi_bin: str = "amd-smi") -> int | None:
     """Return the hot-spot temperature in Celsius for *gpu_index*.
 
     Args:
-        executor:  Any executor with a ``.run()`` method.
-        gpu_index: AMD GPU ordinal to query.
+        executor:    Any executor with a ``.run()`` method.
+        gpu_index:   AMD GPU ordinal to query.
+        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
+            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
 
     Returns:
         Temperature in Celsius, or None if unavailable.
     """
-    return _query_thermal(executor, gpu_index).temp_hotspot
+    return _query_thermal(executor, gpu_index, amd_smi_bin).temp_hotspot
 
 
-def query_vram_usage(executor: AbstractExecutor, gpu_index: int = 0) -> GpuVramInfo | None:
+def query_vram_usage(
+    executor: AbstractExecutor, gpu_index: int = 0, amd_smi_bin: str = "amd-smi"
+) -> GpuVramInfo | None:
     """Return VRAM usage for *gpu_index* in MB.
 
     Args:
-        executor:  Any executor with a ``.run()`` method.
-        gpu_index: AMD GPU ordinal to query.
+        executor:    Any executor with a ``.run()`` method.
+        gpu_index:   AMD GPU ordinal to query.
+        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
+            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
 
     Returns:
         GpuVramInfo with total/used/free in MB, or None if unavailable.
     """
-    entry = _run_metric_json(executor, gpu_index)
+    entry = _run_metric_json(executor, gpu_index, amd_smi_bin)
     if entry is None:
         return None
     return _parse_vram(entry, gpu_index)
 
 
-def query_ecc_errors(executor: AbstractExecutor, gpu_index: int = 0) -> int | None:
+def query_ecc_errors(executor: AbstractExecutor, gpu_index: int = 0, amd_smi_bin: str = "amd-smi") -> int | None:
     """Return the total correctable ECC error count for *gpu_index*.
 
     Args:
-        executor:  Any executor with a ``.run()`` method.
-        gpu_index: AMD GPU ordinal to query.
+        executor:    Any executor with a ``.run()`` method.
+        gpu_index:   AMD GPU ordinal to query.
+        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
+            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
 
     Returns:
         Total correctable ECC error count, or None if unavailable.
     """
-    entry = _run_metric_json(executor, gpu_index)
+    entry = _run_metric_json(executor, gpu_index, amd_smi_bin)
     if entry is None:
         return None
     return _parse_ecc(entry)
 
 
-def query_gpu_utilization(executor: AbstractExecutor, gpu_index: int = 0) -> int | None:
+def query_gpu_utilization(executor: AbstractExecutor, gpu_index: int = 0, amd_smi_bin: str = "amd-smi") -> int | None:
     """Return the GFX compute utilization percentage for *gpu_index*.
 
     Args:
-        executor:  Any executor with a ``.run()`` method.
-        gpu_index: AMD GPU ordinal to query.
+        executor:    Any executor with a ``.run()`` method.
+        gpu_index:   AMD GPU ordinal to query.
+        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
+            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
 
     Returns:
         Integer percentage (0-100), or None if unavailable.
     """
-    entry = _run_metric_json(executor, gpu_index)
+    entry = _run_metric_json(executor, gpu_index, amd_smi_bin)
     if entry is None:
         return None
     return _parse_util(entry)
 
 
-def query_clock_state(executor: AbstractExecutor, gpu_index: int = 0) -> str | None:
+def query_clock_state(executor: AbstractExecutor, gpu_index: int = 0, amd_smi_bin: str = "amd-smi") -> str | None:
     """Return the current GPU performance level (clock state) for *gpu_index*.
 
     Args:
-        executor:  Any executor with a ``.run()`` method.
-        gpu_index: AMD GPU ordinal to query.
+        executor:    Any executor with a ``.run()`` method.
+        gpu_index:   AMD GPU ordinal to query.
+        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
+            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
 
     Returns:
         Performance level string (e.g. ``"auto"``, ``"high"``), or None.
     """
-    entry = _run_metric_json(executor, gpu_index)
+    entry = _run_metric_json(executor, gpu_index, amd_smi_bin)
     if entry is None:
         return None
     return _parse_clock(entry)
@@ -338,20 +391,22 @@ def query_clock_state(executor: AbstractExecutor, gpu_index: int = 0) -> str | N
 # ---------------------------------------------------------------------------
 
 
-def _run_metric_json(executor: AbstractExecutor, gpu_index: int) -> dict | None:
+def _run_metric_json(executor: AbstractExecutor, gpu_index: int, amd_smi_bin: str = "amd-smi") -> dict | None:
     """Run ``amd-smi metric --gpu N --json`` exactly once and return the parsed entry dict.
 
     All per-metric callers in the monitor module use this to share a single
     subprocess invocation per GPU per poll cycle.
 
     Args:
-        executor:  Any executor with a ``.run()`` method.
-        gpu_index: AMD GPU ordinal to query.
+        executor:    Any executor with a ``.run()`` method.
+        gpu_index:   AMD GPU ordinal to query.
+        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
+            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
 
     Returns:
         Parsed first entry dict from the ``gpu_data`` array, or None on any failure.
     """
-    result = executor.run(f"amd-smi metric --gpu {gpu_index} --json")
+    result = executor.run(f"{amd_smi_bin} metric --gpu {gpu_index} --json")
     if not result.ok:
         return None
     try:
@@ -399,21 +454,81 @@ def _parse_clock(entry: dict) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Clock-limit text parsing (``amd-smi metric -c``)
+# ---------------------------------------------------------------------------
+
+
+def _fclk_field(section: str, label: str) -> int | None:
+    """Return the integer MHz value of *label* within an ``FCLK_0`` text section."""
+    found = re.search(rf"{label}\s*:\s*(\d+)\s*MHz", section)
+    return int(found.group(1)) if found else None
+
+
+def parse_fclk_per_gpu(metric_output: str) -> list[dict]:
+    """Parse per-GPU ``FCLK_0`` CLK/MIN_CLK/MAX_CLK from ``amd-smi metric -c`` text.
+
+    The indented ``amd-smi`` text output groups each GPU under a header line
+    (``GPU: <id>`` or the older ``GPU <id>:``).  Within a GPU block, the
+    ``FCLK_0:`` subsection ends at the next sibling ``<NAME>_<digit>:`` line
+    (e.g. ``SOCCLK_0:``).
+
+    Args:
+        metric_output: Raw stdout from ``amd-smi metric -c``.
+
+    Returns:
+        One dict per GPU with keys ``gpu``, ``clk``, ``min_clk``, ``max_clk``
+        (integer MHz, or None when a field is absent).  Empty on no match.
+    """
+    results: list[dict] = []
+    # Match both "GPU: 0" and the older "GPU 0:" header styles.
+    gpu_header_re = re.compile(r"(?m)^\s*GPU\s*(?::\s*(\d+)|(\d+)\s*:)\s*$")
+    headers = list(gpu_header_re.finditer(metric_output))
+    if not headers:
+        return results
+
+    for idx, match in enumerate(headers):
+        gpu_id = int(match.group(1) or match.group(2))
+        block_start = match.end()
+        block_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(metric_output)
+        block = metric_output[block_start:block_end]
+
+        # FCLK_0 subsection: consecutive lines indented deeper than the label.
+        fclk_match = re.search(
+            r"(?ms)^(?P<indent>[ \t]*)FCLK_0\s*:\s*\n(?P<body>(?:(?P=indent)[ \t]+.*\n)+)",
+            block,
+        )
+        if not fclk_match:
+            continue
+        section = fclk_match.group("body")
+        results.append(
+            {
+                "gpu": gpu_id,
+                "clk": _fclk_field(section, "CLK"),
+                "min_clk": _fclk_field(section, "MIN_CLK"),
+                "max_clk": _fclk_field(section, "MAX_CLK"),
+            }
+        )
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 
-def _query_thermal(executor: AbstractExecutor, gpu_index: int) -> GpuThermalInfo:
+def _query_thermal(executor: AbstractExecutor, gpu_index: int, amd_smi_bin: str = "amd-smi") -> GpuThermalInfo:
     """Parse thermal data from ``amd-smi metric --gpu N --json``.
 
     Args:
-        executor:  Any executor with a ``.run()`` method.
-        gpu_index: AMD GPU ordinal.
+        executor:    Any executor with a ``.run()`` method.
+        gpu_index:   AMD GPU ordinal.
+        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
+            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
 
     Returns:
         GpuThermalInfo — fields are None when parsing fails.
     """
-    entry = _run_metric_json(executor, gpu_index)
+    entry = _run_metric_json(executor, gpu_index, amd_smi_bin)
     if entry is None:
         return GpuThermalInfo(index=gpu_index)
     try:
