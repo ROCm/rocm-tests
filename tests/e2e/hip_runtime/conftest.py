@@ -193,6 +193,60 @@ def ipc_dup_import_module_load_binary(_ipc_module_load_build_dir: str, built_bin
     )
 
 
+@pytest.fixture(scope="session")
+def _device_alloc_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build ``device_side_alloc`` (HIP in-kernel allocation; pass ``--gpu-arch``)."""
+    require_gpu_arch_for("hip_runtime/device_side_alloc")
+    return cmake_build_dir(
+        src=_SRC_DIR,
+        subdir="hip_runtime/device_alloc_build",
+        gpu_arch=gpu_arch,
+        extra_cmake_args=[
+            "-DBUILD_HOST_ONLY_TESTS=OFF",
+            "-DBUILD_HIP_KERNEL_TESTS=OFF",
+            "-DBUILD_DEVICE_ALLOC_TEST=ON",
+        ],
+        compiler_mode="optional_cxx_hip",
+        label="hip_runtime/device_side_alloc",
+        sync_dirs=[_SRC_DIR],
+        artifact="device_side_alloc",
+        target="device_side_alloc",
+    )
+
+
+@pytest.fixture(scope="session")
+def device_side_alloc_binary(_device_alloc_build_dir: str, built_binary) -> str:
+    """Compiled ``device_side_alloc`` binary path."""
+    return built_binary(os.path.join(_device_alloc_build_dir, "device_side_alloc"), "device_side_alloc")
+
+
+@pytest.fixture(scope="session")
+def _multi_instance_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build ``hip_multi_instance_app`` (HIP kernel workload; pass ``--gpu-arch``)."""
+    require_gpu_arch_for("hip_runtime/multi_instance")
+    return cmake_build_dir(
+        src=_SRC_DIR,
+        subdir="hip_runtime/multi_instance_build",
+        gpu_arch=gpu_arch,
+        extra_cmake_args=[
+            "-DBUILD_HOST_ONLY_TESTS=OFF",
+            "-DBUILD_HIP_KERNEL_TESTS=OFF",
+            "-DBUILD_MULTI_INSTANCE_TEST=ON",
+        ],
+        compiler_mode="optional_cxx_hip",
+        label="hip_runtime/multi_instance",
+        sync_dirs=[_SRC_DIR],
+        artifact="hip_multi_instance_app",
+        target="hip_multi_instance_app",
+    )
+
+
+@pytest.fixture(scope="session")
+def hip_multi_instance_app_binary(_multi_instance_build_dir: str, built_binary) -> str:
+    """Compiled ``hip_multi_instance_app`` binary path."""
+    return built_binary(os.path.join(_multi_instance_build_dir, "hip_multi_instance_app"), "hip_multi_instance_app")
+
+
 # HIP samples are cloned from ROCm/hip-tests rather than vendored.
 # The legacy suite built each installed sample in its own CMake directory with
 # CMAKE_PREFIX_PATH pointing at ROCm. Inject the HIP compiler as well so CMake
