@@ -152,6 +152,15 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # CRIU checkpoint/restore suite: GPU workloads checkpointed and restored with CRIU +
+    # amdgpu_plugin. Weekly cadence (happy path is a soak run); runtime.* is per test function.
+    "tests/e2e/recovery/criu": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/rocm_examples": [
         "hw.gpu",
         "layer.runtime",
