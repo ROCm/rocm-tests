@@ -1,10 +1,10 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""conftest.py -- Environment fixtures for the amd-smi event-monitoring tests.
+"""conftest.py -- Preflight fixture for amd-smi event-monitoring tests.
 
-Resolves the ``amd-smi`` binary, verifies the ``event`` subcommand, GPU presence,
-and passwordless sudo (GPU reset needs root), and gives each test a node scratch dir.
+Resolves the amd-smi binary, verifies the ``event`` subcommand, passwordless sudo,
+and GPU presence; skips cleanly on any missing prerequisite.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ logger = logging.getLogger("rocm.test")
 
 @dataclass(frozen=True)
 class RandomEventsEnv:
-    """Resolved amd-smi test environment: binary path, ROCm path, node scratch dir."""
+    """Resolved test environment: amd-smi binary path, ROCm path, per-test node scratch dir."""
 
     amd_smi: str
     rocm_path: str
@@ -28,20 +28,23 @@ class RandomEventsEnv:
 
 
 def _resolve_amd_smi(executor, rock_dir: str) -> str | None:
-    """Return an amd-smi path: prefer ``<rock_dir>/bin/amd-smi``, else the one on PATH."""
+    """Prefer ``<rock_dir>/bin/amd-smi``; fall back to amd-smi on PATH. Returns None if absent."""
     if rock_dir:
         probe = executor.run(f"test -x {rock_dir}/bin/amd-smi && echo OK")
         if "OK" in (probe.stdout or ""):
             return f"{rock_dir}/bin/amd-smi"
     which = executor.run("command -v amd-smi")
     if which.ok and (which.stdout or "").strip():
-        return which.stdout.strip().splitlines()[-1].strip()
+        return str(which.stdout).strip().splitlines()[-1].strip()
     return None
 
 
 @pytest.fixture
 def random_events_env(target_executor, rock_dir: str, run_ctx, request):
-    """Pre-flight the node and yield a RandomEventsEnv; skip when prerequisites are absent."""
+    """Verify amd-smi binary, event subcommand, passwordless sudo, and GPU presence.
+
+    Creates a per-test scratch dir on the node and removes it in teardown; skips on any missing prerequisite.
+    """
 
     logger.info("preflight: resolving amd-smi binary (rock_dir=%s)", rock_dir or "not set")
     amd_smi = _resolve_amd_smi(target_executor, rock_dir)

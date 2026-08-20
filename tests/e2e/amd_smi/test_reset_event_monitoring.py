@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: MIT
 
 """
-test_reset_event_monitoring.py -- amd-smi event monitoring under GPU reset.
+test_reset_event_monitoring.py -- amd-smi event monitoring correctness under GPU reset.
 
-Validates that ``amd-smi event`` reports correct PRE_RESET/POST_RESET events with no
-spurious NONE spam or duplicates, both under repeated resets and concurrent monitors.
+Validates that amd-smi event emits only valid PRE_RESET/POST_RESET events with zero
+NONE spam, no duplicates, and no monitor crashes — under repeated resets and concurrent monitors.
 """
 
 from __future__ import annotations
@@ -30,18 +30,23 @@ _BANNER_PREFIXES = ("EVENT LISTENING", "Press q", "Escape Sequence")
 
 
 def _monitor_cmd(env, fifo: str) -> str:
-    """amd-smi event with stdin held open via an O_RDWR FIFO so it never sees EOF."""
-    # ``exec`` makes amd-smi the direct child so stop()'s SIGTERM terminates it cleanly.
+    """Build the background monitor command. stdin held open via O_RDWR FIFO to prevent premature EOF exit.
+
+    ``exec`` makes amd-smi the direct child so stop()'s SIGTERM terminates it cleanly with no orphans.
+    """
     return f"exec env ROCM_PATH={env.rocm_path} {env.amd_smi} event <> {fifo}"
 
 
 def _reset_cmd(env) -> str:
-    """Non-interactive privileged GPU reset (destructive)."""
+    """Non-interactive privileged GPU reset via ``amd-smi reset -G`` (destructive, requires passwordless sudo)."""
     return f"sudo -n {env.amd_smi} reset -G -g {_RESET_TARGET}"
 
 
 def _parse_event_log(text: str) -> dict[str, int]:
-    """Return event-log metrics: NONE, PRE_RESET, POST_RESET, consecutive dups, line count."""
+    """Parse amd-smi event output into metric counts (lines, none, pre, post, dup, reset).
+
+    Strips banner lines (EVENT LISTENING / Press q / Escape Sequence) before counting; dup mirrors ``uniq -d``.
+    """
     lines = []
     for raw in (text or "").splitlines():
         line = raw.strip()
@@ -73,7 +78,7 @@ def _parse_event_log(text: str) -> dict[str, int]:
 
 
 def _count_crashes(executor, since: str) -> int:
-    """Best-effort count of segfault/coredump entries in the journal since *since*."""
+    """Best-effort segfault/coredump count from journalctl since *since*. Returns 0 if journalctl unavailable."""
     grep = "grep -ci 'segfault\\|sigsegv\\|signal 11'"
     res = executor.run(f"{{ journalctl --since '{since}' 2>/dev/null | {grep}; }} || echo 0")
     match = re.search(r"\d+", res.stdout or "")
@@ -81,7 +86,7 @@ def _count_crashes(executor, since: str) -> int:
 
 
 def _assert_event_log(name: str, metrics: dict[str, int]) -> None:
-    """Assert the shared per-log pass criteria on parsed event metrics."""
+    """Assert pass criteria: non-empty log, NONE==0, PRE_RESET>=1, POST_RESET>=1, consecutive dups==0."""
     assert metrics["lines"] > 0, f"{name}: event log is empty -- no events captured"
     assert metrics["none"] == 0, f"{name}: found {metrics['none']} NONE event(s) -- expected 0"
     assert metrics["pre"] >= 1, f"{name}: no PRE_RESET events captured"
@@ -91,7 +96,11 @@ def _assert_event_log(name: str, metrics: dict[str, int]) -> None:
 
 @pytest.mark.runtime.medium
 def test_repeated_reset_event_stress(target_executor, random_events_env):
-    """Run N GPU reset cycles under a background event monitor; validate the event log."""
+    """Stress the event subsystem across N GPU reset cycles with a single background amd-smi event monitor.
+
+    Asserts zero NONE events, PRE/POST_RESET captured each cycle, no duplicate spam, monitor alive throughout,
+    and no segfaults/coredumps in the journal.
+    """
     env = random_events_env
     ex = target_executor
     fifo = f"{env.scratch_dir}/evt_fifo"
@@ -109,7 +118,9 @@ def test_repeated_reset_event_stress(target_executor, random_events_env):
     try:
         time.sleep(2)
         assert monitor.is_alive, "event monitor failed to start"
-        logger.info("event monitor running — beginning %d reset cycle(s) with %ds cooldown", _RESET_ITERS, _RESET_COOLDOWN)
+        logger.info(
+            "event monitor running — beginning %d reset cycle(s) with %ds cooldown", _RESET_ITERS, _RESET_COOLDOWN
+        )
 
         for i in range(1, _RESET_ITERS + 1):
             logger.info("reset iteration %d/%d", i, _RESET_ITERS)
@@ -137,7 +148,11 @@ def test_repeated_reset_event_stress(target_executor, random_events_env):
 
 @pytest.mark.runtime.fast
 def test_concurrent_event_monitoring(target_executor, random_events_env):
-    """Run N concurrent event monitors, trigger one reset, validate each log independently."""
+    """Launch N concurrent amd-smi event monitors, trigger a single GPU reset, and validate each monitor independently.
+
+    Asserts all monitors survive the reset, each captures PRE/POST_RESET with zero NONE or duplicates,
+    and no segfaults/coredumps occur.
+    """
     env = random_events_env
     ex = target_executor
     since = (ex.run("date '+%Y-%m-%d %H:%M:%S'").stdout or "").strip()
