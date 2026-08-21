@@ -135,13 +135,14 @@ def test_ubb_power_workload(
     logger.info("test_ubb_power_workload: idle UBB_POWER = %.1f W", idle_watts)
 
     rocm_path = rock_dir or "/opt/rocm"
-    gemm_dir = str(pathlib.Path(coral_gemm_binary).parent)
+    gemm_abs = str(pathlib.Path(coral_gemm_binary).resolve())
+    gemm_dir = str(pathlib.Path(gemm_abs).parent)
     workload_cmd = (
         f"cd {gemm_dir} && "
         f"HIP_PLATFORM=amd ROCM_PATH={rocm_path} "
         f"LD_LIBRARY_PATH={rocm_path}/lib:${{LD_LIBRARY_PATH:-}} "
         f"PATH={rocm_path}/bin:$PATH "
-        f"{coral_gemm_binary} {_CORAL_GEMM_ARGS}"
+        f"{gemm_abs} {_CORAL_GEMM_ARGS}"
     )
     logger.info("test_ubb_power_workload: launching CoralGemm workload from %s", gemm_dir)
 
