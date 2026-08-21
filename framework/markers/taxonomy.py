@@ -168,9 +168,9 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
-    # amd-smi system-management tests: GPU reset and event monitoring.
+    # amd-smi event tests: GPU reset event correctness and concurrency.
     # Weekly cadence (destructive reset); runtime.* is per test function.
-    "tests/e2e/amd_smi": [
+    "tests/e2e/amd_smi/events": [
         "hw.gpu",
         "layer.runtime",
         "ci.weekly",
