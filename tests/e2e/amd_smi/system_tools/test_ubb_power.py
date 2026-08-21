@@ -58,6 +58,26 @@ def _gpu_ids(executor, amd_smi: str) -> list[str]:
     return ids
 
 
+def _gpu_id_for_oam0(executor, amd_smi: str) -> str:
+    """Return the GPU ID whose OAM_ID is 0; skips if none found.
+
+    UBB/node power is tied to OAM_ID 0 — querying the wrong GPU ID returns N/A.
+    """
+    result = executor.run(f"{amd_smi} list -e")
+    assert result.ok, f"amd-smi list -e failed:\n{result.stderr[:500]}"
+
+    current_gpu: str | None = None
+    for line in (result.stdout or "").splitlines():
+        gpu_match = re.search(r"GPU:\s*(\d+)", line)
+        if gpu_match:
+            current_gpu = gpu_match.group(1)
+        if current_gpu and re.search(r"OAM_ID:\s*0\b", line):
+            logger.info("_gpu_id_for_oam0: GPU %s has OAM_ID 0", current_gpu)
+            return current_gpu
+
+    pytest.skip("No GPU with OAM_ID 0 found via 'amd-smi list -e' — UBB power not available on this node")
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -65,30 +85,24 @@ def _gpu_ids(executor, amd_smi: str) -> list[str]:
 
 @pytest.mark.runtime.fast
 def test_ubb_power_default(target_executor, ubb_env, gpu_arch: str | None) -> None:
-    """Verify UBB_POWER is present and numeric for each GPU at idle.
+    """Verify UBB_POWER is reported for the GPU with OAM_ID 0 at idle.
 
-    Runs amd-smi metric --power -g <GPU_ID> per GPU and asserts UBB_POWER field is populated.
+    UBB power is tied to OAM_ID 0; querying other GPUs returns N/A.
+    Fails if UBB_POWER field is absent or N/A for that GPU.
     """
     _skip_unsupported_arch(gpu_arch)
 
-    logger.info("test_ubb_power_default: querying GPU list")
-    gpu_ids = _gpu_ids(target_executor, ubb_env.amd_smi)
-    logger.info("test_ubb_power_default: found GPUs %s", gpu_ids)
+    logger.info("test_ubb_power_default: finding GPU with OAM_ID 0")
+    gpu_id = _gpu_id_for_oam0(target_executor, ubb_env.amd_smi)
 
-    for gpu_id in gpu_ids:
-        cmd = f"{ubb_env.amd_smi} metric --power -g {gpu_id}"
-        logger.info("test_ubb_power_default: running '%s'", cmd)
-        result = target_executor.run(cmd)
-        assert result.ok, f"amd-smi metric --power -g {gpu_id} failed:\n{result.stderr[:500]}"
+    cmd = f"{ubb_env.amd_smi} metric --power -g {gpu_id}"
+    logger.info("test_ubb_power_default: running '%s'", cmd)
+    result = target_executor.run(cmd)
+    assert result.ok, f"amd-smi metric --power -g {gpu_id} failed:\n{result.stderr[:500]}"
 
-        if "UBB_POWER" not in (result.stdout or ""):
-            pytest.skip(f"UBB_POWER field absent for GPU {gpu_id} — hardware may not support it")
-
-        watts = _parse_ubb_power(result.stdout or "")
-        assert watts is not None, f"GPU {gpu_id}: UBB_POWER field present but value is N/A or non-numeric"
-        logger.info("test_ubb_power_default: GPU %s UBB_POWER = %.1f W", gpu_id, watts)
-
-    logger.info("test_ubb_power_default: PASS — UBB_POWER present on all %d GPU(s)", len(gpu_ids))
+    watts = _parse_ubb_power(result.stdout or "")
+    assert watts is not None, f"GPU {gpu_id} (OAM_ID 0): UBB_POWER absent or N/A in output:\n{result.stdout[:500]}"
+    logger.info("test_ubb_power_default: PASS — GPU %s (OAM_ID 0) UBB_POWER = %.1f W", gpu_id, watts)
 
 
 @pytest.mark.runtime.medium
@@ -98,18 +112,18 @@ def test_ubb_power_workload(
     coral_gemm_binary: str,
     gpu_arch: str | None,
 ) -> None:
-    """Verify UBB_POWER under CoralGemm load is greater than idle baseline.
+    """Verify UBB_POWER under CoralGemm load exceeds idle baseline for the OAM_ID 0 GPU.
 
-    Captures idle UBB_POWER for GPU 0 before launching the workload, then polls
-    five times while the workload is alive and asserts load > idle on every poll.
+    Resolves the correct GPU via OAM_ID 0, captures idle UBB_POWER, launches CoralGemm,
+    then polls five times asserting load > idle on every reading.
     """
     _skip_unsupported_arch(gpu_arch)
 
-    gpu_ids = _gpu_ids(target_executor, ubb_env.amd_smi)
-    gpu_id = gpu_ids[0]
+    logger.info("test_ubb_power_workload: finding GPU with OAM_ID 0")
+    gpu_id = _gpu_id_for_oam0(target_executor, ubb_env.amd_smi)
     cmd = f"{ubb_env.amd_smi} metric --power -g {gpu_id}"
 
-    logger.info("test_ubb_power_workload: capturing idle UBB_POWER for GPU %s", gpu_id)
+    logger.info("test_ubb_power_workload: capturing idle UBB_POWER for GPU %s (OAM_ID 0)", gpu_id)
     idle_result = target_executor.run(cmd)
     assert idle_result.ok, f"amd-smi metric --power failed at idle:\n{idle_result.stderr[:500]}"
 

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import logging
 import os
 import pathlib
+import subprocess
 
 import pytest
 
@@ -70,7 +71,7 @@ def ubb_env(target_executor, rock_dir: str) -> UbbEnv:
 
 
 @pytest.fixture(scope="session")
-def coral_gemm_binary(external_build, cpu_executor, compiler_build_dir: str, rock_dir: str) -> str:
+def coral_gemm_binary(external_build, compiler_build_dir: str, rock_dir: str) -> str:
     """Clone and build CoralGemm; return absolute path to the gemm binary.
 
     Set ROCM_TEST_CORAL_GEMM_BIN to use a pre-built binary instead.
@@ -93,30 +94,31 @@ def coral_gemm_binary(external_build, cpu_executor, compiler_build_dir: str, roc
     rocm_path = rock_dir or "/opt/rocm"
 
     logger.info("coral_gemm_binary: running cmake in %s", build_dir)
-    cmake_cmd = f"cmake -DCMAKE_MODULE_PATH={rocm_path}/hip/cmake" f" -DCMAKE_PREFIX_PATH={rocm_path}/lib/cmake .. "
-    cmake_result = cpu_executor.run(
-        cmake_cmd,
+    build_env = {
+        **os.environ,
+        "HIP_PLATFORM": "amd",
+        "ROCM_PATH": rocm_path,
+        "PATH": f"{rocm_path}/bin:{os.environ.get('PATH', '')}",
+        "LD_LIBRARY_PATH": f"{rocm_path}/lib:{os.environ.get('LD_LIBRARY_PATH', '')}",
+    }
+    cmake_proc = subprocess.run(
+        [
+            "cmake",
+            f"-DCMAKE_MODULE_PATH={rocm_path}/hip/cmake",
+            f"-DCMAKE_PREFIX_PATH={rocm_path}/lib/cmake",
+            "..",
+        ],
         cwd=str(build_dir),
-        env={
-            "HIP_PLATFORM": "amd",
-            "ROCM_PATH": rocm_path,
-            "PATH": f"{rocm_path}/bin:{os.environ.get('PATH', '')}",
-            "LD_LIBRARY_PATH": f"{rocm_path}/lib:{os.environ.get('LD_LIBRARY_PATH', '')}",
-        },
+        env=build_env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
-    if not cmake_result.ok:
-        pytest.skip(f"CoralGemm cmake failed:\n{cmake_result.stderr[:800]}")
+    if cmake_proc.returncode != 0:
+        pytest.skip(f"CoralGemm cmake failed:\n{cmake_proc.stderr[:800]}")
 
     logger.info("coral_gemm_binary: running make in %s", build_dir)
-    external_build.make_build(
-        repo_dir=build_dir,
-        env={
-            "HIP_PLATFORM": "amd",
-            "ROCM_PATH": rocm_path,
-            "PATH": f"{rocm_path}/bin:{os.environ.get('PATH', '')}",
-            "LD_LIBRARY_PATH": f"{rocm_path}/lib:{os.environ.get('LD_LIBRARY_PATH', '')}",
-        },
-    )
+    external_build.make_build(repo_dir=build_dir, env=build_env)
 
     binary = build_dir / "gemm"
     if not binary.is_file():
