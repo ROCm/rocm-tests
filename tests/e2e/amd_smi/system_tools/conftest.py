@@ -20,7 +20,7 @@ import pytest
 logger = logging.getLogger("rocm.test")
 
 _CORAL_GEMM_URL = "https://github.com/AMD-HPC/CoralGemm"
-_CORAL_GEMM_REF = os.environ.get("ROCM_TEST_CORAL_GEMM_REF", "main")
+_CORAL_GEMM_REF = os.environ.get("ROCM_TEST_CORAL_GEMM_REF") or None  # None = repo default branch
 
 
 @dataclass(frozen=True)
@@ -84,7 +84,7 @@ def coral_gemm_binary(external_build, compiler_build_dir: str, rock_dir: str) ->
             pytest.skip(f"ROCM_TEST_CORAL_GEMM_BIN={env_override} does not exist")
         return env_override
 
-    logger.info("coral_gemm_binary: cloning CoralGemm from %s ref=%s", _CORAL_GEMM_URL, _CORAL_GEMM_REF)
+    logger.info("coral_gemm_binary: cloning CoralGemm from %s ref=%s", _CORAL_GEMM_URL, _CORAL_GEMM_REF or "default")
     dest = pathlib.Path(compiler_build_dir) / "amd_smi" / "CoralGemm"
     repo_path = external_build.clone_repo(_CORAL_GEMM_URL, dest, ref=_CORAL_GEMM_REF)
     external_build.assert_license_present(repo_path)
