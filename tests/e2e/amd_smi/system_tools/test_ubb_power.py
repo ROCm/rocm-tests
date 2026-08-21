@@ -11,6 +11,7 @@ and node-level THRESHOLD via amd-smi node -p.
 from __future__ import annotations
 
 import logging
+import pathlib
 import re
 import time
 
@@ -110,6 +111,7 @@ def test_ubb_power_workload(
     target_executor,
     ubb_env,
     coral_gemm_binary: str,
+    rock_dir: str,
     gpu_arch: str | None,
 ) -> None:
     """Verify UBB_POWER under CoralGemm load exceeds idle baseline for the OAM_ID 0 GPU.
@@ -132,8 +134,16 @@ def test_ubb_power_workload(
         pytest.skip("UBB_POWER not populated at idle — hardware may not support this field")
     logger.info("test_ubb_power_workload: idle UBB_POWER = %.1f W", idle_watts)
 
-    workload_cmd = f"{coral_gemm_binary} {_CORAL_GEMM_ARGS}"
-    logger.info("test_ubb_power_workload: launching CoralGemm workload")
+    rocm_path = rock_dir or "/opt/rocm"
+    gemm_dir = str(pathlib.Path(coral_gemm_binary).parent)
+    workload_cmd = (
+        f"cd {gemm_dir} && "
+        f"HIP_PLATFORM=amd ROCM_PATH={rocm_path} "
+        f"LD_LIBRARY_PATH={rocm_path}/lib:${{LD_LIBRARY_PATH:-}} "
+        f"PATH={rocm_path}/bin:$PATH "
+        f"{coral_gemm_binary} {_CORAL_GEMM_ARGS}"
+    )
+    logger.info("test_ubb_power_workload: launching CoralGemm workload from %s", gemm_dir)
 
     with target_executor.start_background(
         workload_cmd,
