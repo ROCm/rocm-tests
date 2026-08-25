@@ -13,7 +13,7 @@ import pathlib
 
 import pytest
 
-from tests.e2e.ml_frameworks.apex._constants import APEX_COMMIT, APEX_URL, _CONTAINER_WORKSPACE
+from tests.e2e.ml_frameworks.apex._constants import _CONTAINER_WORKSPACE, APEX_COMMIT, APEX_URL
 
 
 @pytest.fixture(scope="session")
