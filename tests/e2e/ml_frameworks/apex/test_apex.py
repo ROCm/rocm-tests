@@ -11,8 +11,7 @@ import logging
 
 import pytest
 
-from tests.e2e.ml_frameworks.apex._result_parser import parse_unittest_output
-from tests.e2e.ml_frameworks.apex.conftest import (
+from tests.e2e.ml_frameworks.apex._constants import (
     APEX_NUM_GPUS,
     CONTAINER_MOUNT_FLAGS,
     GPU_COUNT_ARG,
@@ -20,6 +19,7 @@ from tests.e2e.ml_frameworks.apex.conftest import (
     RUN_SCRIPT,
     RUN_TIMEOUT,
 )
+from tests.e2e.ml_frameworks.apex._result_parser import parse_unittest_output
 
 logger = logging.getLogger(__name__)
 
