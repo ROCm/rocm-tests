@@ -6,7 +6,14 @@ SPDX-License-Identifier: MIT
 //
 // Queries the device stream-priority range, creates a high-priority and a
 // low-priority stream, runs a small workload on each, and verifies results are
-// correct. Two modes:
+// correct.
+//
+// Scope: priority *reporting* plus functional correctness only. Relative
+// scheduling latency / dispatch ordering across priority queues is deliberately
+// not asserted here -- that is timing-sensitive and belongs in a separate
+// perf-style test.
+//
+// Two modes:
 //
 //   (default / semantics): asserts the queue heuristic PRESERVES priority --
 //     hipStreamGetPriority() echoes the requested (range-clamped) value for both

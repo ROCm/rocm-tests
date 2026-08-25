@@ -4,7 +4,7 @@
 test_stream_priority.py -- HIP stream-priority semantics + ignore-override flag.
 
 Builds ``hwq_stream_priority`` and validates the two behaviours the queue
-heuristic must guarantee (TMS hwq_stream_priority_interaction):
+heuristic must guarantee (hwq_stream_priority_interaction):
 
 - ``test_stream_priority_semantics``: with no override, the heuristic PRESERVES
   requested stream priorities -- ``hipStreamGetPriority`` echoes the range-clamped
