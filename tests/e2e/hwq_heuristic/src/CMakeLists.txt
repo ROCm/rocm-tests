@@ -56,3 +56,7 @@ target_link_libraries(hwq_single_stream_no_regr PRIVATE hip::host)
 add_executable(hwq_per_device_independence_test hwq_per_device_independence_test.cpp)
 target_compile_options(hwq_per_device_independence_test PRIVATE -O3 "--offload-arch=${GPU_ARCH}")
 target_link_libraries(hwq_per_device_independence_test PRIVATE hip::host)
+
+add_executable(hwq_stream_priority hwq_stream_priority.cpp)
+target_compile_options(hwq_stream_priority PRIVATE -O3 "--offload-arch=${GPU_ARCH}")
+target_link_libraries(hwq_stream_priority PRIVATE hip::host)
