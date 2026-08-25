@@ -365,7 +365,7 @@ class MatrixTransposeBuild:
 
 @pytest.fixture(scope="session")
 def matrix_transpose_build(
-    cmake_executor, rock_dir: str, compiler_build_dir: str, framework_config
+    external_build, cmake_executor, rock_dir: str, compiler_build_dir: str, framework_config
 ) -> MatrixTransposeBuild:
     """Clone ROCm/hip-tests, patch the MatrixTranspose sample, and build it once per session.
 
@@ -388,31 +388,13 @@ def matrix_transpose_build(
         )
 
     dest = _resolve_dest(cmake_executor, compiler_build_dir, _MATRIX_TRANSPOSE_SUBDIR)
-    sample = f"{dest}/{_MT_SAMPLE_SUBPATH}"
-    build_dir = f"{sample}/build"
     timeout = float(framework_config.therock.build_timeout_secs)
 
-    # Clone hip-tests at the pinned commit; a blobless partial clone keeps it quick while still
-    # allowing checkout of an arbitrary commit.
-    clone = build_exec.run(
-        "\n".join(
-            (
-                "set -e",
-                f"rm -rf {dest}",
-                f"mkdir -p {os.path.dirname(dest)}",
-                f"git clone --filter=blob:none {_HIP_TESTS_URL} {dest}",
-                f"cd {dest}",
-                f"git checkout {_HIP_TESTS_REF}",
-                "echo CLONE_OK",
-            )
-        ),
-        timeout=timeout,
+    hip_tests_dir = os.path.abspath(
+        external_build.clone_repo(url=_HIP_TESTS_URL, dest=dest, ref=_HIP_TESTS_REF, timeout=timeout)
     )
-    if "CLONE_OK" not in (clone.stdout or ""):
-        pytest.fail(
-            f"hip-tests clone/checkout failed (exit={clone.exit_code}):\n"
-            f"stdout: {clone.stdout[-2000:]}\nstderr: {clone.stderr[-2000:]}"
-        )
+    sample = os.path.join(hip_tests_dir, _MT_SAMPLE_SUBPATH)
+    build_dir = os.path.join(sample, "build")
 
     # Transfer the vendored patch script into the cloned sample (base64 -> host/SSH transparent).
     with open(_MT_PATCH_SCRIPT, "rb") as handle:
