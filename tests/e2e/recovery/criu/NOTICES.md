@@ -3,8 +3,8 @@
 The tests under `tests/e2e/recovery/criu/` **fetch, build, and run** third-party open-source
 projects **at test run time**. No project's source or binaries are vendored, committed, or
 redistributed as part of the rocm-tests repository — clones land in the gitignored `output/`
-build directory (cuda_memtest, pytorch/examples, RAJAPerf, hip-tests). (CRIU, the
-checkpoint/restore tool these tests drive, is covered separately by `tests/common/criu/NOTICES.md`.)
+build directory (cuda_memtest, pytorch/examples, RAJAPerf, hip-tests, Kokkos). (CRIU, the checkpoint/restore
+tool these tests drive, is covered separately by `tests/common/criu/NOTICES.md`.)
 
 This file documents each component, exactly how it is used, and the resulting license
 obligations. It is an engineering-compliance summary, not legal advice; final sign-off for any
@@ -20,6 +20,7 @@ product distribution should come from AMD OSS/legal review.
 | pytorch/examples (MNIST) | https://github.com/pytorch/examples | latest `main` (shallow clone) | BSD-3-Clause (permissive) |
 | RAJAPerf | https://github.com/LLNL/rajaperf | default branch (pinnable via `ROCM_TEST_RAJAPERF_REF`) | BSD-3-Clause (permissive) |
 | hip-tests | https://github.com/ROCm/hip-tests | commit `3543bc3b9140e0a506ed3dec643b4def672bd171` | MIT |
+| Kokkos | https://github.com/kokkos/kokkos | tag `4.2.01` (pinnable via `ROCM_TEST_KOKKOS_REF`) | Apache-2.0 WITH LLVM-exception (permissive) |
 
 ### cuda_memtest
 1. `git clone` at the pinned commit into `output/test-binaries/recovery/cuda_memtest`.
@@ -53,13 +54,21 @@ product distribution should come from AMD OSS/legal review.
 3. Build a standalone binary with CMake's HIP language mode.
 4. Run the built `MatrixTranspose` binary as a subprocess, checkpoint/restore it with CRIU.
 
+### Kokkos
+1. `git clone` tag `4.2.01` into `output/external/recovery/kokkos` (pin with
+   `ROCM_TEST_KOKKOS_REF`; override the URL with `ROCM_TEST_KOKKOS_URL`).
+2. Build only the performance-benchmark target with CMake (`hipcc`, HIP backend, benchmarks
+   enabled) into a `build/` tree inside the checkout. The Kokkos sources are **not modified**.
+3. Run the built `Kokkos_PerformanceTest_Benchmark` binary as a subprocess and
+   checkpoint/restore it with CRIU.
+
 ---
 
 ## Obligations assessment
 
 - **No redistribution.** rocm-tests does not ship any of these projects' code or binaries; all are
-  obtained at runtime from their upstream repositories. NCSA, BSD-3-Clause, and MIT obligations
-  attach to *distribution*, which does not occur here.
+  obtained at runtime from their upstream repositories. NCSA, BSD-3-Clause, MIT, and Apache-2.0
+  obligations attach to *distribution*, which does not occur here.
 - **cuda_memtest (NCSA)** permits use, modification, and redistribution with attribution. The
   hipify/`sed` modifications are allowed; the built binary is not redistributed.
 - **pytorch/examples (BSD-3-Clause)** is used unmodified via arm's-length subprocess invocation
@@ -71,16 +80,19 @@ product distribution should come from AMD OSS/legal review.
   permission notice are retained on *redistribution*. The in-place loop patch is allowed; the
   source and built binary are not redistributed (obtained at runtime), so no obligation attaches
   under the current runtime-fetch model.
-- **Modification imposes no obligation.** NCSA, BSD-3-Clause, and MIT are permissive: modifying
-  sources (cuda_memtest's hipify + `sed`, hip-tests' in-place loop patch) requires nothing on its
-  own — it does **not** require marking changed files or disclosing the diff. Their
+- **Kokkos (Apache-2.0 WITH LLVM-exception)** permits use, modification, and redistribution with
+  attribution. Kokkos is built **unmodified** and its binary is not redistributed, so the only
+  attribution/notice obligations would attach on *distribution*, which does not occur here.
+- **Modification imposes no obligation.** NCSA, BSD-3-Clause, MIT, and Apache-2.0 are permissive:
+  modifying sources (cuda_memtest's hipify + `sed`, hip-tests' in-place loop patch) requires
+  nothing on its own — it does **not** require marking changed files or disclosing the diff. Their
   retain-the-notice conditions trigger only on *redistribution*, which does not occur.
-  pytorch/examples and RAJAPerf are not modified.
+  pytorch/examples, RAJAPerf, and Kokkos are not modified.
 - **If distribution is ever added** (e.g. bundling the sources or built binaries): retain the NCSA
   copyright notices and disclaimer for cuda_memtest; retain the BSD-3-Clause notice for
-  pytorch/examples and for RAJAPerf (and its submodules) with the no-endorsement clause; and retain
-  the MIT copyright and permission notice for hip-tests. This is out of scope for the current
-  runtime-fetch model.
+  pytorch/examples and for RAJAPerf (and its submodules) with the no-endorsement clause; retain the
+  MIT copyright and permission notice for hip-tests; and retain the Apache-2.0 license, `NOTICE`
+  file, and attribution for Kokkos. This is out of scope for the current runtime-fetch model.
 
 ---
 
@@ -147,3 +159,11 @@ Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 SPDX-License-Identifier: MIT
 ```
 Full license text: `LICENSE` in the hip-tests repository (https://github.com/ROCm/hip-tests).
+
+### Kokkos — Apache License 2.0 WITH LLVM-exception
+```
+Copyright the Kokkos authors / National Technology & Engineering Solutions of Sandia, LLC (NTESS).
+Under the terms of Contract DE-NA0003525 with NTESS, the U.S. Government retains certain rights.
+Licensed under the Apache License, Version 2.0 with LLVM exceptions.
+```
+Full license text: `LICENSE` in the Kokkos repository.
