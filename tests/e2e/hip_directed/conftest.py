@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import pathlib
+import shlex
 
 import pytest
 
@@ -29,7 +30,24 @@ _SYSDEPS = "lib/rocm_sysdeps"
 _EXE_TARGETS = ("DeviceTest", "StreamTest", "MemoryTest1", "ModuleTest")
 
 
-def _resolve_rocm_systems_ref(rock_dir: str) -> str:
+def _read_manifest(rock_dir: str, cmake_executor) -> str | None:
+    """Read the TheRock manifest from the node that owns the ROCm install.
+
+    In ``--remote-node`` mode ``rock_dir`` lives on the remote host, so the file
+    must be read over SSH; a local read would always miss and silently degrade the
+    ref resolution below. Returns ``None`` when the manifest is absent.
+    """
+    manifest = f"{rock_dir}/share/therock/therock_manifest.json"
+    if cmake_executor is not None:
+        result = cmake_executor.run(f"cat {shlex.quote(manifest)}", timeout=60)
+        return result.stdout if result.ok else None
+    try:
+        return pathlib.Path(manifest).read_text()
+    except OSError:
+        return None
+
+
+def _resolve_rocm_systems_ref(rock_dir: str, cmake_executor) -> str:
     """Pick the rocm-systems ref to clone.
 
     Order: explicit ``ROCM_TEST_ROCM_SYSTEMS_REF`` env override, else the exact
@@ -40,19 +58,28 @@ def _resolve_rocm_systems_ref(rock_dir: str) -> str:
     override = os.environ.get("ROCM_TEST_ROCM_SYSTEMS_REF")
     if override:
         return override
-    manifest = pathlib.Path(rock_dir) / "share" / "therock" / "therock_manifest.json"
-    try:
-        data = json.loads(manifest.read_text())
-        for sm in data.get("submodules", []):
-            name = sm.get("submodule_name", "")
-            url = sm.get("submodule_url", "")
-            if name == "rocm-systems" or "rocm-systems" in url:
-                sha = sm.get("pin_sha")
-                if sha:
-                    logger.info("hip_directed: pinning rocm-systems to manifest commit %s", sha)
-                    return sha
-    except (OSError, ValueError) as exc:
-        logger.warning("hip_directed: could not read TheRock manifest (%s); using develop", exc)
+    raw = _read_manifest(rock_dir, cmake_executor)
+    if raw is not None:
+        try:
+            data = json.loads(raw)
+            for sm in data.get("submodules", []):
+                name = sm.get("submodule_name", "")
+                url = sm.get("submodule_url", "")
+                if name == "rocm-systems" or "rocm-systems" in url:
+                    sha = sm.get("pin_sha")
+                    if sha:
+                        logger.info("hip_directed: pinning rocm-systems to manifest commit %s", sha)
+                        return sha
+        except ValueError as exc:
+            logger.warning("hip_directed: TheRock manifest is not valid JSON (%s)", exc)
+    # Non-TheRock ROCm installs ship no manifest, so this stays a fallback rather
+    # than a hard failure — but the source may then skew from the installed HIP
+    # headers. Set ROCM_TEST_ROCM_SYSTEMS_REF to pin explicitly.
+    logger.warning(
+        "hip_directed: no rocm-systems pin_sha found in %s; falling back to 'develop', "
+        "which may skew from the installed HIP headers",
+        rock_dir,
+    )
     return "develop"
 
 
@@ -80,18 +107,21 @@ def _single_visible_gpu():
 
 
 @pytest.fixture(scope="session")
-def hip_catch_repo(external_build, compiler_build_dir: str, rock_dir: str):
+def hip_catch_repo(external_build, compiler_build_dir: str, rock_dir: str, cmake_executor):
     """Clone ROCm/rocm-systems (at the ROCm's manifest-pinned commit) once per session."""
     dest = pathlib.Path(compiler_build_dir) / _SUBDIR / "rocm-systems"
-    ref = _resolve_rocm_systems_ref(rock_dir)
+    ref = _resolve_rocm_systems_ref(rock_dir, cmake_executor)
     repo = external_build.clone_repo(_ROCM_SYSTEMS_URL, dest, ref=ref)
     external_build.assert_license_present(repo)
     return repo
 
 
 @pytest.fixture(scope="session")
-def hip_catch_build_dir(cmake_build_dir, rock_dir: str, gpu_arch: str | None, hip_catch_repo) -> str:
+def hip_catch_build_dir(
+    cmake_build_dir, rock_dir: str, gpu_arch: str | None, hip_catch_repo, require_gpu_arch_for
+) -> str:
     """Configure and build only the catch2 executables holding the directed tests."""
+    require_gpu_arch_for("hip_directed")
     catch_src = pathlib.Path(hip_catch_repo) / "projects" / "hip-tests" / "catch"
     extra_args = ["-DHIP_PLATFORM=amd", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}"]
     # Resolve libnuma / numa.h from the ROCm install's bundled sysdeps rather than
@@ -104,8 +134,7 @@ def hip_catch_build_dir(cmake_build_dir, rock_dir: str, gpu_arch: str | None, hi
     # Pin the offload arch so CMake's HIP-compiler ABI check does not fall back to
     # rocm_agent_enumerator (which reads sysfs, ignores ROCR_VISIBLE_DEVICES) and
     # emit one duplicated --offload-arch per GPU on multi-GPU CI runners.
-    if gpu_arch:
-        extra_args.append(f"-DCMAKE_HIP_ARCHITECTURES={gpu_arch}")
+    extra_args.append(f"-DCMAKE_HIP_ARCHITECTURES={gpu_arch}")
     build_dir = ""
     with _single_visible_gpu():
         for target in _EXE_TARGETS:
