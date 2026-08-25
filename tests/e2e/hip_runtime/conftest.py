@@ -15,6 +15,11 @@ only the required target rather than compiling unrelated HIP runtime binaries:
 - ``_ipc_module_load_build_dir``  — builds ``ipc_alltoall_module_load``,
   ``ipc_dup_import_module_load``, and ``noop.hsaco`` (HIP IPC regression tests;
   requires ``--gpu-arch``).
+- ``_device_alloc_build_dir``     — builds ``device_side_alloc`` (in-kernel
+  ``malloc``/``free`` from device code; requires ``--gpu-arch``).
+- ``_multi_instance_build_dir``   — builds ``hip_multi_instance_app`` (self-
+  verifying vector-add run as concurrent processes to exercise
+  ``HIP_VISIBLE_DEVICES`` placement; requires ``--gpu-arch``).
 - ``golden_workload_binary``  — builds ``golden_workload`` (SAXPY loop for
   partition isolation; requires ``--gpu-arch`` for HIP kernel offload).
 - ``buggy_workload_binary``   — builds ``buggy_workload`` (fault-injection
@@ -30,6 +35,8 @@ Build output layout::
     output/test-binaries/hip_runtime/ipc_module_load/ipc_alltoall_module_load
     output/test-binaries/hip_runtime/ipc_module_load/ipc_dup_import_module_load
     output/test-binaries/hip_runtime/ipc_module_load/noop.hsaco
+    output/test-binaries/hip_runtime/device_alloc_build/device_side_alloc
+    output/test-binaries/hip_runtime/multi_instance_build/hip_multi_instance_app
     output/test-binaries/hip_runtime/partition_isolation/golden_workload
     output/test-binaries/hip_runtime/partition_isolation/buggy_workload
     output/test-binaries/hip_runtime/partition_isolation/hip_device_count
@@ -191,6 +198,60 @@ def ipc_dup_import_module_load_binary(_ipc_module_load_build_dir: str, built_bin
         os.path.join(_ipc_module_load_build_dir, "ipc_dup_import_module_load"),
         "ipc_dup_import_module_load",
     )
+
+
+@pytest.fixture(scope="session")
+def _device_alloc_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build ``device_side_alloc`` (HIP in-kernel allocation; pass ``--gpu-arch``)."""
+    require_gpu_arch_for("hip_runtime/device_side_alloc")
+    return cmake_build_dir(
+        src=_SRC_DIR,
+        subdir="hip_runtime/device_alloc_build",
+        gpu_arch=gpu_arch,
+        extra_cmake_args=[
+            "-DBUILD_HOST_ONLY_TESTS=OFF",
+            "-DBUILD_HIP_KERNEL_TESTS=OFF",
+            "-DBUILD_DEVICE_ALLOC_TEST=ON",
+        ],
+        compiler_mode="optional_cxx_hip",
+        label="hip_runtime/device_side_alloc",
+        sync_dirs=[_SRC_DIR],
+        artifact="device_side_alloc",
+        target="device_side_alloc",
+    )
+
+
+@pytest.fixture(scope="session")
+def device_side_alloc_binary(_device_alloc_build_dir: str, built_binary) -> str:
+    """Compiled ``device_side_alloc`` binary path."""
+    return built_binary(os.path.join(_device_alloc_build_dir, "device_side_alloc"), "device_side_alloc")
+
+
+@pytest.fixture(scope="session")
+def _multi_instance_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build ``hip_multi_instance_app`` (HIP kernel workload; pass ``--gpu-arch``)."""
+    require_gpu_arch_for("hip_runtime/multi_instance")
+    return cmake_build_dir(
+        src=_SRC_DIR,
+        subdir="hip_runtime/multi_instance_build",
+        gpu_arch=gpu_arch,
+        extra_cmake_args=[
+            "-DBUILD_HOST_ONLY_TESTS=OFF",
+            "-DBUILD_HIP_KERNEL_TESTS=OFF",
+            "-DBUILD_MULTI_INSTANCE_TEST=ON",
+        ],
+        compiler_mode="optional_cxx_hip",
+        label="hip_runtime/multi_instance",
+        sync_dirs=[_SRC_DIR],
+        artifact="hip_multi_instance_app",
+        target="hip_multi_instance_app",
+    )
+
+
+@pytest.fixture(scope="session")
+def hip_multi_instance_app_binary(_multi_instance_build_dir: str, built_binary) -> str:
+    """Compiled ``hip_multi_instance_app`` binary path."""
+    return built_binary(os.path.join(_multi_instance_build_dir, "hip_multi_instance_app"), "hip_multi_instance_app")
 
 
 # HIP samples are cloned from ROCm/hip-tests rather than vendored.
