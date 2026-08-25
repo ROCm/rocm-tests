@@ -1,7 +1,7 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 """
-test_multi_instance.py -- concurrent multi-instance HIP execution via HIP_VISIBLE_DEVICES.
+test_hip_multi_instance.py -- concurrent multi-instance HIP execution via HIP_VISIBLE_DEVICES.
 
 Launches two instances of a self-verifying HIP vector-add workload
 (``hip_multi_instance_app``) concurrently and asserts both complete correctly:
@@ -20,11 +20,18 @@ runtime.fast is declared explicitly.
 
 import pytest
 
+# Per-instance stdout lands under the repo-standard artifacts path so CI collects
+# it, rather than being left behind in /tmp on the test node.
+_LOG_DIR = "output/artifacts/hip_runtime"
+
 
 def _launch_two(target_executor, ld: str, app: str, dev0: str, dev1: str, tag: str):
     """Run two app instances concurrently on the given visible devices; return combined stdout."""
-    log0, log1 = f"/tmp/multi_instance_{tag}_0.log", f"/tmp/multi_instance_{tag}_1.log"
+    log0, log1 = f"{_LOG_DIR}/multi_instance_{tag}_0.log", f"{_LOG_DIR}/multi_instance_{tag}_1.log"
     cmd = (
+        # Separate statements, not `&&`: `a && b &` would background the mkdir too
+        # and race the redirections against directory creation.
+        f"mkdir -p {_LOG_DIR}; "
         f"env LD_LIBRARY_PATH={ld} HIP_VISIBLE_DEVICES={dev0} {app} >{log0} 2>&1 & "
         f"env LD_LIBRARY_PATH={ld} HIP_VISIBLE_DEVICES={dev1} {app} >{log1} 2>&1 & "
         f"wait; echo '---INSTANCE-0---'; cat {log0}; echo '---INSTANCE-1---'; cat {log1}"

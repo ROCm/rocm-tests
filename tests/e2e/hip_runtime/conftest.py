@@ -15,6 +15,11 @@ only the required target rather than compiling unrelated HIP runtime binaries:
 - ``_ipc_module_load_build_dir``  — builds ``ipc_alltoall_module_load``,
   ``ipc_dup_import_module_load``, and ``noop.hsaco`` (HIP IPC regression tests;
   requires ``--gpu-arch``).
+- ``_device_alloc_build_dir``     — builds ``device_side_alloc`` (in-kernel
+  ``malloc``/``free`` from device code; requires ``--gpu-arch``).
+- ``_multi_instance_build_dir``   — builds ``hip_multi_instance_app`` (self-
+  verifying vector-add run as concurrent processes to exercise
+  ``HIP_VISIBLE_DEVICES`` placement; requires ``--gpu-arch``).
 - ``golden_workload_binary``  — builds ``golden_workload`` (SAXPY loop for
   partition isolation; requires ``--gpu-arch`` for HIP kernel offload).
 - ``buggy_workload_binary``   — builds ``buggy_workload`` (fault-injection
@@ -30,6 +35,8 @@ Build output layout::
     output/test-binaries/hip_runtime/ipc_module_load/ipc_alltoall_module_load
     output/test-binaries/hip_runtime/ipc_module_load/ipc_dup_import_module_load
     output/test-binaries/hip_runtime/ipc_module_load/noop.hsaco
+    output/test-binaries/hip_runtime/device_alloc_build/device_side_alloc
+    output/test-binaries/hip_runtime/multi_instance_build/hip_multi_instance_app
     output/test-binaries/hip_runtime/partition_isolation/golden_workload
     output/test-binaries/hip_runtime/partition_isolation/buggy_workload
     output/test-binaries/hip_runtime/partition_isolation/hip_device_count
