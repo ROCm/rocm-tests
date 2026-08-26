@@ -150,7 +150,10 @@ class HipblasltBench(Test):
             else:
                 failed += 1
 
-        print(f"  Completed: {passed}/{total_shapes} shapes passed, {failed} failed")
+        summary = (f"  Completed: {passed}/{total_shapes} shapes passed, "
+                   f"{failed} failed")
+        print(summary)
+        ctx.append_console(summary)
         return RunResult(exit_code=1 if failed > 0 else 0, reproduce_cmd=reproduce)
 
     # --- Helpers ---
@@ -206,9 +209,8 @@ class HipblasltBench(Test):
             cwd=cwd,
             timeout=float(timeout) if timeout is not None else None,
         )
-        # When an executor is wired, framework logging already copies
-        # captured stdout into console.log; printing data rows here
-        # duplicates them and breaks shape-identity validation.
+        if ctx.console_log is not None and (res.stdout or res.stderr):
+            ctx.append_console(res.stdout + res.stderr)
         if res.exit_code == 124:
             print(f"  [hipblaslt] FAIL: watchdog timeout — shape {n}/{total} "
                   f"({tA}{tB} {M}x{N}x{K}x{B}) did not complete within "
@@ -242,11 +244,10 @@ class HipblasltBench(Test):
             if data_line is None and re.match(r"^\s+[NT],[NT],\d", line):
                 data_line = line
 
-        if print_header and header_line and executor is None:
+        if print_header and header_line:
             print(header_line)
         if data_line:
-            if executor is None:
-                print(data_line)
+            print(data_line)
             return True
         else:
             # Same load-bearing prefix as the exit-code branch above; see the

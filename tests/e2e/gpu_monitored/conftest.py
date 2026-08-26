@@ -66,6 +66,7 @@ def cuda_memtest_source(external_build, compiler_build_dir: str) -> str:
         timeout=600.0,
     )
     external_build.assert_license_present(src_dir)
+    os.environ["ROCM_TEST_CUDA_MEMTEST_SRC"] = str(src_dir)
     return str(src_dir)
 
 

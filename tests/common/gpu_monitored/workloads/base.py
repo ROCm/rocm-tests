@@ -16,7 +16,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, TYPE_CHECKING
 
 from tests.common.gpu_monitored.config import Config
-from tests.common.gpu_monitored.executor_bridge import run_command, run_command_redirect
+from tests.common.gpu_monitored.executor_bridge import (
+    run_command,
+    run_command_captured,
+    run_command_redirect,
+)
 
 if TYPE_CHECKING:
     from framework.executors.abstract_executor import AbstractExecutor
@@ -82,6 +86,7 @@ class RunContext:
     log_root: Path
     target_executor: Optional["NodeExecutorGroup"] = None
     monitor_executor: Optional["AbstractExecutor"] = None
+    console_log: Optional[Path] = None
 
     @property
     def rocm_root(self) -> Path:
@@ -94,6 +99,16 @@ class RunContext:
     @property
     def num_gpus(self) -> int:
         return self.config.num_gpus
+
+    def append_console(self, text: str) -> None:
+        """Append workload output to ``console.log`` for validation."""
+        if not text or self.console_log is None:
+            return
+        self.console_log.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.console_log, "a", encoding="utf-8", errors="replace") as fh:
+            fh.write(text)
+            if not text.endswith("\n"):
+                fh.write("\n")
 
     def exec(self, cmd: Sequence, env: Optional[Dict[str, str]] = None,
              timeout: Optional[int] = None, check: bool = False,
@@ -149,6 +164,24 @@ class RunContext:
             finally:
                 done.set()
                 follower.join(timeout=30)
+                if self.console_log is not None and stdout_file.is_file():
+                    try:
+                        self.append_console(stdout_file.read_text(errors="replace"))
+                    except OSError:
+                        pass
+
+        executor = self.target_executor or self.monitor_executor
+        if stdout_file is None and self.console_log is not None and executor is not None:
+            res = run_command_captured(
+                executor,
+                list(cmd),
+                timeout=float(timeout) if timeout is not None else None,
+                env=env,
+                check=check,
+            )
+            if res.stdout or res.stderr:
+                self.append_console(res.stdout + res.stderr)
+            return res.exit_code
 
         if stdout_file is None and self.target_executor is not None:
             return run_command(
