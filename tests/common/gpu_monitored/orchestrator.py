@@ -117,6 +117,7 @@ class MonitoredTestOrchestrator:
             log_root=self.config.log_root,
             target_executor=self.target_executor,
             monitor_executor=self.monitor_executor,
+            console_log=run_dir / "console.log",
         )
 
         # Run workload with monitoring. Use ``time.monotonic`` so an NTP

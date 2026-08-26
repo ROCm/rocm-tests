@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import time
 from pathlib import Path
@@ -42,8 +43,16 @@ class CudaMemtest(Test):
     # and random moving-inversion patterns plus the 64-move block test.
     REQUIRED_SUBTESTS = (0, 1, 2, 3, 4, 5)
 
+    @classmethod
+    def _source_dir(cls, config: Config) -> Path:
+        """Return cuda_memtest checkout (``output/external/...`` after framework remap)."""
+        override = os.environ.get("ROCM_TEST_CUDA_MEMTEST_SRC", "").strip()
+        if override:
+            return Path(override)
+        return config.build_dir / "cuda_memtest"
+
     def build(self, ctx: BuildContext) -> BuildStatus:
-        dir_ = ctx.build_dir / "cuda_memtest"
+        dir_ = self._source_dir(ctx.config)
         ex = ctx.monitor_executor
         print("  [build] cuda_memtest: building...")
         if not (dir_ / ".git").is_dir():
@@ -148,10 +157,10 @@ class CudaMemtest(Test):
         return BuildStatus.OK
 
     def available(self, config: Config) -> bool:
-        return (config.build_dir / "cuda_memtest" / "cuda_memtest").is_file()
+        return (self._source_dir(config) / "cuda_memtest").is_file()
 
     def run(self, ctx: RunContext) -> RunResult:
-        bin_ = ctx.build_dir / "cuda_memtest" / "cuda_memtest"
+        bin_ = self._source_dir(ctx.config) / "cuda_memtest"
         # The automatic target retains high memory pressure without consuming
         # every free byte (which can starve HSA runtime bookkeeping). An
         # explicit operator cap still wins.
