@@ -212,7 +212,8 @@ jobs:
               'hipfile_run' \
               'hiptensor_lib' \
               'rocalution_lib' \
-              'hipify_run'
+              'hipify_run' \
+              'core-hip_run'
           fi
 
       - name: Install uv
