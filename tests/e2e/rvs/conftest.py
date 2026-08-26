@@ -17,91 +17,16 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
-import re
 
 import pytest
 
 from framework.executors.local_executor import run_cmd_get_stdout_stderr
+from tests.common.gpu_pci_map import detect_gpu_conf_dir_from_lspci
 
 logger = logging.getLogger(__name__)
 
 _RVS_REPO_URL = "https://github.com/ROCm/ROCmValidationSuite.git"
 _RVS_REF = os.environ.get("ROCM_TEST_RVS_REF", "master")
-
-"""PCI device ID + revision -> short name (used for RVS config directory lookup)"""
-_GPU_DEVICE_MAP = {
-    "66a1_00": "MI50",
-    "66a1_06": "MI50",
-    "738c_01": "MI100",
-    "738c_cc": "MI100",
-    "740f_02": "MI210",
-    "7410_02": "MI210",
-    "740c_01": "MI250",
-    "7408_00": "MI250",
-    "74a0_00": "MI300A",
-    "74b4_00": "MI300A",
-    "74a1_00": "MI300X",
-    "74b5_00": "MI300X",
-    "74a9_00": "MI300X-HF",
-    "74bd_00": "MI300X-HF",
-    "74a2_00": "MI308X",
-    "74b6_00": "MI308X",
-    "74a8_00": "MI308X-HF",
-    "74bc_00": "MI308X-HF",
-    "74a5_00": "MI325X",
-    "74b9_00": "MI325X",
-    "75a0_00": "MI350X",
-    "75b0_00": "MI350X",
-    "75a3_00": "MI355X",
-    "75b3_00": "MI355X",
-    "73a3_00": "nv21",
-    "73ae_00": "nv21",
-    "7448_00": "nv31",
-    "7448_ec": "nv31",
-    "744c_c0": "nv31",
-    "744c_c8": "nv31",
-    "744c_cc": "nv31",
-    "744c_ce": "nv31",
-    "744c_cf": "nv31",
-    "744c_e0": "nv31",
-    "744c_ec": "nv31",
-    "744c_e8": "nv31",
-    "744c_ee": "nv31",
-    "745e_cc": "nv31",
-    "7449_00": "nv31",
-    "744a_00": "nv31",
-    "7460_00": "nv32",
-    "7461_00": "nv32",
-    "7470_00": "nv32",
-    "747e_c8": "nv32",
-    "747e_c9": "nv32",
-    "747e_ff": "nv32",
-    "747e_d8": "nv32",
-    "747e_d9": "nv32",
-    "747e_db": "nv32",
-    "748f_30": "gfx1200",
-    "748f_31": "gfx1200",
-    "748f_32": "RX9060",
-    "748f_f0": "gfx1200",
-    "748f_f1": "gfx1200",
-    "748f_f2": "gfx1200",
-    "748f_f3": "RX9060",
-    "7590_c0": "gfx1200",
-    "7590_c7": "RX9060",
-    "746f_30": "RX9070GRE",
-    "746f_31": "gfx1201",
-    "746f_32": "RX9070",
-    "746f_f0": "RX9070GRE",
-    "746f_f1": "RX9070GRE",
-    "746f_f2": "RX9070GRE",
-    "746f_f3": "RX9070",
-    "746f_f4": "RX9070",
-    "746f_f5": "gfx1201",
-    "746f_f6": "RX9070GRE",
-    "7550_c0": "gfx1201",
-    "7550_c3": "RX9070GRE",
-    "7551_c0": "gfx1201",
-}
 
 
 def _is_rvs_installed(rock_dir: str, cmake_executor=None) -> bool:
@@ -126,51 +51,7 @@ def _file_exists(path: pathlib.Path, cmake_executor=None) -> bool:
 
 def _detect_gpu_conf_dir(cmake_executor=None) -> str:
     """Detect GPU PCI device ID and map to RVS config directory name."""
-    if cmake_executor is not None:
-        cmd = "lspci -n -d 1002: | grep -E '0300|1200' | head -1"
-        result = cmake_executor.run(cmd)
-        line = (result.stdout or "").strip()
-    else:
-        try:
-            rc, stdout, _stderr = run_cmd_get_stdout_stderr(
-                "bash",
-                "-c",
-                "lspci -n -d 1002: | grep -E '0300|1200' | head -1",
-                timeout=10,
-                quiet=True,
-            )
-        except Exception:
-            logger.warning("lspci not available for GPU detection")
-            return ""
-        line = stdout.strip() if rc == 0 else ""
-
-    if not line:
-        logger.warning("No AMD GPU detected via lspci")
-        return ""
-
-    match = re.search(r"1002:([0-9a-f]{4})", line, re.IGNORECASE)
-    if not match:
-        logger.warning("Could not parse device ID from lspci line: %s", line)
-        return ""
-    device_id = match.group(1).lower()
-
-    rev_match = re.search(r"\(rev\s+([0-9a-f]+)\)", line, re.IGNORECASE)
-    rev = rev_match.group(1).lower() if rev_match else "00"
-
-    key = f"{device_id}_{rev}"
-    gpu_name = _GPU_DEVICE_MAP.get(key, "")
-
-    if gpu_name:
-        logger.info("Detected GPU: device_id=%s, rev=%s, key=%s -> %s", device_id, rev, key, gpu_name)
-    else:
-        logger.warning(
-            "GPU detected (device_id=%s, rev=%s, key=%s) but no mapping found in GPU_DEVICE_MAP",
-            device_id,
-            rev,
-            key,
-        )
-
-    return gpu_name
+    return detect_gpu_conf_dir_from_lspci(cmake_executor=cmake_executor)
 
 
 def _collect_conf_roots(
@@ -366,3 +247,107 @@ def rvs_find_conf(rock_dir: str, rvs_source: str, cmake_executor, rvs_binary: st
         pytest.skip(f"RVS config {config_name} not found in {[str(r) for r in search_roots]}")
 
     return _find_conf
+
+
+def export_rvs_env_paths(
+    rvs_binary: str | None,
+    rvs_source: str | None,
+    rock_dir: str,
+    *,
+    transferbench_binary: str | None = None,
+    compiler_build_dir: str | None = None,
+) -> None:
+    """Publish RVS / TransferBench paths for gpu_monitored workload modules."""
+    if rvs_binary:
+        os.environ["ROCM_TEST_RVS_BIN"] = rvs_binary
+
+    if rvs_source:
+        rock_conf = pathlib.Path(rock_dir) / "share" / "rocm-validation-suite" / "conf"
+        install_base = pathlib.Path(rvs_source) / "install"
+        install_conf = None
+        if install_base.exists():
+            for candidate in install_base.rglob("share/rocm-validation-suite/conf"):
+                if candidate.is_dir():
+                    install_conf = candidate
+                    break
+        source_conf = pathlib.Path(rvs_source) / "rvs" / "conf"
+
+        for root in (install_conf, rock_conf, source_conf):
+            if root is not None and root.is_dir():
+                os.environ["ROCM_TEST_RVS_CONF_ROOT"] = str(root)
+                break
+
+    if transferbench_binary:
+        os.environ["ROCM_TEST_TRANSFERBENCH_BIN"] = transferbench_binary
+        return
+
+    if not rvs_binary:
+        return
+
+    tb_candidates = [
+        pathlib.Path(rock_dir) / "bin" / "TransferBench",
+        pathlib.Path(rvs_binary).parent / "TransferBench",
+    ]
+    if compiler_build_dir:
+        build_root = pathlib.Path(compiler_build_dir) / "transferbench"
+        tb_candidates.extend(
+            [
+                build_root / "TransferBench",
+                build_root / "build" / "TransferBench",
+            ]
+        )
+    if install_base.exists():
+        tb_candidates.extend(install_base.rglob("bin/TransferBench"))
+    for candidate in tb_candidates:
+        p = pathlib.Path(candidate)
+        if p.is_file() and os.access(p, os.X_OK):
+            os.environ["ROCM_TEST_TRANSFERBENCH_BIN"] = str(p)
+            break
+
+
+@pytest.fixture(scope="session")
+def transferbench_binary(
+    rock_dir: str,
+    compiler_build_dir: str,
+    cmake_build_dir,
+    cmake_executor,
+    built_binary,
+    request,
+) -> str:
+    """Locate or build TransferBench from the RVS external submodule."""
+    for candidate in (
+        pathlib.Path(rock_dir) / "bin" / "TransferBench",
+        pathlib.Path(compiler_build_dir) / "transferbench" / "TransferBench",
+        pathlib.Path(compiler_build_dir) / "transferbench" / "build" / "TransferBench",
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            logger.info("Using TransferBench: %s", candidate)
+            return str(candidate)
+
+    # Only clone/build RVS submodules when TransferBench is not already present.
+    rvs_source = request.getfixturevalue("rvs_source")
+    tb_src = pathlib.Path(rvs_source) / "external" / "TransferBench"
+    if not (tb_src / "CMakeLists.txt").is_file():
+        pytest.fail(
+            f"TransferBench source not found at {tb_src}. "
+            f"Ensure RVS submodules are initialized."
+        )
+
+    logger.info("Building TransferBench from source: %s", tb_src)
+    build_dir = cmake_build_dir(
+        src=str(tb_src),
+        subdir="transferbench",
+        extra_cmake_args=[
+            f"-DROCM_PATH={rock_dir}",
+            f"-DCMAKE_PREFIX_PATH={rock_dir}",
+        ],
+        compiler_mode="optional_auto",
+        label="transferbench",
+        artifact="TransferBench",
+    )
+    tb_bin = pathlib.Path(build_dir) / "TransferBench"
+    if not tb_bin.is_file() and cmake_executor is None:
+        # cmake_build_dir returns the build directory; binary lives there.
+        pass
+    return built_binary(str(tb_bin), "TransferBench")
+
