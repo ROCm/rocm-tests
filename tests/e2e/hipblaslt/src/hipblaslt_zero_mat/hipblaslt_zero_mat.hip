@@ -6,15 +6,9 @@ SPDX-License-Identifier: MIT
 //
 // D = alpha * A^T * B + beta * C with alpha=beta=1 and C zeroed, so a zero
 // operand makes every element of D exactly 0. A is FP8 (E4M3), B is BF8 (E5M2)
-// and C/D are BFloat16, matching the mixed-precision pairing the operation is
-// deployed with. Two scenarios selected by argv[1]:
-//
-//   azero / bzero   (or "all")
-//
-// The FP8 encoding is chosen from the device architecture: FNUZ on gfx94x, the
-// OCP-standard variants on gfx950 and newer. D is poisoned before the GEMM so a
-// zero result is meaningful, then every element is checked finite and exactly
-// zero. Prints "hipblaslt_zero_mat <check>: PASSED" per scenario.
+// and C/D are BFloat16. D is poisoned before the GEMM so a zero result is
+// meaningful. Scenario comes from argv[1]: azero / bzero (or "all"). Prints
+// "hipblaslt_zero_mat <check>: PASSED" per scenario.
 
 #include <hip/hip_runtime.h>
 #include <hipblaslt/hipblaslt.h>
@@ -49,8 +43,7 @@ namespace {
 constexpr int kM = 8192, kN = 32768, kK = 1024;
 
 // Any finite nonzero FP8 byte works for the operand that is not zeroed: 0x3C
-// decodes to a small finite value in all four E4M3/E5M2 encodings, so the
-// product stays zero without depending on which encoding is in use.
+// decodes to a small finite value in all four E4M3/E5M2 encodings.
 constexpr int kNonZeroByte = 0x3C;
 
 float bf16_to_float(uint16_t raw) {
@@ -61,29 +54,25 @@ float bf16_to_float(uint16_t raw) {
 }
 
 bool run_check(const std::string& name, hipDataType a_type, hipDataType b_type, bool a_zero) {
-  hipblasLtHandle_t handle;
-  HBLT_CHECK(hipblasLtCreate(&handle));
-
-  const size_t a_elems = static_cast<size_t>(kM) * kK;  // 1 byte per FP8 elem
-  const size_t b_elems = static_cast<size_t>(kK) * kN;
   const size_t cd_elems = static_cast<size_t>(kM) * kN;
   const size_t cd_bytes = cd_elems * sizeof(uint16_t);
 
-  void *dA = nullptr, *dB = nullptr, *dC = nullptr, *dD = nullptr;
-  HIP_CHECK(hipMalloc(&dA, a_elems));
-  HIP_CHECK(hipMalloc(&dB, b_elems));
+  hipblasLtHandle_t handle;
+  HBLT_CHECK(hipblasLtCreate(&handle));
+
+  void *dA = nullptr, *dB = nullptr, *dC = nullptr, *dD = nullptr, *dScales = nullptr;
+  HIP_CHECK(hipMalloc(&dA, static_cast<size_t>(kM) * kK));  // 1 byte per FP8 elem
+  HIP_CHECK(hipMalloc(&dB, static_cast<size_t>(kK) * kN));
   HIP_CHECK(hipMalloc(&dC, cd_bytes));
   HIP_CHECK(hipMalloc(&dD, cd_bytes));
-  HIP_CHECK(hipMemset(dA, a_zero ? 0x00 : kNonZeroByte, a_elems));
-  HIP_CHECK(hipMemset(dB, a_zero ? kNonZeroByte : 0x00, b_elems));
+  HIP_CHECK(hipMalloc(&dScales, 2 * sizeof(float)));
+  HIP_CHECK(hipMemset(dA, a_zero ? 0x00 : kNonZeroByte, static_cast<size_t>(kM) * kK));
+  HIP_CHECK(hipMemset(dB, a_zero ? kNonZeroByte : 0x00, static_cast<size_t>(kK) * kN));
   HIP_CHECK(hipMemset(dC, 0x00, cd_bytes));
-
-  float *dScaleA = nullptr, *dScaleB = nullptr;
-  float one = 1.0f;
-  HIP_CHECK(hipMalloc(&dScaleA, sizeof(float)));
-  HIP_CHECK(hipMalloc(&dScaleB, sizeof(float)));
-  HIP_CHECK(hipMemcpy(dScaleA, &one, sizeof(float), hipMemcpyHostToDevice));
-  HIP_CHECK(hipMemcpy(dScaleB, &one, sizeof(float), hipMemcpyHostToDevice));
+  const float ones[2] = {1.0f, 1.0f};
+  HIP_CHECK(hipMemcpy(dScales, ones, sizeof(ones), hipMemcpyHostToDevice));
+  float* dScaleA = static_cast<float*>(dScales);
+  float* dScaleB = dScaleA + 1;
 
   hipblasLtMatmulDesc_t op;
   HBLT_CHECK(hipblasLtMatmulDescCreate(&op, HIPBLAS_COMPUTE_32F, HIP_R_32F));
@@ -101,15 +90,14 @@ bool run_check(const std::string& name, hipDataType a_type, hipDataType b_type, 
   HBLT_CHECK(hipblasLtMatrixLayoutCreate(&lD, HIP_R_16BF, kM, kN, kM));
 
   hipblasLtMatmulPreference_t pref;
-  HBLT_CHECK(hipblasLtMatmulPreferenceCreate(&pref));
   size_t max_ws = 64 * 1024 * 1024;
+  HBLT_CHECK(hipblasLtMatmulPreferenceCreate(&pref));
   HBLT_CHECK(hipblasLtMatmulPreferenceSetAttribute(pref, HIPBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_ws,
                                                    sizeof(max_ws)));
 
   hipblasLtMatmulHeuristicResult_t heur[16];
   int found = 0;
-  hipblasStatus_t hs =
-      hipblasLtMatmulAlgoGetHeuristic(handle, op, lA, lB, lC, lD, pref, 16, heur, &found);
+  hipblasStatus_t hs = hipblasLtMatmulAlgoGetHeuristic(handle, op, lA, lB, lC, lD, pref, 16, heur, &found);
   if (hs != HIPBLAS_STATUS_SUCCESS || found == 0) {
     std::printf("no hipBLASLt algorithm for %s (a_type=%d b_type=%d): status=%d found=%d\n", name.c_str(),
                 (int)a_type, (int)b_type, (int)hs, found);
@@ -122,74 +110,47 @@ bool run_check(const std::string& name, hipDataType a_type, hipDataType b_type, 
 
   float alpha = 1.0f, beta = 1.0f;
   std::vector<uint16_t> hD(cd_elems);
-  bool ok = true;
-
   HIP_CHECK(hipMemset(dD, 0xCC, cd_bytes));  // poison so a real zero result is meaningful
   HBLT_CHECK(hipblasLtMatmul(handle, op, &alpha, dA, lA, dB, lB, &beta, dC, lC, dD, lD, &heur[0].algo, ws, ws_size,
                              nullptr));
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(hD.data(), dD, cd_bytes, hipMemcpyDeviceToHost));
 
-  for (size_t i = 0; i < cd_elems; ++i) {
+  bool ok = true;
+  for (size_t i = 0; i < cd_elems && ok; ++i) {
     float z = bf16_to_float(hD[i]);
     if (z != 0.0f || !std::isfinite(z)) {
       std::printf("unexpected output at %zu: %f (check %s)\n", i, z, name.c_str());
       ok = false;
-      break;
     }
   }
 
-  if (ws) HIP_CHECK(hipFree(ws));
+  for (auto layout : {lA, lB, lC, lD}) hipblasLtMatrixLayoutDestroy(layout);
+  for (void* p : {dA, dB, dC, dD, dScales, ws}) HIP_CHECK(hipFree(p));
   hipblasLtMatmulPreferenceDestroy(pref);
-  hipblasLtMatrixLayoutDestroy(lA);
-  hipblasLtMatrixLayoutDestroy(lB);
-  hipblasLtMatrixLayoutDestroy(lC);
-  hipblasLtMatrixLayoutDestroy(lD);
   hipblasLtMatmulDescDestroy(op);
-  HIP_CHECK(hipFree(dA));
-  HIP_CHECK(hipFree(dB));
-  HIP_CHECK(hipFree(dC));
-  HIP_CHECK(hipFree(dD));
-  HIP_CHECK(hipFree(dScaleA));
-  HIP_CHECK(hipFree(dScaleB));
   hipblasLtDestroy(handle);
   return ok;
-}
-
-struct Check {
-  const char* name;
-  bool a_zero;
-};
-
-// gfx94x (MI300 series) implements the FNUZ FP8 encodings; gfx950 and newer
-// implement the OCP-standard ones instead. Asking for the wrong pair makes
-// hipblasLtMatmulAlgoGetHeuristic return no algorithms at all.
-bool use_fnuz_fp8(const char** arch_out) {
-  static hipDeviceProp_t prop;
-  if (hipGetDeviceProperties(&prop, 0) != hipSuccess) {
-    *arch_out = "unknown";
-    return true;
-  }
-  *arch_out = prop.gcnArchName;
-  return std::strncmp(prop.gcnArchName, "gfx94", 5) == 0;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string sel = (argc > 1) ? argv[1] : "all";
-  const char* arch = "unknown";
-  const bool fnuz = use_fnuz_fp8(&arch);
+  const std::string sel = (argc > 1) ? argv[1] : "all";
+
+  // gfx94x (MI300 series) implements the FNUZ FP8 encodings; gfx950 and newer
+  // implement the OCP-standard ones. Requesting the wrong pair makes the
+  // heuristic return no algorithms at all.
+  hipDeviceProp_t prop;
+  const bool known = hipGetDeviceProperties(&prop, 0) == hipSuccess;
+  const bool fnuz = !known || std::strncmp(prop.gcnArchName, "gfx94", 5) == 0;
   const hipDataType a_type = fnuz ? HIP_R_8F_E4M3_FNUZ : HIP_R_8F_E4M3;
   const hipDataType b_type = fnuz ? HIP_R_8F_E5M2_FNUZ : HIP_R_8F_E5M2;
-  std::printf("hipblaslt_zero_mat: arch=%s fp8=%s\n", arch, fnuz ? "FNUZ" : "OCP");
+  std::printf("hipblaslt_zero_mat: arch=%s fp8=%s\n", known ? prop.gcnArchName : "unknown", fnuz ? "FNUZ" : "OCP");
 
-  const Check checks[] = {
-      {"azero", true},
-      {"bzero", false},
-  };
+  struct Check { const char* name; bool a_zero; };
   int ran = 0, failed = 0;
-  for (const auto& c : checks) {
+  for (const Check& c : {Check{"azero", true}, Check{"bzero", false}}) {
     if (sel != "all" && sel != c.name) continue;
     ++ran;
     bool ok = run_check(c.name, a_type, b_type, c.a_zero);
