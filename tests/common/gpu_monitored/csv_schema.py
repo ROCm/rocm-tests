@@ -17,7 +17,6 @@ independent string-literal copies across those modules.
 
 from __future__ import annotations
 
-
 # Raw amd-smi CSV columns (as emitted by ``amd-smi monitor --csv``)
 TIMESTAMP = "timestamp"
 GPU = "gpu"
@@ -26,8 +25,8 @@ MAX_POWER = "max_power"
 HOTSPOT_TEMP = "hotspot_temperature"
 MEM_TEMP = "memory_temperature"
 GFX_CLK = "gfx_clk"
-GFX_UTIL = "gfx"           # amd-smi labels the gfx utilization column simply "gfx"
-MEM_UTIL = "mem"           # and the memory engine column simply "mem"
+GFX_UTIL = "gfx"  # amd-smi labels the gfx utilization column simply "gfx"
+MEM_UTIL = "mem"  # and the memory engine column simply "mem"
 MEM_CLK = "mem_clock"
 VRAM_USED = "vram_used"
 VRAM_TOTAL = "vram_total"

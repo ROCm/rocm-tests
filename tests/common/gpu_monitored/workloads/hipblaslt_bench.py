@@ -18,17 +18,15 @@ absent it reports ``BUILD_FAILED`` so CI surfaces the missing prerequisite.
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+import re
 
 from tests.common.gpu_monitored.config import Config
 from tests.common.gpu_monitored.executor_bridge import run_command_captured
 from tests.common.gpu_monitored.workloads.base import BuildContext, BuildStatus, RunContext, RunResult, Test, TestSpec
 
-
 # GEMM shapes: (M, N, K, batch_count)
-NN_SHAPES: List[Tuple[int, int, int, int]] = [
+NN_SHAPES: list[tuple[int, int, int, int]] = [
     (8192, 320, 320, 1),
     (2048, 640, 640, 1),
     (512, 1280, 1280, 1),
@@ -45,7 +43,7 @@ NN_SHAPES: List[Tuple[int, int, int, int]] = [
     (1024, 80, 77, 16),
 ]
 
-NT_SHAPES: List[Tuple[int, int, int, int]] = [
+NT_SHAPES: list[tuple[int, int, int, int]] = [
     (4096, 4096, 40, 16),
     (1024, 1024, 80, 16),
     (4096, 77, 40, 16),
@@ -78,12 +76,14 @@ class HipblasltBench(Test):
             print(f"  [build] hipblaslt-bench: found at {ctx.rocm_root}/bin")
             return BuildStatus.OK
 
-        print(f"  [build] hipblaslt-bench: not found at "
-              f"{ctx.rocm_root}/bin/hipblaslt-bench. It ships in the ROCm "
-              f"'hipblaslt-benchmarks' / amdrocm-blas-test* package (and the "
-              f"ROCm test tarball) and must be preinstalled in this ROCm root "
-              f"as a prerequisite; the harness does not build it from source. "
-              f"Install it and re-run.")
+        print(
+            f"  [build] hipblaslt-bench: not found at "
+            f"{ctx.rocm_root}/bin/hipblaslt-bench. It ships in the ROCm "
+            f"'hipblaslt-benchmarks' / amdrocm-blas-test* package (and the "
+            f"ROCm test tarball) and must be preinstalled in this ROCm root "
+            f"as a prerequisite; the harness does not build it from source. "
+            f"Install it and re-run."
+        )
         return BuildStatus.BUILD_FAILED
 
     def available(self, config: Config) -> bool:
@@ -101,25 +101,35 @@ class HipblasltBench(Test):
             "LD_LIBRARY_PATH": f"{rocm_lib}:{existing_ld}" if existing_ld else rocm_lib,
         }
         common_args = [
-            "--precision", "f16_r",
-            "--compute_type", "f32_r",
-            "--activation_type", "none",
-            "--iters", str(self.ITERS),
-            "--cold_iters", str(self.COLD_ITERS),
-            "--alpha", "1",
-            "--beta", "0",
+            "--precision",
+            "f16_r",
+            "--compute_type",
+            "f32_r",
+            "--activation_type",
+            "none",
+            "--iters",
+            str(self.ITERS),
+            "--cold_iters",
+            str(self.COLD_ITERS),
+            "--alpha",
+            "1",
+            "--beta",
+            "0",
         ]
 
         total_shapes = len(NN_SHAPES) + len(NT_SHAPES)
-        print(f"  Running {total_shapes} GEMM shapes ({len(NN_SHAPES)} NN + {len(NT_SHAPES)} NT), "
-              f"{self.ITERS} iters each")
+        print(
+            f"  Running {total_shapes} GEMM shapes ({len(NN_SHAPES)} NN + {len(NT_SHAPES)} NT), "
+            f"{self.ITERS} iters each"
+        )
         shape_timeout = ctx.config.per_iter_watchdog or None
 
         # Reproduce command for first shape
         timeout_part = f"timeout {shape_timeout} " if shape_timeout else ""
-        reproduce = (f"{timeout_part}{bench} -v --transA N --transB N "
-                     f"-m 8192 -n 320 -k 320 "
-                     + " ".join(common_args) + " --batch_count 1")
+        reproduce = (
+            f"{timeout_part}{bench} -v --transA N --transB N "
+            f"-m 8192 -n 320 -k 320 " + " ".join(common_args) + " --batch_count 1"
+        )
 
         shape_num = 0
         passed = 0
@@ -129,29 +139,56 @@ class HipblasltBench(Test):
         # directory instead of the orchestrator's script dir.
         shape_cwd = ctx.run_dir if ctx.run_dir.is_dir() else None
 
-        for (M, N, K, B) in NN_SHAPES:
+        for M, N, K, B in NN_SHAPES:  # noqa: N806 — GEMM dims mirror hipBLASLt CLI names
             shape_num += 1
-            print_header = (shape_num == 1)
-            ok = self._run_shape(ctx, bench, "N", "N", M, N, K, B, shape_num, total_shapes,
-                                 common_args, env, print_header, cwd=shape_cwd,
-                                 timeout=shape_timeout)
+            print_header = shape_num == 1
+            ok = self._run_shape(
+                ctx,
+                bench,
+                "N",
+                "N",
+                M,
+                N,
+                K,
+                B,
+                shape_num,
+                total_shapes,
+                common_args,
+                env,
+                print_header,
+                cwd=shape_cwd,
+                timeout=shape_timeout,
+            )
             if ok:
                 passed += 1
             else:
                 failed += 1
 
-        for (M, N, K, B) in NT_SHAPES:
+        for M, N, K, B in NT_SHAPES:  # noqa: N806 — GEMM dims mirror hipBLASLt CLI names
             shape_num += 1
-            ok = self._run_shape(ctx, bench, "N", "T", M, N, K, B, shape_num, total_shapes,
-                                 common_args, env, print_header=False, cwd=shape_cwd,
-                                 timeout=shape_timeout)
+            ok = self._run_shape(
+                ctx,
+                bench,
+                "N",
+                "T",
+                M,
+                N,
+                K,
+                B,
+                shape_num,
+                total_shapes,
+                common_args,
+                env,
+                print_header=False,
+                cwd=shape_cwd,
+                timeout=shape_timeout,
+            )
             if ok:
                 passed += 1
             else:
                 failed += 1
 
-        summary = (f"  Completed: {passed}/{total_shapes} shapes passed, "
-                   f"{failed} failed")
+        summary = f"  Completed: {passed}/{total_shapes} shapes passed, " f"{failed} failed"
         print(summary)
         ctx.append_console(summary)
         return RunResult(exit_code=1 if failed > 0 else 0, reproduce_cmd=reproduce)
@@ -163,21 +200,35 @@ class HipblasltBench(Test):
         return p.is_file() and os.access(p, os.X_OK)
 
     @classmethod
-    def _find_bin(cls, config: Config) -> Optional[Path]:
+    def _find_bin(cls, config: Config) -> Path | None:
         if cls._is_installed(config.rocm_root):
             return config.rocm_root / "bin" / "hipblaslt-bench"
         return None
 
     @staticmethod
-    def _run_shape(ctx, bench, tA, tB, M, N, K, B, n, total, common_args, env_overrides,
-                   print_header: bool, cwd: Optional[Path] = None,
-                   timeout: Optional[int] = None) -> bool:
+    def _run_shape(  # noqa: C901
+        ctx,
+        bench,
+        tA,
+        tB,
+        M,
+        N,
+        K,
+        B,
+        n,
+        total,
+        common_args,
+        env_overrides,
+        print_header: bool,
+        cwd: Path | None = None,
+        timeout: int | None = None,
+    ) -> bool:
         # BLAS convention: leading dimension tracks the storage layout, which
         # flips under a transpose.
-        #   transA == "N" → A stored M×K → lda = M
-        #   transA == "T" → A stored K×M → lda = K
-        #   transB == "N" → B stored K×N → ldb = K
-        #   transB == "T" → B stored N×K → ldb = N
+        #   transA == "N" -> A stored MxK -> lda = M
+        #   transA == "T" -> A stored KxM -> lda = K
+        #   transB == "N" -> B stored KxN -> ldb = K
+        #   transB == "T" -> B stored NxK -> ldb = N
         # Strides are invariant to the transpose (M*K == K*M, K*N == N*K).
         # Passing the wrong ldb for transB="T" relied on hipblaslt-bench
         # silently correcting the invalid value — a stricter future build
@@ -185,15 +236,37 @@ class HipblasltBench(Test):
         lda = M if tA == "N" else K
         ldb = K if tB == "N" else N
         cmd = [
-            str(bench), "-v",
-            "--transA", tA, "--transB", tB,
-            "-m", str(M), "-n", str(N), "-k", str(K),
-            "--lda", str(lda), "--stride_a", str(M * K),
-            "--ldb", str(ldb), "--stride_b", str(K * N),
-            "--ldc", str(M), "--stride_c", str(M * N),
-            "--ldd", str(M), "--stride_d", str(M * N),
+            str(bench),
+            "-v",
+            "--transA",
+            tA,
+            "--transB",
+            tB,
+            "-m",
+            str(M),
+            "-n",
+            str(N),
+            "-k",
+            str(K),
+            "--lda",
+            str(lda),
+            "--stride_a",
+            str(M * K),
+            "--ldb",
+            str(ldb),
+            "--stride_b",
+            str(K * N),
+            "--ldc",
+            str(M),
+            "--stride_c",
+            str(M * N),
+            "--ldd",
+            str(M),
+            "--stride_d",
+            str(M * N),
             *common_args,
-            "--batch_count", str(B),
+            "--batch_count",
+            str(B),
         ]
         env = dict(os.environ)
         env.update(env_overrides)
@@ -212,9 +285,11 @@ class HipblasltBench(Test):
         if ctx.console_log is not None and (res.stdout or res.stderr):
             ctx.append_console(res.stdout + res.stderr)
         if res.exit_code == 124:
-            print(f"  [hipblaslt] FAIL: watchdog timeout — shape {n}/{total} "
-                  f"({tA}{tB} {M}x{N}x{K}x{B}) did not complete within "
-                  f"--per-iter-watchdog {timeout}s")
+            print(
+                f"  [hipblaslt] FAIL: watchdog timeout — shape {n}/{total} "
+                f"({tA}{tB} {M}x{N}x{K}x{B}) did not complete within "
+                f"--per-iter-watchdog {timeout}s"
+            )
             if res.stdout:
                 print(res.stdout[-1000:])
             if res.stderr:
@@ -228,8 +303,9 @@ class HipblasltBench(Test):
             # (e.g. WARNING -> ERROR) without updating the regex in
             # validation.py in the same commit -- on its own, a rename
             # silently drops the gate to zero matches.
-            print(f"  [hipblaslt] WARNING: shape {n}/{total} ({tA}{tB} {M}x{N}x{K}x{B}) "
-                  f"failed (exit {res.exit_code})")
+            print(
+                f"  [hipblaslt] WARNING: shape {n}/{total} ({tA}{tB} {M}x{N}x{K}x{B}) " f"failed (exit {res.exit_code})"
+            )
             # print last 5 lines of output
             out_lines = (res.stdout + res.stderr).splitlines()[-5:]
             for line in out_lines:
@@ -252,6 +328,5 @@ class HipblasltBench(Test):
         else:
             # Same load-bearing prefix as the exit-code branch above; see the
             # note there before changing this wording.
-            print(f"  [hipblaslt] WARNING: shape {n}/{total} ({tA}{tB} {M}x{N}x{K}x{B}) "
-                  f"produced no data row")
+            print(f"  [hipblaslt] WARNING: shape {n}/{total} ({tA}{tB} {M}x{N}x{K}x{B}) " f"produced no data row")
             return False

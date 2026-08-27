@@ -14,16 +14,18 @@ Layer 5: Exit-code consistency — non-zero exits are surfaced in the
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import csv
-import re
-import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
+import re
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from framework.executors.cpu_executor import CpuExecutor
+
+import contextlib
 
 from tests.common.gpu_monitored.dmesg_capture import capture_dmesg_text
 from tests.common.gpu_monitored.workloads.cudamemtest import CudaMemtest
@@ -134,8 +136,8 @@ RAS_NON_ACTIONABLE_UNCORRECTABLE = re.compile(
 
 @dataclass
 class ValidationResult:
-    message: str            # validation message (e.g. "PASS (19 GEMM results)")
-    failed: bool            # True if validation detected failure
+    message: str  # validation message (e.g. "PASS (19 GEMM results)")
+    failed: bool  # True if validation detected failure
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +159,7 @@ def _read_log(log_file: Path) -> str:
         return f"_READ_FAILED: {type(e).__name__}: {e}"
 
 
-def ras_downgrade(line: str) -> Optional[str]:
+def ras_downgrade(line: str) -> str | None:
     """Normalise a dmesg line for RAS severity, or ``None`` to ignore it.
 
     Strips the "0 uncorrected errors" style phrasing that would otherwise
@@ -173,8 +175,7 @@ def ras_downgrade(line: str) -> Optional[str]:
     the decision the harness actually made.
     """
     candidate = RAS_NON_ACTIONABLE_UNCORRECTABLE.sub("", line)
-    if (RAS_CORRECTED_ONLY.search(candidate)
-            and not RAS_UNCORRECTABLE.search(candidate)):
+    if RAS_CORRECTED_ONLY.search(candidate) and not RAS_UNCORRECTABLE.search(candidate):
         return None
     return candidate
 
@@ -196,7 +197,7 @@ def _count_lines_matching(text: str, pattern: re.Pattern) -> int:
 # ---------------------------------------------------------------------------
 # Per-test Layer 2 validators
 # ---------------------------------------------------------------------------
-def _validate_memtest(
+def _validate_memtest(  # noqa: C901
     log_file: Path,
     exit_code: int,
     *,
@@ -243,12 +244,10 @@ def _validate_memtest(
     if re.search(r"\[cudamemtest\] FAIL: watchdog timeout", text):
         return ValidationResult("watchdog timeout (sub-test did not complete)", True)
     err_pat = re.compile(
-        r"\[ERROR\]\s|"                  # cuda_memtest's bracketed form
+        r"\[ERROR\]\s|"  # cuda_memtest's bracketed form
         # Colon form at line start OR right after the ``[time][host][gpu]:``
         # / ``[time][host][gpu][NN C]:`` tag every PRINTF/FPRINTF emits.
-        r"(?:^|\]:)\s*ERROR:\s+\S|"
-        r"\bMemory access fault\b|"
-        r"\bHIP error:",
+        r"(?:^|\]:)\s*ERROR:\s+\S|" r"\bMemory access fault\b|" r"\bHIP error:",
         re.IGNORECASE | re.MULTILINE,
     )
     err_count = len(err_pat.findall(text))
@@ -272,7 +271,8 @@ def _validate_memtest(
         if total <= 0:
             return ValidationResult(
                 f"coverage line reports a zero denominator ({ran}/{total} "
-                f"sub-tests); cannot confirm any sub-test ran", True,
+                f"sub-tests); cannot confirm any sub-test ran",
+                True,
             )
         if ran < total:
             return ValidationResult(
@@ -281,8 +281,7 @@ def _validate_memtest(
             )
         if ran > total:
             return ValidationResult(
-                f"inconsistent coverage ({ran}/{total} required sub-tests ran; "
-                f"expected exact equality)",
+                f"inconsistent coverage ({ran}/{total} required sub-tests ran; " f"expected exact equality)",
                 True,
             )
         expected = list(CudaMemtest.REQUIRED_SUBTESTS)
@@ -301,20 +300,19 @@ def _validate_memtest(
         completed = [
             (int(test_id), int(rc))
             for test_id, rc in re.findall(
-                r"\[cudamemtest\]\s+enable_test\s+(\d+)\s+finished\s+"
-                r"in\s+[\d.]+s\s+\(rc=(-?\d+)\)",
+                r"\[cudamemtest\]\s+enable_test\s+(\d+)\s+finished\s+" r"in\s+[\d.]+s\s+\(rc=(-?\d+)\)",
                 text,
             )
         ]
         completed_ids = [test_id for test_id, _rc in completed]
         if completed_ids != expected or any(rc != 0 for _test_id, rc in completed):
             return ValidationResult(
-                "incomplete cudamemtest identity coverage "
-                f"(completed IDs {completed_ids}, expected {expected})",
+                "incomplete cudamemtest identity coverage " f"(completed IDs {completed_ids}, expected {expected})",
                 True,
             )
         return ValidationResult(
-            f"PASS ({ran}/{total} sub-tests, 0 memory errors)", False,
+            f"PASS ({ran}/{total} sub-tests, 0 memory errors)",
+            False,
         )
     if require_coverage:
         return ValidationResult(
@@ -331,15 +329,14 @@ def _validate_cudamemtest(log_file: Path, exit_code: int) -> ValidationResult:
 def _validate_hmm_memtest(
     log_file: Path,
     exit_code: int,
-    expected_gpus: Optional[int] = None,
+    expected_gpus: int | None = None,
 ) -> ValidationResult:
     result = _validate_memtest(log_file, exit_code, require_coverage=False)
     if result.failed:
         return result
     text = _read_log(log_file)
     completions = re.findall(
-        r"\[[^\]\r\n]+\]\[[^\]\r\n]+\]\[(\d+)\]:"
-        r"Test0 finished in [\d.]+ seconds\b",
+        r"\[[^\]\r\n]+\]\[[^\]\r\n]+\]\[(\d+)\]:" r"Test0 finished in [\d.]+ seconds\b",
         text,
     )
     if expected_gpus is not None:
@@ -352,19 +349,20 @@ def _validate_hmm_memtest(
                 True,
             )
     elif not completions and not re.search(
-        r"\bTest0 finished in [\d.]+ seconds\b", text,
+        r"\bTest0 finished in [\d.]+ seconds\b",
+        text,
     ):
         return ValidationResult("missing HMM Test0 completion marker", True)
     return result
 
 
-def _validate_rvs(
+def _validate_rvs(  # noqa: C901
     log_file: Path,
     exit_code: int,
-    expected_checks: Optional[int] = None,
-    expected_gpus: Optional[int] = None,
-    checks_per_gpu: Optional[int] = None,
-    expected_actions: Optional[set[str]] = None,
+    expected_checks: int | None = None,
+    expected_gpus: int | None = None,
+    checks_per_gpu: int | None = None,
+    expected_actions: set[str] | None = None,
 ) -> ValidationResult:
     """rvs_iet_stress + rvs_tst
 
@@ -378,7 +376,8 @@ def _validate_rvs(
     if not text:
         return ValidationResult("no RVS output", True)
     if re.search(
-        r"\[rvs_(?:iet_stress|tst)\] FAIL: watchdog timeout", text,
+        r"\[rvs_(?:iet_stress|tst)\] FAIL: watchdog timeout",
+        text,
     ):
         return ValidationResult("watchdog timeout (RVS did not complete)", True)
     # RVS prints the TRUE/FALSE tokens in uppercase; case-sensitive match
@@ -387,9 +386,12 @@ def _validate_rvs(
     false_count = len(re.findall(r"\bpass:\s*FALSE\b", text))
     # Case-sensitive so libc's lowercase "abort()" in a Python traceback
     # or a "double free, aborting" message doesn't falsely trigger.
-    abort_count = len(re.findall(
-        r"(?m)^\s*\[(?:RESULT|ERROR)\].*\bABORT\b", text,
-    ))
+    abort_count = len(
+        re.findall(
+            r"(?m)^\s*\[(?:RESULT|ERROR)\].*\bABORT\b",
+            text,
+        )
+    )
     total = true_count + false_count
 
     if abort_count > 0:
@@ -399,8 +401,7 @@ def _validate_rvs(
             return ValidationResult(f"{false_count}/{total} GPU check(s) failed", True)
         if expected_checks is not None and total != expected_checks:
             return ValidationResult(
-                f"incomplete RVS coverage ({total}/{expected_checks} expected "
-                "GPU checks reported)",
+                f"incomplete RVS coverage ({total}/{expected_checks} expected " "GPU checks reported)",
                 True,
             )
         if expected_gpus is not None and checks_per_gpu is not None:
@@ -416,11 +417,11 @@ def _validate_rvs(
                     f"{total} result lines identify action and GPU)",
                     True,
                 )
-            identities = [(action.strip(), gpu.strip())
-                          for action, gpu in result_rows]
+            identities = [(action.strip(), gpu.strip()) for action, gpu in result_rows]
             if len(set(identities)) != len(identities):
                 return ValidationResult(
-                    "duplicate RVS action/GPU result identity detected", True,
+                    "duplicate RVS action/GPU result identity detected",
+                    True,
                 )
             actions = {action for action, _gpu in identities}
             gpus = {gpu for _action, gpu in identities}
@@ -438,10 +439,10 @@ def _validate_rvs(
                     f"{len(actions)}/{checks_per_gpu} actions)",
                     True,
                 )
-            if any((action, gpu) not in set(identities)
-                   for action in actions for gpu in gpus):
+            if any((action, gpu) not in set(identities) for action in actions for gpu in gpus):
                 return ValidationResult(
-                    "incomplete RVS action/GPU result matrix", True,
+                    "incomplete RVS action/GPU result matrix",
+                    True,
                 )
         return ValidationResult(f"PASS ({true_count}/{total} GPU checks passed)", False)
     return ValidationResult("no RVS pass/fail results found in output", True)
@@ -459,20 +460,22 @@ def _validate_sln_stress(log_file: Path, exit_code: int) -> ValidationResult:
         return ValidationResult("no SLN output", True)
     if "[sln_stress] FAIL: watchdog timeout" in text:
         return ValidationResult(
-            "watchdog timeout (iteration did not complete)", True,
+            "watchdog timeout (iteration did not complete)",
+            True,
         )
     hip_err = len(re.findall(r"HIP error:", text, re.IGNORECASE))
     if hip_err > 0:
         return ValidationResult(f"{hip_err} HIP error(s)", True)
     completed = re.search(
-        r"\[sln_stress\] Completed (\d+) iteration\(s\).*exit=(\d+)", text,
+        r"\[sln_stress\] Completed (\d+) iteration\(s\).*exit=(\d+)",
+        text,
     )
     if completed is None or int(completed.group(1)) < 1:
         return ValidationResult("missing SLN completion summary", True)
     return ValidationResult("PASS (no HIP errors)", False)
 
 
-def _validate_power_band(log_file: Path, exit_code: int) -> ValidationResult:
+def _validate_power_band(log_file: Path, exit_code: int) -> ValidationResult:  # noqa: C901
     text = _read_log(log_file)
     if not text:
         return ValidationResult("no power-band output", True)
@@ -485,41 +488,35 @@ def _validate_power_band(log_file: Path, exit_code: int) -> ValidationResult:
         return ValidationResult("--power-bands is empty", True)
 
     restore_failed = re.search(
-        r"\[power_band\] ERROR: Failed to restore original power caps "
-        r"on (\d+)/(\d+) GPU\(s\)", text,
+        r"\[power_band\] ERROR: Failed to restore original power caps " r"on (\d+)/(\d+) GPU\(s\)",
+        text,
     )
     if restore_failed:
         return ValidationResult(
-            f"power-cap restore failed on {restore_failed.group(1)}/"
-            f"{restore_failed.group(2)} GPUs",
+            f"power-cap restore failed on {restore_failed.group(1)}/" f"{restore_failed.group(2)} GPUs",
             True,
         )
 
     # Surface which band number the workload died on — the single most
     # useful diagnostic for debugging power_band_stress failures. Also
     # matches the settle-period failure (no band number).
-    settle_died = re.search(
-        r"\[power_band\] ERROR: Workload exited during settle period", text)
+    settle_died = re.search(r"\[power_band\] ERROR: Workload exited during settle period", text)
     if settle_died:
         return ValidationResult("workload exited during settle period", True)
 
-    timeout_hit = re.search(
-        r"\[power_band\] ERROR: Workload hit watchdog timeout after (\d+)s", text)
+    timeout_hit = re.search(r"\[power_band\] ERROR: Workload hit watchdog timeout after (\d+)s", text)
     if timeout_hit:
-        return ValidationResult(
-            f"workload hit watchdog timeout after {timeout_hit.group(1)}s", True)
+        return ValidationResult(f"workload hit watchdog timeout after {timeout_hit.group(1)}s", True)
 
-    band_died = re.search(
-        r"\[power_band\] ERROR: Workload died during\s+band (\d+)(?:/(\d+))? "
-        r"\(([^)]+)\)", text)
+    band_died = re.search(r"\[power_band\] ERROR: Workload died during\s+band (\d+)(?:/(\d+))? " r"\(([^)]+)\)", text)
     if band_died:
         n, total, pct = band_died.group(1), band_died.group(2), band_died.group(3)
         suffix = f"/{total}" if total else ""
-        return ValidationResult(
-            f"workload died on band {n}{suffix} ({pct})", True)
+        return ValidationResult(f"workload died on band {n}{suffix} ({pct})", True)
 
     completed = re.findall(
-        r"\[power_band\] Band (\d+)/(\d+) complete", text,
+        r"\[power_band\] Band (\d+)/(\d+) complete",
+        text,
     )
     bands_applied = len(completed)
     partial_apply = re.search(
@@ -537,14 +534,14 @@ def _validate_power_band(log_file: Path, exit_code: int) -> ValidationResult:
         band_numbers = [int(number) for number, _ in completed]
         if len(totals) != 1:
             return ValidationResult(
-                "inconsistent power-band denominators in output", True,
+                "inconsistent power-band denominators in output",
+                True,
             )
         expected = totals.pop()
         expected_order = list(range(1, expected + 1))
         if expected <= 0 or band_numbers != expected_order:
             return ValidationResult(
-                f"invalid power-band coverage sequence "
-                f"({band_numbers!r}; expected {expected_order!r})",
+                f"invalid power-band coverage sequence " f"({band_numbers!r}; expected {expected_order!r})",
                 True,
             )
     if bands_applied == 0 and exit_code == 0:
@@ -559,8 +556,8 @@ def _validate_power_band(log_file: Path, exit_code: int) -> ValidationResult:
     # report to open. Checked last so the cap-restore and band-coverage
     # failures above, which are more specific, still win.
     wl_failed = re.search(
-        r"\[power_band\] ERROR: Workload's own validation failed "
-        r"\(exit (-?\d+)\)", text,
+        r"\[power_band\] ERROR: Workload's own validation failed " r"\(exit (-?\d+)\)",
+        text,
     )
     if wl_failed:
         return ValidationResult(
@@ -572,60 +569,46 @@ def _validate_power_band(log_file: Path, exit_code: int) -> ValidationResult:
     return ValidationResult(f"PASS ({bands_applied} bands cycled)", False)
 
 
-def _validate_inference_server(log_file: Path, exit_code: int) -> ValidationResult:
+def _validate_inference_server(log_file: Path, exit_code: int) -> ValidationResult:  # noqa: C901
     """inference_server_stress"""
     text = _read_log(log_file)
     if not text:
         return ValidationResult("", False)
     # Server never became healthy → hard fail
-    if re.search(r"\[inference_server_stress\] ERROR: server did not become healthy",
-                 text):
+    if re.search(r"\[inference_server_stress\] ERROR: server did not become healthy", text):
         return ValidationResult("server never became healthy", True)
     # Explicit error-rate / stall decisions made by the test body
-    m = re.search(r"\[inference_server_stress\] ERROR: error rate "
-                  r"(\d+\.\d+)%", text)
+    m = re.search(r"\[inference_server_stress\] ERROR: error rate " r"(\d+\.\d+)%", text)
     if m:
         return ValidationResult(f"error rate {m.group(1)}%", True)
-    m = re.search(r"\[inference_server_stress\] ERROR: overlap stalls "
-                  r"detected \((\d+) >= (\d+)\)", text)
+    m = re.search(r"\[inference_server_stress\] ERROR: overlap stalls " r"detected \((\d+) >= (\d+)\)", text)
     if m:
-        return ValidationResult(
-            f"{m.group(1)} overlap stalls (threshold {m.group(2)})", True)
+        return ValidationResult(f"{m.group(1)} overlap stalls (threshold {m.group(2)})", True)
     # /metrics scrape-side decisions made by the test body. These
     # diagnose two distinct failure modes that the test deliberately
     # split apart so operators don't waste triage time on the wrong
     # cause; the validator must surface them too or Layer 5 falls
     # back to a bare "exit 1" and the diagnostic split is wasted.
-    if re.search(r"\[inference_server_stress\] ERROR: /metrics endpoint "
-                 r"was unreachable", text):
+    if re.search(r"\[inference_server_stress\] ERROR: /metrics endpoint " r"was unreachable", text):
         return ValidationResult("metrics endpoint unreachable", True)
-    if re.search(r"\[inference_server_stress\] ERROR: metrics sampler "
-                 r"wrote no rows", text):
+    if re.search(r"\[inference_server_stress\] ERROR: metrics sampler " r"wrote no rows", text):
         return ValidationResult("metrics sampler produced no rows", True)
-    if re.search(r"\[inference_server_stress\] ERROR: /metrics parser "
-                 r"recognised none of the metric names", text):
+    if re.search(r"\[inference_server_stress\] ERROR: /metrics parser " r"recognised none of the metric names", text):
         return ValidationResult("metrics regex drift vs vLLM build", True)
-    if re.search(r"\[inference_server_stress\] ERROR: zero overlap samples",
-                 text):
-        return ValidationResult(
-            "zero overlap samples — prefill/decode overlap was not exercised",
-            True)
-    if re.search(r"\[inference_server_stress\] ERROR: load phase produced "
-                 r"zero request results", text):
+    if re.search(r"\[inference_server_stress\] ERROR: zero overlap samples", text):
+        return ValidationResult("zero overlap samples — prefill/decode overlap was not exercised", True)
+    if re.search(r"\[inference_server_stress\] ERROR: load phase produced " r"zero request results", text):
         return ValidationResult("load phase produced zero requests", True)
     # Server-side failures in the tee'd log (HIP crashes, CUDA errors).
     # Case-insensitive for symmetry with _validate_memtest /
     # _validate_hipblaslt; if a torch fork or vLLM build emits
     # lowercase "hip error:", we want to catch it the same way the
     # other validators would.
-    hip_err = len(re.findall(r"\bHIP error:|\bCUDA error:", text,
-                             flags=re.IGNORECASE))
+    hip_err = len(re.findall(r"\bHIP error:|\bCUDA error:", text, flags=re.IGNORECASE))
     if hip_err > 0:
         return ValidationResult(f"{hip_err} HIP/CUDA error(s) in server log", True)
     # Happy-path summary line
-    m = re.search(
-        r"\[inference_server_stress\] Requests: (\d+) \((\d+) errors, "
-        r"([\d.]+)% error rate\)", text)
+    m = re.search(r"\[inference_server_stress\] Requests: (\d+) \((\d+) errors, " r"([\d.]+)% error rate\)", text)
     if m:
         total, errs, rate = m.group(1), m.group(2), m.group(3)
         total_count = int(total)
@@ -649,19 +632,18 @@ def _validate_inference_server(log_file: Path, exit_code: int) -> ValidationResu
                 True,
             )
         metrics_line = re.search(
-            r"\[inference_server_stress\] /metrics samples: "
-            r"(\d+)/(\d+)/(\d+) parsed/fetched/written",
+            r"\[inference_server_stress\] /metrics samples: " r"(\d+)/(\d+)/(\d+) parsed/fetched/written",
             text,
         )
         if metrics_line is None:
             return ValidationResult(
-                "missing inference metrics completion summary", True,
+                "missing inference metrics completion summary",
+                True,
             )
         parsed, fetched, written = map(int, metrics_line.groups())
         if not (0 < parsed <= fetched <= written):
             return ValidationResult(
-                "invalid inference metrics coverage "
-                f"({parsed}/{fetched}/{written} parsed/fetched/written)",
+                "invalid inference metrics coverage " f"({parsed}/{fetched}/{written} parsed/fetched/written)",
                 True,
             )
         # Pull positive overlap evidence out of the orchestrator's
@@ -669,21 +651,19 @@ def _validate_inference_server(log_file: Path, exit_code: int) -> ValidationResu
         # include in the PASS message. Falls back to the bare
         # request/error tuple if the line is absent (older log
         # format on a captured-during-rolling-deploy host).
-        overlap_line = re.search(
-            r"\[inference_server_stress\] Overlap samples: (\d+) samples",
-            text)
+        overlap_line = re.search(r"\[inference_server_stress\] Overlap samples: (\d+) samples", text)
         if overlap_line is None or int(overlap_line.group(1)) <= 0:
             return ValidationResult(
-                "missing positive inference overlap evidence", True,
+                "missing positive inference overlap evidence",
+                True,
             )
         return ValidationResult(
-            f"PASS ({total} requests, {errs} errors, {rate}% rate, "
-            f"{overlap_line.group(1)} overlap samples)",
-            False)
+            f"PASS ({total} requests, {errs} errors, {rate}% rate, " f"{overlap_line.group(1)} overlap samples)", False
+        )
     return ValidationResult("missing inference request summary", True)
 
 
-def _validate_hipblaslt(log_file: Path, exit_code: int) -> ValidationResult:
+def _validate_hipblaslt(log_file: Path, exit_code: int) -> ValidationResult:  # noqa: C901
     text = _read_log(log_file)
     if not text:
         return ValidationResult("", False)
@@ -692,12 +672,13 @@ def _validate_hipblaslt(log_file: Path, exit_code: int) -> ValidationResult:
     # enabled" from counting as a failure. We keep IGNORECASE so
     # "hipBLASLt" and "hipblaslt" both match, but every pattern requires
     # either a colon or end-of-line immediately after the error keyword.
-    hip_err = len(re.findall(
-        r"HIP error\s*:"
-        r"|\bhipblaslt\s+error\s*:"
-        r"|Segmentation fault",
-        text, re.IGNORECASE,
-    ))
+    hip_err = len(
+        re.findall(
+            r"HIP error\s*:" r"|\bhipblaslt\s+error\s*:" r"|Segmentation fault",
+            text,
+            re.IGNORECASE,
+        )
+    )
     # Counts the literal marker emitted by ``_run_shape`` in
     # tests/hipblaslt_bench.py for both per-shape failure modes (non-zero exit
     # and no data row). The two strings are a contract; both ends carry a note.
@@ -717,20 +698,23 @@ def _validate_hipblaslt(log_file: Path, exit_code: int) -> ValidationResult:
     # reading the tuple order onto the CSV silently yields shapes that never
     # match the canonical set. Verified against real run output:
     #   N,N,0,1,8192,320,320,1,8192,...  ->  (N, N, 8192, 320, 320, batch 1)
-    HB_TRANS_A, HB_TRANS_B, HB_BATCH, HB_M, HB_N, HB_K = 0, 1, 3, 4, 5, 6
+    HB_TRANS_A, HB_TRANS_B, HB_BATCH, HB_M, HB_N, HB_K = 0, 1, 3, 4, 5, 6  # noqa: N806 — CSV column indices
     for line in text.splitlines():
         if re.match(r"^\s+[NT],[NT],\d", line):
             data_rows += 1
             fields = next(csv.reader([line.strip()]))
             if len(fields) >= 7:
-                try:
-                    result_shapes.append((
-                        fields[HB_TRANS_A], fields[HB_TRANS_B],
-                        int(fields[HB_M]), int(fields[HB_N]),
-                        int(fields[HB_K]), int(fields[HB_BATCH]),
-                    ))
-                except (TypeError, ValueError):
-                    pass
+                with contextlib.suppress(TypeError, ValueError):
+                    result_shapes.append(
+                        (
+                            fields[HB_TRANS_A],
+                            fields[HB_TRANS_B],
+                            int(fields[HB_M]),
+                            int(fields[HB_N]),
+                            int(fields[HB_K]),
+                            int(fields[HB_BATCH]),
+                        )
+                    )
 
     if hip_err > 0:
         return ValidationResult(f"{hip_err} HIP/hipblaslt error(s)", True)
@@ -744,41 +728,37 @@ def _validate_hipblaslt(log_file: Path, exit_code: int) -> ValidationResult:
     if data_rows == 0:
         return ValidationResult("no hipBLASLt GEMM results", True)
     completed = re.search(
-        r"Completed:\s*(\d+)/(\d+) shapes passed,\s*(\d+) failed", text,
+        r"Completed:\s*(\d+)/(\d+) shapes passed,\s*(\d+) failed",
+        text,
     )
     if completed is None:
         return ValidationResult("missing hipBLASLt completion summary", True)
     passed, total, failed_shapes = map(int, completed.groups())
-    canonical_shapes = [
-        ("N", "N", m, n, k, batch)
-        for m, n, k, batch in NN_SHAPES
-    ] + [
-        ("N", "T", m, n, k, batch)
-        for m, n, k, batch in NT_SHAPES
+    canonical_shapes = [("N", "N", m, n, k, batch) for m, n, k, batch in NN_SHAPES] + [
+        ("N", "T", m, n, k, batch) for m, n, k, batch in NT_SHAPES
     ]
     if total != len(canonical_shapes):
         return ValidationResult(
-            f"unexpected hipBLASLt shape denominator {total}; "
-            f"expected {len(canonical_shapes)}",
+            f"unexpected hipBLASLt shape denominator {total}; " f"expected {len(canonical_shapes)}",
             True,
         )
     if passed != total or failed_shapes != 0 or data_rows < total:
         return ValidationResult(
-            f"incomplete hipBLASLt coverage ({passed}/{total} shapes, "
-            f"{data_rows} result rows)",
+            f"incomplete hipBLASLt coverage ({passed}/{total} shapes, " f"{data_rows} result rows)",
             True,
         )
     if result_shapes != canonical_shapes:
         return ValidationResult(
-            "incomplete hipBLASLt shape identity coverage", True,
+            "incomplete hipBLASLt shape identity coverage",
+            True,
         )
     return ValidationResult(f"PASS ({data_rows} GEMM results)", False)
 
 
-def _validate_transferbench(
+def _validate_transferbench(  # noqa: C901
     log_file: Path,
     exit_code: int,
-    expected_gpus: Optional[int] = None,
+    expected_gpus: int | None = None,
 ) -> ValidationResult:
     """Validate TransferBench rsweep output.
 
@@ -804,7 +784,8 @@ def _validate_transferbench(
     # every watchdog kill uniformly.
     if "[transferbench] FAIL: watchdog timeout" in text:
         return ValidationResult(
-            "watchdog timeout (rsweep did not complete)", True,
+            "watchdog timeout (rsweep did not complete)",
+            True,
         )
 
     errors = len(re.findall(r"\[ERROR\]\s*\w+", text))
@@ -814,13 +795,9 @@ def _validate_transferbench(
     # Count transfer data lines: "Transfer N | X.XX GB/s | ..."
     # Newer TransferBench versions use Unicode box-drawing │ (U+2502)
     # instead of ASCII | (U+007C), so accept both.
-    transfers = len(re.findall(
-        r"Transfer\s+\d+\s*[│|]\s*[\d.]+\s*GB/s", text
-    ))
+    transfers = len(re.findall(r"Transfer\s+\d+\s*[│|]\s*[\d.]+\s*GB/s", text))
     # Check for aggregate summary
-    has_aggregate = bool(re.search(
-        r"Aggregate\s*\(CPU\)\s*[│|]\s*[\d.]+\s*GB/s", text
-    ))
+    has_aggregate = bool(re.search(r"Aggregate\s*\(CPU\)\s*[│|]\s*[\d.]+\s*GB/s", text))
 
     if transfers == 0:
         return ValidationResult("no transfer results in output", True)
@@ -832,19 +809,20 @@ def _validate_transferbench(
     if "[transferbench] Completed rsweep successfully (rc=0)" not in text:
         return ValidationResult("missing TransferBench completion sentinel", True)
     gpu_count_match = re.search(
-        r"NUM_GPU_DEVICES\s*=\s*(\d+)\s*:\s*Using\s+(\d+)\s+GPUs", text,
+        r"NUM_GPU_DEVICES\s*=\s*(\d+)\s*:\s*Using\s+(\d+)\s+GPUs",
+        text,
     )
     if gpu_count_match is None:
         return ValidationResult(
-            "TransferBench reported no usable GPU devices", True,
+            "TransferBench reported no usable GPU devices",
+            True,
         )
     detected, used = map(int, gpu_count_match.groups())
     if detected <= 0 or used <= 0:
         return ValidationResult("TransferBench reported no usable GPU devices", True)
     if expected_gpus is not None and (detected != expected_gpus or used != expected_gpus):
         return ValidationResult(
-            "TransferBench GPU count mismatch "
-            f"(detected {detected}, used {used}, expected {expected_gpus})",
+            "TransferBench GPU count mismatch " f"(detected {detected}, used {used}, expected {expected_gpus})",
             True,
         )
     endpoints = [
@@ -856,7 +834,8 @@ def _validate_transferbench(
     ]
     if not any(source != destination for source, destination in endpoints):
         return ValidationResult(
-            "no inter-GPU transfer route found in rsweep output", True,
+            "no inter-GPU transfer route found in rsweep output",
+            True,
         )
     if expected_gpus is not None:
         seen_gpus = {gpu for endpoints_pair in endpoints for gpu in endpoints_pair}
@@ -868,7 +847,8 @@ def _validate_transferbench(
                 True,
             )
     return ValidationResult(
-        f"PASS ({transfers} transfer(s), aggregate OK)", False,
+        f"PASS ({transfers} transfer(s), aggregate OK)",
+        False,
     )
 
 
@@ -906,10 +886,15 @@ def unsupported_reason_from_log(log_file: Path, test_name: str) -> str:
 # ---------------------------------------------------------------------------
 # Main entry point (replaces shell `validate_result`)
 # ---------------------------------------------------------------------------
-def validate_result(test_name: str, log_file: Path, exit_code: int,
-                    dmesg_file: Optional[Path] = None,
-                    *, skip_test_specific: bool = False,
-                    num_gpus: Optional[int] = None) -> ValidationResult:
+def validate_result(  # noqa: C901
+    test_name: str,
+    log_file: Path,
+    exit_code: int,
+    dmesg_file: Path | None = None,
+    *,
+    skip_test_specific: bool = False,
+    num_gpus: int | None = None,
+) -> ValidationResult:
     """Run the 5-layer validation and return (message, failed).
 
     - Layer 1 sets failed=True if crash patterns found in test output
@@ -955,7 +940,8 @@ def validate_result(test_name: str, log_file: Path, exit_code: int,
             else:
                 checks_per_gpu = 1 if test_name == "rvs_iet_stress" else 2
                 res = _validate_rvs(
-                    log_file, exit_code,
+                    log_file,
+                    exit_code,
                     expected_checks=num_gpus * checks_per_gpu,
                     expected_gpus=num_gpus,
                     checks_per_gpu=checks_per_gpu,
@@ -970,10 +956,7 @@ def validate_result(test_name: str, log_file: Path, exit_code: int,
                     # action, both this set and ``checks_per_gpu`` above must
                     # change together, and ``RVS_TST_EXPECTED_ACTIONS`` is
                     # what the regression test pins.
-                    expected_actions=(
-                        RVS_TST_EXPECTED_ACTIONS
-                        if test_name == "rvs_tst" else None
-                    ),
+                    expected_actions=(RVS_TST_EXPECTED_ACTIONS if test_name == "rvs_tst" else None),
                 )
         elif test_name == "hmm_cuda_memtest" and num_gpus is not None:
             res = _validate_hmm_memtest(log_file, exit_code, num_gpus)
@@ -1011,10 +994,7 @@ def validate_result(test_name: str, log_file: Path, exit_code: int,
             critical_count = _count_lines_matching(dmesg_text, DMESG_CRITICAL)
             info_count = _count_lines_matching(dmesg_text, DMESG_INFO)
             if snapshot_unavailable:
-                dmesg_note = (
-                    "dmesg: snapshot unavailable; cannot validate "
-                    "kernel health for this workload"
-                )
+                dmesg_note = "dmesg: snapshot unavailable; cannot validate " "kernel health for this workload"
                 msg = f"{msg}; {dmesg_note}" if msg else dmesg_note
                 failed = True
             elif critical_count > 0:
@@ -1059,10 +1039,7 @@ def validate_result(test_name: str, log_file: Path, exit_code: int,
     # every failure mode self-describing in the message and removes
     # the need to cross-reference the separate ``exit_code`` field.
     if exit_code != 0:
-        if exit_code < 0:
-            exit_note = f"killed by signal {-exit_code}"
-        else:
-            exit_note = f"exit {exit_code}"
+        exit_note = f"killed by signal {-exit_code}" if exit_code < 0 else f"exit {exit_code}"
         msg = f"{exit_note}" + (f"; {msg}" if msg else "")
         failed = True
 
@@ -1100,35 +1077,39 @@ def validate_result(test_name: str, log_file: Path, exit_code: int,
 # ``DMESG_CRITICAL`` regex; this categorization exists purely to make
 # the pre-test probe's output actionable rather than emitting an opaque
 # "N critical events" count.
-DMESG_CATEGORY_RULES: List[Tuple[str, "re.Pattern[str]"]] = [
-    ("kernel_panic", re.compile(
-        r"\bKernel panic\b|\bpanic\b", re.IGNORECASE)),
-    ("watchdog_lockup", re.compile(
-        r"watchdog:.*\b(?:BUG|soft lockup|hard lockup)\b|"
-        r"\bsoft lockup\b|\bhard lockup\b", re.IGNORECASE)),
-    ("bug_oops", re.compile(
-        r"\bBUG:|\bkernel BUG\b|Oops:\s*[0-9a-fA-F]+", re.IGNORECASE)),
-    ("call_trace", re.compile(
-        r"\bCall Trace\b|\bcall trace\b", re.IGNORECASE)),
-    ("hung_task", re.compile(
-        r"\bblocked for more than\b|\bhung task\b", re.IGNORECASE)),
-    ("hardware_uncorrected", re.compile(
-        r"\b(?:uncorrected|uncorrectable|fatal)\b.*"
-        r"\b(?:hardware error|ECC|RAS|error)\b|"
-        r"\b(?:hardware error|ECC|RAS)\b.*"
-        r"\b(?:uncorrected|uncorrectable|fatal)\b",
-        re.IGNORECASE)),
-    ("gpu_reset", re.compile(
-        r"\bgpu reset\b|\bamdgpu.*reset\b|\bring .*timeout\b|"
-        r"\bGPU fault\b|\bRAS\b.*\berror\b", re.IGNORECASE)),
-    ("iommu_fault", re.compile(
-        r"\bIOMMU\b.*\bfault\b|\bDMAR\b.*\bfault\b", re.IGNORECASE)),
-    ("segfault", re.compile(
-        r"\bsegfault\b|\bsegmentation fault\b", re.IGNORECASE)),
+DMESG_CATEGORY_RULES: list[tuple[str, re.Pattern[str]]] = [
+    ("kernel_panic", re.compile(r"\bKernel panic\b|\bpanic\b", re.IGNORECASE)),
+    (
+        "watchdog_lockup",
+        re.compile(
+            r"watchdog:.*\b(?:BUG|soft lockup|hard lockup)\b|" r"\bsoft lockup\b|\bhard lockup\b", re.IGNORECASE
+        ),
+    ),
+    ("bug_oops", re.compile(r"\bBUG:|\bkernel BUG\b|Oops:\s*[0-9a-fA-F]+", re.IGNORECASE)),
+    ("call_trace", re.compile(r"\bCall Trace\b|\bcall trace\b", re.IGNORECASE)),
+    ("hung_task", re.compile(r"\bblocked for more than\b|\bhung task\b", re.IGNORECASE)),
+    (
+        "hardware_uncorrected",
+        re.compile(
+            r"\b(?:uncorrected|uncorrectable|fatal)\b.*"
+            r"\b(?:hardware error|ECC|RAS|error)\b|"
+            r"\b(?:hardware error|ECC|RAS)\b.*"
+            r"\b(?:uncorrected|uncorrectable|fatal)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "gpu_reset",
+        re.compile(
+            r"\bgpu reset\b|\bamdgpu.*reset\b|\bring .*timeout\b|" r"\bGPU fault\b|\bRAS\b.*\berror\b", re.IGNORECASE
+        ),
+    ),
+    ("iommu_fault", re.compile(r"\bIOMMU\b.*\bfault\b|\bDMAR\b.*\bfault\b", re.IGNORECASE)),
+    ("segfault", re.compile(r"\bsegfault\b|\bsegmentation fault\b", re.IGNORECASE)),
 ]
 
 
-def categorize_dmesg_critical(text: str) -> Dict[str, int]:
+def categorize_dmesg_critical(text: str) -> dict[str, int]:
     """Per-category counts of DMESG_CRITICAL matches in ``text``.
 
     Returns a dict with stable keys (every category present, zero when
@@ -1139,7 +1120,7 @@ def categorize_dmesg_critical(text: str) -> Dict[str, int]:
     so a line containing both ``BUG:`` and ``Call Trace`` is counted
     under ``bug_oops`` only.
     """
-    counts: Dict[str, int] = {cat: 0 for cat, _ in DMESG_CATEGORY_RULES}
+    counts: dict[str, int] = {cat: 0 for cat, _ in DMESG_CATEGORY_RULES}
     if not text:
         return counts
     for line in text.splitlines():
@@ -1156,7 +1137,7 @@ def categorize_dmesg_critical(text: str) -> Dict[str, int]:
 _DMESG_TS_RE = re.compile(r"^\[([^\]]+)\]")
 
 
-def _parse_dmesg_ts(line: str) -> Optional[datetime]:
+def _parse_dmesg_ts(line: str) -> datetime | None:
     """Parse a ``dmesg -T`` timestamp from the start of ``line``.
 
     Returns ``None`` when there's no timestamp (raw kernel ring) or
@@ -1185,7 +1166,7 @@ def _filter_dmesg_recent(text: str, cutoff: datetime) -> str:
     decide when to opt in to ``--strict-pretest-gate``), so a small
     over-report is preferable to silent under-report.
     """
-    keep: List[str] = []
+    keep: list[str] = []
     for line in text.splitlines():
         ts = _parse_dmesg_ts(line)
         if ts is None or ts >= cutoff:
@@ -1196,7 +1177,7 @@ def _filter_dmesg_recent(text: str, cutoff: datetime) -> str:
 def pretest_health_probe(
     lookback_min: int = 30,
     cpu_executor: CpuExecutor | None = None,
-) -> Tuple[bool, Dict]:
+) -> tuple[bool, dict]:
     """Probe pre-existing dmesg for critical events in the last N minutes.
 
     Returns ``(clean, summary)``:
@@ -1211,7 +1192,7 @@ def pretest_health_probe(
       critical count, per-category counts (stable keys), and up to 5
       sample matching lines for triage.
     """
-    summary: Dict = {
+    summary: dict = {
         "probe": "skipped",
         "lookback_min": lookback_min,
         "captured_at": datetime.now().isoformat(timespec="seconds"),
@@ -1236,7 +1217,7 @@ def pretest_health_probe(
     # Capture up to 5 sample matching lines so the operator can triage
     # without re-grepping dmesg manually. Each sample is the first
     # occurrence per category, in DMESG_CATEGORY_RULES order.
-    samples: List[str] = []
+    samples: list[str] = []
     for cat, pat in DMESG_CATEGORY_RULES:
         if counts[cat] == 0:
             continue

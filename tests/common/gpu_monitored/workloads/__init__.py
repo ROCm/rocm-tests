@@ -9,7 +9,6 @@ from tests.common.gpu_monitored.workloads.rvs_iet_stress import RvsIetStress
 from tests.common.gpu_monitored.workloads.rvs_tst import RvsTst
 from tests.common.gpu_monitored.workloads.transferbench import TransferBench
 
-
 ALL_TESTS = [
     CudaMemtest(),
     TransferBench(),

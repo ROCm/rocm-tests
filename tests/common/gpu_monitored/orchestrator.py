@@ -6,25 +6,25 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
+from datetime import datetime
 import json
 import math
 import os
-import re
+from pathlib import Path
 import select
 import socket
 import sys
 import threading
 import time
 import traceback
-from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from framework.executors.abstract_executor import AbstractExecutor
     from framework.executors.executor_group import NodeExecutorGroup
+
+import contextlib
 
 from tests.common.gpu_monitored import analyze, csv_schema, report
 from tests.common.gpu_monitored.config import Config
@@ -39,17 +39,17 @@ from tests.common.gpu_monitored.monitoring import (
     collect_monitoring_evidence,
     telemetry_budget_sec,
 )
-from tests.common.gpu_monitored.workloads.base import BuildStatus, RunContext, RunResult, Test
 from tests.common.gpu_monitored.validation import ValidationResult, unsupported_reason_from_log, validate_result
+from tests.common.gpu_monitored.workloads.base import RunContext, RunResult, Test
 
 
 @dataclass
 class TestOutcome:
     test_name: str
-    status: str                 # PASS / FAIL / UNSUPPORTED / BUILD_FAILED / SKIP
-    exit_code: Optional[int]
+    status: str  # PASS / FAIL / UNSUPPORTED / BUILD_FAILED / SKIP
+    exit_code: int | None
     elapsed_seconds: int
-    run_dir: Optional[Path]
+    run_dir: Path | None
     validation: str
 
 
@@ -78,7 +78,7 @@ class MonitoredTestOrchestrator:
         self.target_executor = target_executor
         self.monitor_executor = monitor_executor
 
-    def run_one(self, test: Test) -> TestOutcome:
+    def run_one(self, test: Test) -> TestOutcome:  # noqa: C901
         """Orchestrate a single test: monitor + workload + validate + analyze + report."""
         name = test.spec.name
         goal = test.spec.goal
@@ -192,24 +192,24 @@ class MonitoredTestOrchestrator:
             # with no visible cause. Name it so a low count can be attributed
             # to corrupt telemetry rather than to an idle GPU. Not a verdict
             # of its own: the coverage and activity gates below still decide.
-            print(f"  [monitor] WARNING: dropped {monitoring.dropped_rows} "
-                  f"unusable row(s) from power_temp.csv "
-                  f"({monitoring.undecodable_rows} undecodable, "
-                  f"{monitoring.unparsable_rows} without a usable "
-                  f"timestamp/GPU); {monitor_lines} sample(s) kept")
-        if monitoring.scan_aborted:
-            print(f"  [monitor] WARNING: stopped scanning power_temp.csv after "
-                  f"more than {_MAX_CORRUPT_ROWS} undecodable rows — samples "
-                  f"after that point are not counted, so coverage below may "
-                  f"be incomplete for reasons unrelated to the workload")
-        if not effective_unsupported and monitor_lines == 0:
-            monitor_note = (
-                "monitoring produced zero samples; cannot validate power/"
-                "thermal behavior"
+            print(
+                f"  [monitor] WARNING: dropped {monitoring.dropped_rows} "
+                f"unusable row(s) from power_temp.csv "
+                f"({monitoring.undecodable_rows} undecodable, "
+                f"{monitoring.unparsable_rows} without a usable "
+                f"timestamp/GPU); {monitor_lines} sample(s) kept"
             )
+        if monitoring.scan_aborted:
+            print(
+                f"  [monitor] WARNING: stopped scanning power_temp.csv after "
+                f"more than {_MAX_CORRUPT_ROWS} undecodable rows — samples "
+                f"after that point are not counted, so coverage below may "
+                f"be incomplete for reasons unrelated to the workload"
+            )
+        if not effective_unsupported and monitor_lines == 0:
+            monitor_note = "monitoring produced zero samples; cannot validate power/" "thermal behavior"
             val = ValidationResult(
-                message=(f"{val.message}; {monitor_note}"
-                         if val.message else monitor_note),
+                message=(f"{val.message}; {monitor_note}" if val.message else monitor_note),
                 failed=True,
             )
             if result.exit_code == 0:
@@ -223,9 +223,7 @@ class MonitoredTestOrchestrator:
         # 1018 s rvs_tst run, both PASS.
         blind_sec, worst_gpu = monitoring.worst_coverage(duration)
         telemetry_budget = telemetry_budget_sec(duration)
-        if (not effective_unsupported
-                and monitor_lines > 0
-                and blind_sec > telemetry_budget):
+        if not effective_unsupported and monitor_lines > 0 and blind_sec > telemetry_budget:
             # Name the GPU responsible: the measurement is per-GPU, so a
             # partial monitor death points at specific devices rather than at
             # the run as a whole.
@@ -233,34 +231,31 @@ class MonitoredTestOrchestrator:
                 f"monitoring did not continuously cover the {duration}s run"
                 + (f" for GPU {worst_gpu}" if worst_gpu is not None else "")
                 + f" (longest stretch without telemetry {blind_sec}s > "
-                  f"{telemetry_budget}s budget); power/thermal evidence does "
-                  f"not span the workload"
+                f"{telemetry_budget}s budget); power/thermal evidence does "
+                f"not span the workload"
             )
             val = ValidationResult(
-                message=(f"{val.message}; {blind_note}"
-                         if val.message else blind_note),
+                message=(f"{val.message}; {blind_note}" if val.message else blind_note),
                 failed=True,
             )
             if result.exit_code == 0:
                 result.exit_code = 1
         expected_gpus = {str(gpu) for gpu in range(self.config.num_gpus)}
-        if (not effective_unsupported
-                and monitoring.sampled_gpus != expected_gpus):
+        if not effective_unsupported and monitoring.sampled_gpus != expected_gpus:
             coverage_note = (
                 "monitoring GPU identity mismatch "
                 f"(observed {sorted(monitoring.sampled_gpus)}, "
                 f"expected {sorted(expected_gpus)})"
             )
             val = ValidationResult(
-                message=(f"{val.message}; {coverage_note}"
-                         if val.message else coverage_note),
+                message=(f"{val.message}; {coverage_note}" if val.message else coverage_note),
                 failed=True,
             )
             if result.exit_code == 0:
                 result.exit_code = 1
-        if (not effective_unsupported
-                and (monitoring.power_gpus != expected_gpus
-                     or monitoring.hotspot_gpus != expected_gpus)):
+        if not effective_unsupported and (
+            monitoring.power_gpus != expected_gpus or monitoring.hotspot_gpus != expected_gpus
+        ):
             sensor_note = (
                 "monitoring sensor coverage incomplete "
                 f"(power GPUs {sorted(monitoring.power_gpus)}, hotspot GPUs "
@@ -268,24 +263,20 @@ class MonitoredTestOrchestrator:
                 f"{sorted(expected_gpus)})"
             )
             val = ValidationResult(
-                message=(f"{val.message}; {sensor_note}"
-                         if val.message else sensor_note),
+                message=(f"{val.message}; {sensor_note}" if val.message else sensor_note),
                 failed=True,
             )
             if result.exit_code == 0:
                 result.exit_code = 1
         profile = test.spec.workload_profile or {}
-        if (not effective_unsupported
-                and profile.get("min_util", 0) > 0
-                and monitoring.active_gpus != expected_gpus):
+        if not effective_unsupported and profile.get("min_util", 0) > 0 and monitoring.active_gpus != expected_gpus:
             activity_note = (
                 "monitoring GPU activity incomplete "
                 f"(active GPUs {sorted(monitoring.active_gpus)}, expected "
                 f"{sorted(expected_gpus)})"
             )
             val = ValidationResult(
-                message=(f"{val.message}; {activity_note}"
-                         if val.message else activity_note),
+                message=(f"{val.message}; {activity_note}" if val.message else activity_note),
                 failed=True,
             )
             if result.exit_code == 0:
@@ -310,8 +301,7 @@ class MonitoredTestOrchestrator:
             artifact_errors.append("analysis")
             artifact_note = "analysis artifact generation failed"
             val = ValidationResult(
-                message=(f"{val.message}; {artifact_note}"
-                         if val.message else artifact_note),
+                message=(f"{val.message}; {artifact_note}" if val.message else artifact_note),
                 failed=True,
             )
             result.exit_code = 1
@@ -326,14 +316,16 @@ class MonitoredTestOrchestrator:
 
         # HTML report
         if not self._safe_report(
-            run_dir, name, result.exit_code, duration,
+            run_dir,
+            name,
+            result.exit_code,
+            duration,
             unsupported=effective_unsupported,
         ):
             artifact_errors.append("report")
             artifact_note = "HTML report generation failed"
             val = ValidationResult(
-                message=(f"{val.message}; {artifact_note}"
-                         if val.message else artifact_note),
+                message=(f"{val.message}; {artifact_note}" if val.message else artifact_note),
                 failed=True,
             )
             result.exit_code = 1
@@ -387,7 +379,7 @@ class MonitoredTestOrchestrator:
     # -------------------------------------------------------------------
     # Workload execution with stdout tee to console.log
     # -------------------------------------------------------------------
-    def _run_workload(self, test: Test, ctx: RunContext, run_dir: Path) -> RunResult:
+    def _run_workload(self, test: Test, ctx: RunContext, run_dir: Path) -> RunResult:  # noqa: C901
         """Invoke test.run(ctx), capturing all stdout/stderr to console.log.
 
         Workload fd 1/2 are redirected to a pipe whose reader thread writes
@@ -397,14 +389,14 @@ class MonitoredTestOrchestrator:
         """
         log_path = run_dir / "console.log"
 
-        saved_stdout_fd: Optional[int] = None
-        saved_stderr_fd: Optional[int] = None
+        saved_stdout_fd: int | None = None
+        saved_stderr_fd: int | None = None
         saved_sys_stdout = sys.stdout
         saved_sys_stderr = sys.stderr
-        pipe_r: Optional[int] = None
-        pipe_w: Optional[int] = None
+        pipe_r: int | None = None
+        pipe_w: int | None = None
         log_fh = None
-        pump: Optional[threading.Thread] = None
+        pump: threading.Thread | None = None
         pump_stop = threading.Event()
         log_failed = threading.Event()
         result = RunResult(exit_code=1)
@@ -418,7 +410,7 @@ class MonitoredTestOrchestrator:
             saved_stderr_fd = os.dup(2)
 
             pipe_r, pipe_w = os.pipe()
-            log_fh = open(log_path, "wb")
+            log_fh = open(log_path, "wb")  # noqa: SIM115 — long-lived handle, closed explicitly
 
             def _pump(rfd=pipe_r, fh=log_fh):
                 """Drain the capture pipe until EOF or cancellation."""
@@ -426,7 +418,10 @@ class MonitoredTestOrchestrator:
                     while not pump_stop.is_set():
                         try:
                             readable, _, _ = select.select(
-                                [rfd], [], [], self.OUTPUT_PUMP_POLL_SEC,
+                                [rfd],
+                                [],
+                                [],
+                                self.OUTPUT_PUMP_POLL_SEC,
                             )
                         except (OSError, ValueError):
                             log_failed.set()
@@ -446,10 +441,8 @@ class MonitoredTestOrchestrator:
                         except (OSError, ValueError):
                             log_failed.set()
                 finally:
-                    try:
+                    with contextlib.suppress(OSError):
                         os.close(rfd)
-                    except OSError:
-                        pass
                     try:
                         fh.close()
                     except (OSError, ValueError):
@@ -496,43 +489,35 @@ class MonitoredTestOrchestrator:
             sys.stdout.flush()
             sys.stderr.flush()
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 sys.stdout.flush()
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 sys.stderr.flush()
-            except Exception:
-                pass
             sys.stdout = saved_sys_stdout
             sys.stderr = saved_sys_stderr
             if saved_stdout_fd is not None:
-                try:
+                with contextlib.suppress(OSError):
                     os.dup2(saved_stdout_fd, 1)
-                except OSError:
-                    pass
             if saved_stderr_fd is not None:
-                try:
+                with contextlib.suppress(OSError):
                     os.dup2(saved_stderr_fd, 2)
-                except OSError:
-                    pass
             # Setup can fail after ``os.pipe()`` but before the normal close
             # (for example, opening console.log on a full filesystem). Close
             # the write end before joining so a started pump can observe EOF.
             if pipe_w is not None:
-                try:
+                with contextlib.suppress(OSError):
                     os.close(pipe_w)
-                except OSError:
-                    pass
                 pipe_w = None
             if pump is not None:
                 pump.join(timeout=self.OUTPUT_PUMP_DRAIN_TIMEOUT_SEC)
                 if pump.is_alive():
                     pump_stop.set()
                     pump.join(timeout=max(1.0, self.OUTPUT_PUMP_POLL_SEC * 2))
-                    print("  [runner] WARNING: output pump did not finish "
-                          f"within {self.OUTPUT_PUMP_DRAIN_TIMEOUT_SEC}s; "
-                          "console.log may be truncated")
+                    print(
+                        "  [runner] WARNING: output pump did not finish "
+                        f"within {self.OUTPUT_PUMP_DRAIN_TIMEOUT_SEC}s; "
+                        "console.log may be truncated"
+                    )
                     # A cancelled drain abandons whatever is still in the
                     # pipe, so the authoritative log may be missing its tail.
                     log_failed.set()
@@ -544,22 +529,16 @@ class MonitoredTestOrchestrator:
             # underneath it and risking descriptor-reuse corruption.
             for fd in (saved_stdout_fd, saved_stderr_fd):
                 if fd is not None:
-                    try:
+                    with contextlib.suppress(OSError):
                         os.close(fd)
-                    except OSError:
-                        pass
             if pump is None:
                 for fd in (pipe_r,):
                     if fd is not None:
-                        try:
+                        with contextlib.suppress(OSError):
                             os.close(fd)
-                        except OSError:
-                            pass
                 if log_fh is not None:
-                    try:
+                    with contextlib.suppress(OSError, ValueError):
                         log_fh.close()
-                    except (OSError, ValueError):
-                        pass
 
         return result
 
@@ -581,9 +560,7 @@ class MonitoredTestOrchestrator:
         # File emptiness is valid evidence when dmesg successfully reads an
         # empty/rotated ring. Use an explicit sentinel only for capture
         # failure so the delta step can distinguish those two states.
-        out_path.write_text(
-            output if available else DMESG_SNAPSHOT_UNAVAILABLE
-        )
+        out_path.write_text(output if available else DMESG_SNAPSHOT_UNAVAILABLE)
 
     def _write_dmesg_delta(self, pretest: Path, delta_out: Path) -> None:
         """Capture dmesg after test, diff against pretest snapshot.
@@ -596,15 +573,13 @@ class MonitoredTestOrchestrator:
         """
         if not pretest.is_file():
             delta_out.write_text(
-                "# [dmesg-delta] pretest snapshot unavailable; cannot "
-                "validate kernel health for this workload\n"
+                "# [dmesg-delta] pretest snapshot unavailable; cannot " "validate kernel health for this workload\n"
             )
             return
         pretest_text = pretest.read_text()
         if pretest_text == DMESG_SNAPSHOT_UNAVAILABLE:
             delta_out.write_text(
-                "# [dmesg-delta] pretest snapshot unavailable; cannot "
-                "validate kernel health for this workload\n"
+                "# [dmesg-delta] pretest snapshot unavailable; cannot " "validate kernel health for this workload\n"
             )
             return
         pre_lines = pretest_text.splitlines()
@@ -618,13 +593,12 @@ class MonitoredTestOrchestrator:
         post_available, post = capture_dmesg_text(self.monitor_executor)
         if not post_available:
             delta_out.write_text(
-                "# [dmesg-delta] posttest snapshot unavailable; cannot "
-                "validate kernel health for this workload\n"
+                "# [dmesg-delta] posttest snapshot unavailable; cannot " "validate kernel health for this workload\n"
             )
             return
 
         post_lines = post.splitlines()
-        delta: List[str] = []
+        delta: list[str] = []
         if pre_lines:
             # Find the earliest post position whose prefix ends with the
             # longest available suffix of the pretest snapshot. Choosing the
@@ -647,7 +621,7 @@ class MonitoredTestOrchestrator:
             # power-band run emitting ~12,700 messages against a 12,764-line
             # pretest snapshot took long enough to look like a hang, and the
             # eviction branch below could not be reached to report it.
-            matched_at: Optional[int] = None
+            matched_at: int | None = None
             max_suffix = min(len(pre_lines), len(post_lines))
             anchor = pre_lines[-1]
             best_len = 0
@@ -669,14 +643,13 @@ class MonitoredTestOrchestrator:
                 # How far back this candidate agrees with the pretest tail.
                 limit = min(end, max_depth)
                 run = 0
-                while (run < limit
-                       and post_lines[end - 1 - run] == pre_lines[-1 - run]):
+                while run < limit and post_lines[end - 1 - run] == pre_lines[-1 - run]:
                     run += 1
                 if run > best_len:
                     best_len = run
                     matched_at = end
                     if best_len == max_depth:
-                        break   # good enough; earliest such end wins
+                        break  # good enough; earliest such end wins
             if matched_at is not None:
                 delta = post_lines[matched_at:]
             else:
@@ -693,7 +666,7 @@ class MonitoredTestOrchestrator:
                     "buffer; showing full post-test dmesg (may include "
                     "pre-existing entries)"
                 )
-                delta = [banner] + post_lines
+                delta = [banner, *post_lines]
         else:
             # A successfully captured empty pretest ring is a valid baseline:
             # every posttest line appeared during this workload. This differs
@@ -704,9 +677,18 @@ class MonitoredTestOrchestrator:
     # -------------------------------------------------------------------
     # Summary + analyze + report
     # -------------------------------------------------------------------
-    def _write_initial_summary(self, path: Path, *, name: str, ts: str, exit_code: int,
-                               duration: int, monitor_samples: int, validation: str,
-                               unsupported: bool = False) -> None:
+    def _write_initial_summary(
+        self,
+        path: Path,
+        *,
+        name: str,
+        ts: str,
+        exit_code: int,
+        duration: int,
+        monitor_samples: int,
+        validation: str,
+        unsupported: bool = False,
+    ) -> None:
         """Write the base summary.json that analyze.enrich_summary will extend."""
         csv_file = path.parent / "power_temp.csv"
         metrics = {}
@@ -740,9 +722,7 @@ class MonitoredTestOrchestrator:
         # exact summary.json shape they had before this feature.
         if self.config.pretest_kernel_dirty:
             data["pretest_kernel_dirty"] = True
-            data["inherited_critical_categories"] = list(
-                self.config.inherited_critical_categories
-            )
+            data["inherited_critical_categories"] = list(self.config.inherited_critical_categories)
         temp_path = path.with_name(f"{path.name}.tmp")
         with temp_path.open("w") as f:
             json.dump(data, f, indent=2)
@@ -754,12 +734,10 @@ class MonitoredTestOrchestrator:
         exit_code: int,
         validation: str,
         unsupported: bool,
-        artifact_errors: List[str],
+        artifact_errors: list[str],
     ) -> None:
         data = json.loads(path.read_text())
-        data["result"] = "UNSUPPORTED" if unsupported else (
-            "PASS" if exit_code == 0 else "FAIL"
-        )
+        data["result"] = "UNSUPPORTED" if unsupported else ("PASS" if exit_code == 0 else "FAIL")
         data["exit_code"] = exit_code
         data["unsupported"] = unsupported
         data["validation"] = validation
@@ -775,32 +753,32 @@ class MonitoredTestOrchestrator:
             analyze.analyze_and_write(run_dir, name)
             return True
         except Exception as e:
-            try:
-                (run_dir / "analysis.stderr.log").write_text(
-                    f"analysis error: {e}\n{traceback.format_exc()}"
-                )
-            except OSError:
-                pass
+            with contextlib.suppress(OSError):
+                (run_dir / "analysis.stderr.log").write_text(f"analysis error: {e}\n{traceback.format_exc()}")
             return False
 
-    def _safe_report(self, run_dir: Path, name: str, exit_code: int, duration: int,
-                     *, unsupported: bool = False) -> bool:
+    def _safe_report(
+        self, run_dir: Path, name: str, exit_code: int, duration: int, *, unsupported: bool = False
+    ) -> bool:
         try:
-            report.write_report(run_dir, name, exit_code, duration,
-                                unsupported=unsupported)
+            report.write_report(run_dir, name, exit_code, duration, unsupported=unsupported)
             return True
         except Exception as e:
-            try:
-                (run_dir / "report.stderr.log").write_text(
-                    f"report error: {e}\n{traceback.format_exc()}"
-                )
-            except OSError:
-                pass
+            with contextlib.suppress(OSError):
+                (run_dir / "report.stderr.log").write_text(f"report error: {e}\n{traceback.format_exc()}")
             return False
 
-    def _print_test_summary(self, *, name: str, exit_code: int, duration: int,
-                            monitor_lines: int, validation: str, run_dir: Path,
-                            unsupported: bool = False) -> None:
+    def _print_test_summary(
+        self,
+        *,
+        name: str,
+        exit_code: int,
+        duration: int,
+        monitor_lines: int,
+        validation: str,
+        run_dir: Path,
+        unsupported: bool = False,
+    ) -> None:
         """Mirror the shell's per-test text summary block."""
         if unsupported:
             verdict = "UNSUPPORTED"
@@ -863,7 +841,7 @@ class MonitoredTestOrchestrator:
         print("")
 
 
-def _csv_stats(csv_file: Path, column: str) -> Optional[dict]:
+def _csv_stats(csv_file: Path, column: str) -> dict | None:
     """Min/max/avg/samples for a numeric CSV column.
 
     Skips empty / ``N/A`` / ``NaN`` cells. ``float("nan")`` parses
@@ -874,7 +852,7 @@ def _csv_stats(csv_file: Path, column: str) -> Optional[dict]:
     """
     if not csv_file.is_file():
         return None
-    values: List[float] = []
+    values: list[float] = []
     try:
         with csv_file.open() as f:
             reader = csv.DictReader(f)

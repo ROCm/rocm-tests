@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
-from typing import Optional, Tuple, TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from framework.executors.abstract_executor import AbstractExecutor
@@ -43,7 +43,7 @@ def host_reserve_mb(total_mb: int) -> int:
     )
 
 
-def _value_mb(field) -> Optional[int]:
+def _value_mb(field) -> int | None:
     """Convert one amd-smi memory field to whole MB, or ``None`` if unusable.
 
     ``None`` means "no reading" -- the field is absent, non-numeric (``N/A``)
@@ -73,8 +73,8 @@ def _value_mb(field) -> Optional[int]:
 
 def query_min_free_vram_mb(
     rocm_root: Path,
-    monitor_executor: Optional["AbstractExecutor"] = None,
-) -> Optional[int]:
+    monitor_executor: AbstractExecutor | None = None,
+) -> int | None:
     """Return the smallest free-VRAM reading across visible GPUs.
 
     The smallest reading is the point of this function: every GPU gets the
@@ -116,14 +116,14 @@ def query_min_free_vram_mb(
     return min(values) if values else None
 
 
-def _read_int(path: Path) -> Optional[int]:
+def _read_int(path: Path) -> int | None:
     try:
         return int(path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
 
 
-def _cgroup_memory_mb(root: Path = Path("/sys/fs/cgroup")) -> Optional[Tuple[int, int]]:
+def _cgroup_memory_mb(root: Path = Path("/sys/fs/cgroup")) -> tuple[int, int] | None:
     """Return ``(limit_mb, available_mb)`` for this cgroup, or None if unlimited.
 
     ``/proc/meminfo`` reports the **host**'s memory even inside a
@@ -142,7 +142,7 @@ def _cgroup_memory_mb(root: Path = Path("/sys/fs/cgroup")) -> Optional[Tuple[int
         except OSError:
             return None
         if raw == "max":
-            return None                       # explicitly unlimited
+            return None  # explicitly unlimited
         limit = int(raw) if raw.isdigit() else None
         current = _read_int(v2_cur)
         if limit:
@@ -166,7 +166,7 @@ def _cgroup_memory_mb(root: Path = Path("/sys/fs/cgroup")) -> Optional[Tuple[int
     return limit // (1024 * 1024), max(0, limit - current) // (1024 * 1024)
 
 
-def _host_memory_mb(path: Path = Path("/proc/meminfo")) -> Optional[Tuple[int, int]]:
+def _host_memory_mb(path: Path = Path("/proc/meminfo")) -> tuple[int, int] | None:
     """Return ``(total_mb, available_mb)``, bounded by the cgroup limit."""
     try:
         fields = {}
@@ -194,8 +194,8 @@ def high_intensity_blocks_mb(
     host_recovery_timeout_sec: float = 0,
     host_recovery_interval_sec: float = HOST_MEMORY_RECOVERY_INTERVAL_SEC,
     require_full_target: bool = False,
-    monitor_executor: Optional["AbstractExecutor"] = None,
-) -> Optional[int]:
+    monitor_executor: AbstractExecutor | None = None,
+) -> int | None:
     """Size a high-pressure workload while retaining runtime headroom.
 
     GPU allocation targets 90% of the least-free visible GPU. HMM allocations
@@ -229,10 +229,12 @@ def high_intensity_blocks_mb(
             if remaining <= 0:
                 break
             if not announced_wait:
-                print(f"  [memory-sizing] Host memory currently permits "
-                      f"{host_target} MB/GPU, below the {target} MB/GPU "
-                      f"automatic target; waiting up to "
-                      f"{int(host_recovery_timeout_sec)}s for reclamation")
+                print(
+                    f"  [memory-sizing] Host memory currently permits "
+                    f"{host_target} MB/GPU, below the {target} MB/GPU "
+                    f"automatic target; waiting up to "
+                    f"{int(host_recovery_timeout_sec)}s for reclamation"
+                )
                 announced_wait = True
             time.sleep(min(host_recovery_interval_sec, remaining))
 
@@ -242,9 +244,11 @@ def high_intensity_blocks_mb(
         # the time the workload allocates. ``best_host_target`` is kept only to
         # report how much the host offered at its best.
         if require_full_target and host_target < target:
-            print(f"  [memory-sizing] Host memory permits {host_target} MB/GPU "
-                  f"(best {best_host_target} MB/GPU during the wait); refusing "
-                  f"to reduce the {target} MB/GPU automatic stress target")
+            print(
+                f"  [memory-sizing] Host memory permits {host_target} MB/GPU "
+                f"(best {best_host_target} MB/GPU during the wait); refusing "
+                f"to reduce the {target} MB/GPU automatic stress target"
+            )
             return None
         target = min(target, host_target)
     return target if target >= 1024 else None

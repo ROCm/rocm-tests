@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 import os
 import shlex
 import subprocess
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from framework.executors.abstract_executor import AbstractExecutor
@@ -56,10 +57,7 @@ class _UnmaskedSshMonitorExecutor:
         self._ssh = ssh
 
     def run(self, command: str, timeout: float | None = None, *, stream: bool = False):
-        cleared = (
-            "env -u ROCR_VISIBLE_DEVICES -u HIP_VISIBLE_DEVICES "
-            f"-u CUDA_VISIBLE_DEVICES {command}"
-        )
+        cleared = "env -u ROCR_VISIBLE_DEVICES -u HIP_VISIBLE_DEVICES " f"-u CUDA_VISIBLE_DEVICES {command}"
         return self._ssh.run(cleared, timeout=timeout, stream=stream)
 
     def start_background(
@@ -70,10 +68,7 @@ class _UnmaskedSshMonitorExecutor:
         console_label: str | None = None,
         stream: bool = False,
     ):
-        cleared = (
-            "env -u ROCR_VISIBLE_DEVICES -u HIP_VISIBLE_DEVICES "
-            f"-u CUDA_VISIBLE_DEVICES {command}"
-        )
+        cleared = "env -u ROCR_VISIBLE_DEVICES -u HIP_VISIBLE_DEVICES " f"-u CUDA_VISIBLE_DEVICES {command}"
         return self._ssh.start_background(
             cleared,
             timeout=timeout,
@@ -88,7 +83,7 @@ def workload_executor_from(
 ) -> AbstractExecutor:
     """First executor behind a ``NodeExecutorGroup`` (``target_executor``)."""
     if hasattr(target_executor, "run") and hasattr(target_executor, "_executors"):
-        return target_executor._executors[0]  # noqa: SLF001 — framework group API
+        return target_executor._executors[0]
     return target_executor
 
 
@@ -104,10 +99,7 @@ def format_shell_command(
     if cwd is not None:
         parts.append(f"cd {shlex.quote(str(cwd))} &&")
     if env:
-        parts.append(
-            "env "
-            + " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items())
-        )
+        parts.append("env " + " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items()))
     if isinstance(cmd, str):
         parts.append(cmd)
     else:
@@ -217,7 +209,10 @@ def run_command_redirect(
 ) -> int:
     """Run ``cmd`` with stdout/stderr redirected to ``stdout_file``."""
     redirect = format_shell_command(
-        cmd, env=env, cwd=cwd, redirect_stdout=stdout_file,
+        cmd,
+        env=env,
+        cwd=cwd,
+        redirect_stdout=stdout_file,
     )
     wrapped = redirect
     if timeout:

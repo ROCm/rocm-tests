@@ -10,6 +10,4 @@ import pytest
 def test_gpu_hipblaslt_bench_monitored(run_monitored_test):
     """Run hipblaslt_bench under amd-smi monitoring with full validation pipeline."""
     outcome = run_monitored_test()
-    assert outcome.status == "PASS", (
-        f"hipblaslt_bench failed (exit={outcome.exit_code}):\n{outcome.validation}"
-    )
+    assert outcome.status == "PASS", f"hipblaslt_bench failed (exit={outcome.exit_code}):\n{outcome.validation}"

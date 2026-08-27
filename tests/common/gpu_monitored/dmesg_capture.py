@@ -28,15 +28,14 @@ def dmesg_result(res) -> tuple[bool, str]:
     rc = getattr(res, "returncode", getattr(res, "exit_code", 1))
     if rc == 0:
         return True, output
-    diagnostic_only = bool(re.search(
-        r"(?:read kernel buffer failed|Operation not permitted|"
-        r"Permission denied)",
-        output,
-        re.IGNORECASE,
-    ))
-    return bool(output and not diagnostic_only), (
-        output if output and not diagnostic_only else ""
+    diagnostic_only = bool(
+        re.search(
+            r"(?:read kernel buffer failed|Operation not permitted|" r"Permission denied)",
+            output,
+            re.IGNORECASE,
+        )
     )
+    return bool(output and not diagnostic_only), (output if output and not diagnostic_only else "")
 
 
 def capture_dmesg_text(cpu_executor: CpuExecutor | None = None) -> tuple[bool, str]:
@@ -51,7 +50,10 @@ def capture_dmesg_text(cpu_executor: CpuExecutor | None = None) -> tuple[bool, s
             pass
     try:
         res = subprocess.run(
-            ["dmesg", "-T"], capture_output=True, text=True, timeout=15,
+            ["dmesg", "-T"],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         available, output = dmesg_result(res)
         if available:
@@ -60,7 +62,10 @@ def capture_dmesg_text(cpu_executor: CpuExecutor | None = None) -> tuple[bool, s
         pass
     try:
         proc = run_priv(
-            ["dmesg", "-T"], capture_output=True, text=True, timeout=15,
+            ["dmesg", "-T"],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         return dmesg_result(proc)
     except Exception:

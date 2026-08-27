@@ -5,14 +5,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import glob
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
-from typing import List, Tuple
 
 from tests.common.gpu_monitored.config import Config
 from tests.common.gpu_pci_map import GPU_DEVICE_MAP
@@ -54,7 +54,7 @@ def detect_gpu_device_id() -> str:
     node. That pair selects the RVS config (see ``tests/_rvs_based.py``),
     so which node wins must not vary between runs on the same host.
     """
-    found: List[Tuple[int, str]] = []
+    found: list[tuple[int, str]] = []
     for f in glob.glob("/sys/class/drm/renderD*/device/device"):
         f_path = Path(f)
         try:
@@ -65,26 +65,26 @@ def detect_gpu_device_id() -> str:
             continue
         rev_file = f_path.parent / "revision"
         rev_id = "00"
-        try:
+        with contextlib.suppress(Exception):
             rev_id = rev_file.read_text().strip().replace("0x", "").lower() or "00"
-        except Exception:
-            pass
         found.append((_render_node_index(f), f"{dev_id}_{rev_id}"))
 
     if found:
         found.sort()
         distinct = sorted({did for _idx, did in found})
         if len(distinct) > 1:
-            print(f"  WARNING: render nodes report {len(distinct)} distinct PCI "
-                  f"device IDs ({', '.join(distinct)}); selecting "
-                  f"{found[0][1]} from the lowest-numbered node. RVS configs "
-                  f"are chosen from this one ID, so verify it matches the "
-                  f"GPUs under test.", file=sys.stderr)
+            print(
+                f"  WARNING: render nodes report {len(distinct)} distinct PCI "
+                f"device IDs ({', '.join(distinct)}); selecting "
+                f"{found[0][1]} from the lowest-numbered node. RVS configs "
+                f"are chosen from this one ID, so verify it matches the "
+                f"GPUs under test.",
+                file=sys.stderr,
+            )
         return found[0][1]
 
     try:
-        out = subprocess.run(["amd-smi", "static", "-a", "-g", "0"],
-                             capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run(["amd-smi", "static", "-a", "-g", "0"], capture_output=True, text=True, timeout=10).stdout
         for line in out.splitlines():
             if re.search(r"DEVICE_ID|DEV_ID", line, re.I):
                 parts = line.split(":", 1)
@@ -96,26 +96,29 @@ def detect_gpu_device_id() -> str:
                     )
                     if match:
                         if match.group(2) is None:
-                            print(f"  WARNING: amd-smi reported device "
-                                  f"{match.group(1)} without a revision; "
-                                  f"assuming revision 00. RVS config "
-                                  f"selection may be wrong on parts whose "
-                                  f"actual revision is non-zero.",
-                                  file=sys.stderr)
+                            print(
+                                f"  WARNING: amd-smi reported device "
+                                f"{match.group(1)} without a revision; "
+                                f"assuming revision 00. RVS config "
+                                f"selection may be wrong on parts whose "
+                                f"actual revision is non-zero.",
+                                file=sys.stderr,
+                            )
                         return f"{match.group(1)}_{match.group(2) or '00'}"
     except Exception:
         pass
     return ""
 
 
-def match_rvs_gpu_dir(gpu_short_name: str, gpu_model: str,
-                      rocm_root: Path, build_dir: Path) -> str:
+def match_rvs_gpu_dir(gpu_short_name: str, gpu_model: str, rocm_root: Path, build_dir: Path) -> str:
     """Find the RVS per-GPU config subdirectory matching this GPU."""
     if gpu_short_name:
         return gpu_short_name
     model_lower = gpu_model.lower()
-    for conf_root in [build_dir / "rocm_validation_suite" / "build" / "bin" / "conf",
-                      rocm_root / "share" / "rocm-validation-suite" / "conf"]:
+    for conf_root in [
+        build_dir / "rocm_validation_suite" / "build" / "bin" / "conf",
+        rocm_root / "share" / "rocm-validation-suite" / "conf",
+    ]:
         if not conf_root.is_dir():
             continue
         best = ""
@@ -179,8 +182,10 @@ def apply_framework_environment(
         config.gpu_short_name = GPU_DEVICE_MAP.get(config.gpu_device_id, "")
     if not config.gpu_conf_dir:
         config.gpu_conf_dir = match_rvs_gpu_dir(
-            config.gpu_short_name, config.gpu_model,
-            config.rocm_root, config.build_dir,
+            config.gpu_short_name,
+            config.gpu_model,
+            config.rocm_root,
+            config.build_dir,
         )
 
     print(

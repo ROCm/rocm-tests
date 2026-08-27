@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from tests.common.gpu_monitored.config import Config
 from tests.common.gpu_monitored.workloads.base import BuildContext, BuildStatus, RunContext, RunResult, Test, TestSpec
@@ -49,11 +48,13 @@ class TransferBench(Test):
             print(f"  [build] TransferBench: found at {tb}")
             return BuildStatus.OK
 
-        print(f"  [build] TransferBench: not found under {ctx.rocm_root} "
-              f"(expected {ctx.rocm_root}/bin/TransferBench or "
-              f"ROCM_TEST_TRANSFERBENCH_BIN from pytest fixtures). TransferBench "
-              f"is shipped with ROCm Validation Suite; preinstall it under the "
-              f"ROCm root or let tests/e2e/rvs/conftest.py build it from source.")
+        print(
+            f"  [build] TransferBench: not found under {ctx.rocm_root} "
+            f"(expected {ctx.rocm_root}/bin/TransferBench or "
+            f"ROCM_TEST_TRANSFERBENCH_BIN from pytest fixtures). TransferBench "
+            f"is shipped with ROCm Validation Suite; preinstall it under the "
+            f"ROCm root or let tests/e2e/rvs/conftest.py build it from source."
+        )
         return BuildStatus.BUILD_FAILED
 
     def available(self, config: Config) -> bool:
@@ -71,7 +72,8 @@ class TransferBench(Test):
         # TransferBench binary decides to do; instead we warn and fall
         # back to the documented default.
         sweep_time_limit = self._positive_env_int(
-            "SWEEP_TIME_LIMIT", self.DEFAULT_SWEEP_TIME_LIMIT,
+            "SWEEP_TIME_LIMIT",
+            self.DEFAULT_SWEEP_TIME_LIMIT,
         )
         sweep_min = self._positive_env_int("SWEEP_MIN", self.DEFAULT_SWEEP_MIN)
         sweep_max = self._positive_env_int("SWEEP_MAX", self.DEFAULT_SWEEP_MAX)
@@ -99,8 +101,7 @@ class TransferBench(Test):
         )
 
         print(f"  [transferbench] Running: {tb_bin} rsweep")
-        print(f"  [transferbench] SWEEP_TIME_LIMIT={sweep_time_limit} "
-              f"SWEEP_MIN={sweep_min} SWEEP_MAX={sweep_max}")
+        print(f"  [transferbench] SWEEP_TIME_LIMIT={sweep_time_limit} " f"SWEEP_MIN={sweep_min} SWEEP_MAX={sweep_max}")
 
         rc = ctx.exec(
             [str(tb_bin), "rsweep"],
@@ -108,15 +109,17 @@ class TransferBench(Test):
             timeout=wd,
         )
         if rc == 124:
-            print(f"  [transferbench] FAIL: watchdog timeout — rsweep did "
-                  f"not complete within --per-iter-watchdog {wd}s")
+            print(
+                f"  [transferbench] FAIL: watchdog timeout — rsweep did "
+                f"not complete within --per-iter-watchdog {wd}s"
+            )
             return RunResult(exit_code=1, reproduce_cmd=reproduce)
         if rc == 0:
             print("  [transferbench] Completed rsweep successfully (rc=0)")
         return RunResult(exit_code=rc, reproduce_cmd=reproduce)
 
     @classmethod
-    def _installed_bin(cls, rocm_root: Path) -> Optional[Path]:
+    def _installed_bin(cls, rocm_root: Path) -> Path | None:
         """Return TransferBench binary when present and executable."""
         override = os.environ.get("ROCM_TEST_TRANSFERBENCH_BIN", "").strip()
         if override:
@@ -129,7 +132,7 @@ class TransferBench(Test):
         return None
 
     @classmethod
-    def _find_bin(cls, config: Config) -> Optional[Path]:
+    def _find_bin(cls, config: Config) -> Path | None:
         return cls._installed_bin(config.rocm_root)
 
     @staticmethod
@@ -142,7 +145,6 @@ class TransferBench(Test):
             if value <= 0:
                 raise ValueError("must be positive")
         except ValueError as e:
-            print(f"  [transferbench] WARNING: ignoring invalid "
-                  f"{name}={raw!r} ({e}); using default {default}")
+            print(f"  [transferbench] WARNING: ignoring invalid " f"{name}={raw!r} ({e}); using default {default}")
             return str(default)
         return str(value)

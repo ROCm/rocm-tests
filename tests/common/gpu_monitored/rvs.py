@@ -16,18 +16,18 @@ from __future__ import annotations
 
 import csv
 import os
-import re
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+import re
 
 from tests.common.gpu_monitored.config import Config
+
 from .shared_builder import SharedToolBuilder
 
 # Vendored copy of ROCmTest's device->config mapping
 # (ROCmTest/tests/TOOLS/RVS/rvs_config_mapping.csv). Keep in sync when
 # upstream RVS adds new silicon / config dirs.
 _CONFIG_MAP_PATH = Path(__file__).with_name("rvs_config_mapping.csv")
-_config_map_cache: Optional[Dict[str, Dict[str, str]]] = None
+_config_map_cache: dict[str, dict[str, str]] | None = None
 
 
 def is_installed(rocm_root: Path) -> bool:
@@ -36,7 +36,7 @@ def is_installed(rocm_root: Path) -> bool:
     return rvs.is_file() and os.access(rvs, os.X_OK) and conf.is_dir()
 
 
-def find_bin(config: Config) -> Optional[Path]:
+def find_bin(config: Config) -> Path | None:
     override = os.environ.get("ROCM_TEST_RVS_BIN", "").strip()
     if override:
         p = Path(override)
@@ -61,7 +61,7 @@ def find_bin(config: Config) -> Optional[Path]:
 # Path components are resolved case-insensitively, same as ROCmTest.
 
 
-class ConfigMapUnavailable(Exception):
+class ConfigMapUnavailableError(Exception):
     """The vendored ``rvs_config_mapping.csv`` is missing or unusable.
 
     Distinct from "this device has no config": the CSV ships inside this
@@ -79,7 +79,7 @@ class ConfigMapUnavailable(Exception):
     """
 
 
-class RvsInstallIncomplete(Exception):
+class RvsInstallIncompleteError(Exception):
     """The preinstalled RVS binary and configuration tree disagree."""
 
 
@@ -97,17 +97,17 @@ _CONFIG_MAP_POSITIONAL_HEADERS = ("did_rid", "device")
 _DID_RID_RE = re.compile(r"^[0-9a-f]{4}_[0-9a-f]{2}$")
 
 
-def _load_config_map() -> Dict[str, Dict[str, str]]:
+def _load_config_map() -> dict[str, dict[str, str]]:  # noqa: C901
     """Parse the vendored ``rvs_config_mapping.csv`` into
     ``{device_id_lower: {component_lower: cell}}`` (cached).
 
-    Raises ``ConfigMapUnavailable`` for any structural problem with the
+    Raises ``ConfigMapUnavailableError`` for any structural problem with the
     file; see that exception for why this is not ``UNSUPPORTED``.
     """
     global _config_map_cache
     if _config_map_cache is not None:
         return _config_map_cache
-    mapping: Dict[str, Dict[str, str]] = {}
+    mapping: dict[str, dict[str, str]] = {}
     try:
         with open(_CONFIG_MAP_PATH, newline="") as fh:
             # strict=True so unbalanced quoting raises instead of silently
@@ -117,7 +117,7 @@ def _load_config_map() -> Dict[str, Dict[str, str]]:
             headers = next(reader)
             actual = tuple(h.strip().lower() for h in headers[:2])
             if actual != _CONFIG_MAP_POSITIONAL_HEADERS:
-                raise ConfigMapUnavailable(
+                raise ConfigMapUnavailableError(
                     f"config mapping {_CONFIG_MAP_PATH} starts with columns "
                     f"{actual!r}; expected "
                     f"{_CONFIG_MAP_POSITIONAL_HEADERS!r}. The first two "
@@ -126,7 +126,7 @@ def _load_config_map() -> Dict[str, Dict[str, str]]:
                 )
             components = [h.strip().lower() for h in headers[2:]]
             if not components:
-                raise ConfigMapUnavailable(
+                raise ConfigMapUnavailableError(
                     f"config mapping {_CONFIG_MAP_PATH} has no component "
                     f"columns after DID_RID,Device; no test could resolve a "
                     f"config from it"
@@ -140,16 +140,14 @@ def _load_config_map() -> Dict[str, Dict[str, str]]:
             # rather than pick a winner.
             blank_count = sum(1 for c in components if not c)
             if blank_count:
-                raise ConfigMapUnavailable(
+                raise ConfigMapUnavailableError(
                     f"config mapping {_CONFIG_MAP_PATH} has {blank_count} "
                     f"unnamed component column(s); every column after "
                     f"DID_RID,Device must carry the component name it maps"
                 )
-            duplicates = sorted(
-                {c for c in components if components.count(c) > 1}
-            )
+            duplicates = sorted({c for c in components if components.count(c) > 1})
             if duplicates:
-                raise ConfigMapUnavailable(
+                raise ConfigMapUnavailableError(
                     f"config mapping {_CONFIG_MAP_PATH} repeats component "
                     f"column(s) {duplicates!r}; the rightmost cell would "
                     f"silently win and could select a different config than "
@@ -167,14 +165,14 @@ def _load_config_map() -> Dict[str, Dict[str, str]]:
                 if not row or not any(cell.strip() for cell in row):
                     continue
                 if not row[0].strip():
-                    raise ConfigMapUnavailable(
+                    raise ConfigMapUnavailableError(
                         f"config mapping {_CONFIG_MAP_PATH} line {line_no} has "
                         f"no device id but is not empty; a row missing its "
                         f"DID_RID would make that device look absent and "
                         f"report UNSUPPORTED"
                     )
                 if len(row) != width:
-                    raise ConfigMapUnavailable(
+                    raise ConfigMapUnavailableError(
                         f"config mapping {_CONFIG_MAP_PATH} line {line_no} has "
                         f"{len(row)} field(s), expected {width}; a truncated "
                         f"row would read as empty cells and report the "
@@ -186,7 +184,7 @@ def _load_config_map() -> Dict[str, Dict[str, str]]:
                     # otherwise, so the real device it was meant to describe
                     # goes missing and resolves to UNSUPPORTED. Every row in
                     # the canonical CSV is <4 hex>_<2 hex>.
-                    raise ConfigMapUnavailable(
+                    raise ConfigMapUnavailableError(
                         f"config mapping {_CONFIG_MAP_PATH} line {line_no} has "
                         f"device id {row[0].strip()!r}, which is not the "
                         f"expected <4 hex>_<2 hex> form; the device it "
@@ -203,41 +201,36 @@ def _load_config_map() -> Dict[str, Dict[str, str]]:
                     # malformed device id, wrong header, bad row width) raises.
                     # A warning in a CI log is exactly the signal this file
                     # refuses to rely on elsewhere, so raise here too.
-                    raise ConfigMapUnavailable(
+                    raise ConfigMapUnavailableError(
                         f"config mapping {_CONFIG_MAP_PATH} repeats device id "
                         f"{did!r} (line {line_no}); one of the two rows would "
                         f"decide which config this device runs, so the vendored "
                         f"copy needs re-syncing"
                     )
                 cells = row[2:]
-                mapping[did] = {
-                    components[i]: cells[i].strip()
-                    for i in range(len(components))
-                }
+                mapping[did] = {components[i]: cells[i].strip() for i in range(len(components))}
     except FileNotFoundError as e:
         # The CSV is vendored in this package, so its absence says nothing
         # about the host. Refuse to resolve rather than degrade the whole
         # fleet to a zero-exit UNSUPPORTED.
-        raise ConfigMapUnavailable(
+        raise ConfigMapUnavailableError(
             f"config mapping not found at {_CONFIG_MAP_PATH}; the vendored "
             f"rvs_config_mapping.csv is missing from the harness"
         ) from e
     except StopIteration as e:
-        raise ConfigMapUnavailable(
+        raise ConfigMapUnavailableError(
             f"config mapping {_CONFIG_MAP_PATH} is empty (no header row); "
             f"the vendored rvs_config_mapping.csv is truncated"
         ) from e
     except csv.Error as e:
-        raise ConfigMapUnavailable(
+        raise ConfigMapUnavailableError(
             f"config mapping {_CONFIG_MAP_PATH} could not be parsed ({e}); "
             f"the vendored rvs_config_mapping.csv is malformed"
         ) from e
     except OSError as e:
-        raise ConfigMapUnavailable(
-            f"config mapping {_CONFIG_MAP_PATH} could not be read ({e})"
-        ) from e
+        raise ConfigMapUnavailableError(f"config mapping {_CONFIG_MAP_PATH} could not be read ({e})") from e
     if not mapping:
-        raise ConfigMapUnavailable(
+        raise ConfigMapUnavailableError(
             f"config mapping {_CONFIG_MAP_PATH} has a header but no device "
             f"rows; the vendored rvs_config_mapping.csv is truncated"
         )
@@ -255,13 +248,13 @@ def ensure_config_map(component: str) -> None:
     """
     mapping = _load_config_map()
     if not any(component in row for row in mapping.values()):
-        raise ConfigMapUnavailable(
+        raise ConfigMapUnavailableError(
             f"config mapping {_CONFIG_MAP_PATH} has no {component!r} column; "
             f"a test shipped with this harness cannot resolve a config from it"
         )
 
 
-def _ci_child(directory: Path, name: str, *, want_dir: bool) -> Optional[Path]:
+def _ci_child(directory: Path, name: str, *, want_dir: bool) -> Path | None:
     """Case-insensitive lookup of a single child entry."""
     try:
         for entry in directory.iterdir():
@@ -274,7 +267,7 @@ def _ci_child(directory: Path, name: str, *, want_dir: bool) -> Optional[Path]:
     return None
 
 
-class RvsConfigEscapesRoot(ConfigMapUnavailable):
+class RvsConfigEscapesRootError(ConfigMapUnavailableError):
     """A mapped config resolves outside the RVS ``conf`` tree.
 
     Separated from "the file is not there" because the two need different
@@ -285,12 +278,12 @@ class RvsConfigEscapesRoot(ConfigMapUnavailable):
     """
 
 
-def _resolve_ci_path(conf_root: Path, subdir: str, conf_name: str) -> Optional[Path]:
+def _resolve_ci_path(conf_root: Path, subdir: str, conf_name: str) -> Path | None:
     """Resolve ``conf_root/<subdir>/<conf_name>``, exact first then
     case-insensitively per path component (mirrors ROCmTest).
 
     Returns ``None`` when the file simply is not there. Raises
-    ``RvsConfigEscapesRoot`` when a candidate exists but resolves outside
+    ``RvsConfigEscapesRootError`` when a candidate exists but resolves outside
     ``conf_root``, so the caller can say which of the two happened.
     """
     subdir_path = Path(subdir)
@@ -320,7 +313,7 @@ def _resolve_ci_path(conf_root: Path, subdir: str, conf_name: str) -> Optional[P
         """Return ``candidate``, or refuse it if it leaves ``conf_root``."""
         if _inside_root(candidate):
             return candidate
-        raise RvsConfigEscapesRoot(
+        raise RvsConfigEscapesRootError(
             f"mapped RVS config {candidate} resolves outside {resolved_root}; "
             f"the vendored mapping points out of the RVS conf tree"
         )
@@ -349,8 +342,10 @@ def _resolve_conf_root(rocm_root: Path) -> Path:
 
 
 def resolve_conf_for_device(
-    conf_name: str, device_id: str, rocm_root: Path,
-) -> Tuple[Optional[Path], Optional[str]]:
+    conf_name: str,
+    device_id: str,
+    rocm_root: Path,
+) -> tuple[Path | None, str | None]:
     """Resolve an RVS config for ``device_id`` via the vendored CSV.
 
     Returns ``(path, None)`` on success or ``(None, reason)`` when the test
@@ -358,8 +353,8 @@ def resolve_conf_for_device(
     ``conf_name`` is the ``<component>.conf`` file (e.g.
     ``iet_stress.conf``); the CSV column is its ``<component>`` stem.
 
-    Raises ``RvsInstallIncomplete`` when RVS's conf tree or a non-empty
-    mapped config is absent, and ``ConfigMapUnavailable`` for a damaged
+    Raises ``RvsInstallIncompleteError`` when RVS's conf tree or a non-empty
+    mapped config is absent, and ``ConfigMapUnavailableError`` for a damaged
     vendored mapping. These are installation/packaging faults rather than
     statements about this device, so callers turn them into FAIL.
     """
@@ -372,7 +367,7 @@ def resolve_conf_for_device(
         # so it must FAIL like a missing binary already does, not report a
         # zero-exit UNSUPPORTED and green CI. Only statements the *intact*
         # mapping makes about this device stay UNSUPPORTED.
-        raise RvsInstallIncomplete(
+        raise RvsInstallIncompleteError(
             f"RVS conf tree not found at {conf_root} even though the rvs "
             f"binary is present; the RVS install is incomplete"
         )
@@ -380,43 +375,38 @@ def resolve_conf_for_device(
     mapping = _load_config_map()
     row = mapping.get((device_id or "").lower())
     if row is None:
-        return None, (f"device {device_id or 'unknown'} not in RVS config "
-                      f"mapping (rvs_config_mapping.csv)")
+        return None, (f"device {device_id or 'unknown'} not in RVS config " f"mapping (rvs_config_mapping.csv)")
     if component not in row:
         # A shipped test whose column is absent means the file is wrong, not
-        # that the device is unsupported -- see ConfigMapUnavailable.
-        raise ConfigMapUnavailable(
+        # that the device is unsupported -- see ConfigMapUnavailableError.
+        raise ConfigMapUnavailableError(
             f"RVS component {component!r} is not a column in "
             f"{_CONFIG_MAP_PATH.name}; the vendored mapping does not match "
             f"the tests shipped with this harness"
         )
     cell = row[component].strip()
     if not cell:
-        return None, (f"{component} not applicable for device {device_id} "
-                      f"(empty mapping cell)")
+        return None, (f"{component} not applicable for device {device_id} " f"(empty mapping cell)")
 
     subdir = cell[2:] if cell.startswith("./") else cell
     subdir = subdir.strip("/")
     subdir_path = Path(subdir)
-    if subdir_path.is_absolute() or any(
-        part in {".", ".."} for part in subdir_path.parts
-    ):
-        raise ConfigMapUnavailable(
+    if subdir_path.is_absolute() or any(part in {".", ".."} for part in subdir_path.parts):
+        raise ConfigMapUnavailableError(
             f"RVS component {component!r} for device {device_id!r} maps to "
             f"unsafe relative path {cell!r} in {_CONFIG_MAP_PATH.name}"
         )
     conf = _resolve_ci_path(conf_root, subdir, conf_name)
     if conf is None:
         loc = f"{subdir}/{conf_name}" if subdir else conf_name
-        raise RvsInstallIncomplete(
+        raise RvsInstallIncompleteError(
             f"mapped RVS config {loc} not found under {conf_root}; the "
             f"non-empty {component!r} mapping requires this installed file"
         )
     return conf, None
 
 
-def find_conf(config_name: str, *, gpu_only: bool,
-              rocm_root: Path, gpu_conf_dir: str) -> Optional[Path]:
+def find_conf(config_name: str, *, gpu_only: bool, rocm_root: Path, gpu_conf_dir: str) -> Path | None:
     """Locate an RVS config file in the ROCm installation.
 
     Prefers the GPU-model-specific config
@@ -460,12 +450,14 @@ def _missing_install(config: Config) -> bool:
     clone/cmake a source tree or install a package -- the stack under test
     is immutable.
     """
-    print(f"  [build] rvs: not found under {config.rocm_root} "
-          f"(expected {config.rocm_root}/bin/rvs and "
-          f"{config.rocm_root}/share/rocm-validation-suite/conf, or "
-          f"ROCM_TEST_RVS_BIN from the RVS pytest fixtures). RVS is "
-          f"shipped separately from the ROCm tarball; preinstall it under "
-          f"the ROCm root or let tests/e2e/rvs/conftest.py build it.")
+    print(
+        f"  [build] rvs: not found under {config.rocm_root} "
+        f"(expected {config.rocm_root}/bin/rvs and "
+        f"{config.rocm_root}/share/rocm-validation-suite/conf, or "
+        f"ROCM_TEST_RVS_BIN from the RVS pytest fixtures). RVS is "
+        f"shipped separately from the ROCm tarball; preinstall it under "
+        f"the ROCm root or let tests/e2e/rvs/conftest.py build it."
+    )
     return False
 
 
