@@ -17,7 +17,6 @@ differed. Collapsing them onto a parameterised base:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Optional
 
 from tests.common.gpu_monitored import rvs
 from tests.common.gpu_monitored.config import Config
@@ -33,8 +32,8 @@ class _RvsBased(Test):
     """
 
     # Subclass must override:
-    _conf_name: str          # e.g. "iet_stress.conf"
-    _human_label: str        # e.g. "IET" (used only in the UNSUPPORTED message)
+    _conf_name: str  # e.g. "iet_stress.conf"
+    _human_label: str  # e.g. "IET" (used only in the UNSUPPORTED message)
 
     # Config resolution mirrors ROCmTest (``rvs.resolve_conf_for_device`` +
     # the vendored ``rvs_config_mapping.csv``): the PCI ``device_id`` selects,
@@ -66,14 +65,15 @@ class _RvsBased(Test):
         # missing or structurally broken mapping went unreported whenever the
         # device ID also happened to be undetectable -- the run would quietly
         # fall back to a generic config.
-        component = (self._conf_name[:-5]
-                     if self._conf_name.endswith(".conf") else self._conf_name)
+        component = self._conf_name[:-5] if self._conf_name.endswith(".conf") else self._conf_name
         try:
             rvs.ensure_config_map(component)
-        except rvs.ConfigMapUnavailable as e:
+        except rvs.ConfigMapUnavailableError as e:
             print(f"  [{self.spec.name}] FAIL: {e}")
-            print("  This file is vendored in tests/common/gpu_monitored/; "
-                  "check the checkout or the copy to the test host.")
+            print(
+                "  This file is vendored in tests/common/gpu_monitored/; "
+                "check the checkout or the copy to the test host."
+            )
             return RunResult(exit_code=1)
 
         device_id = ctx.config.gpu_device_id
@@ -85,44 +85,45 @@ class _RvsBased(Test):
             # possibly-wrong generic config.
             try:
                 conf, reason = rvs.resolve_conf_for_device(
-                    self._conf_name, device_id, ctx.config.rocm_root,
+                    self._conf_name,
+                    device_id,
+                    ctx.config.rocm_root,
                 )
-            except rvs.RvsInstallIncomplete as e:
+            except rvs.RvsInstallIncompleteError as e:
                 print(f"  [{self.spec.name}] FAIL: {e}")
-                print("  Check that the preinstalled RVS package and its "
-                      "configuration tree are complete and from the same "
-                      "build.")
+                print(
+                    "  Check that the preinstalled RVS package and its "
+                    "configuration tree are complete and from the same "
+                    "build."
+                )
                 return RunResult(exit_code=1)
-            except rvs.ConfigMapUnavailable as e:
+            except rvs.ConfigMapUnavailableError as e:
                 # The mapping ships with the harness. Its absence is our
                 # packaging fault, not a property of this host, and must not
                 # be laundered into a zero-exit UNSUPPORTED that greens CI
                 # for every RVS test on every device.
                 print(f"  [{self.spec.name}] FAIL: {e}")
-                print("  This file is vendored in tests/common/gpu_monitored/; "
-                      "check the checkout or the copy to the test host.")
+                print(
+                    "  This file is vendored in tests/common/gpu_monitored/; "
+                    "check the checkout or the copy to the test host."
+                )
                 return RunResult(exit_code=1)
             if conf is None:
-                gpu_label = (
-                    ctx.config.gpu_short_name
-                    or ctx.config.gpu_model
-                    or device_id
-                )
-                print(f"UNSUPPORTED: No {self._human_label} config for "
-                      f"{gpu_label} -- {reason}")
+                gpu_label = ctx.config.gpu_short_name or ctx.config.gpu_model or device_id
+                print(f"UNSUPPORTED: No {self._human_label} config for " f"{gpu_label} -- {reason}")
                 return RunResult(unsupported=True)
         else:
             # Detection failed (no device_id): fall back to the legacy
             # GPU-name-based lookup so a detection gap doesn't hard-fail.
             conf = rvs.find_conf(
-                self._conf_name, gpu_only=self._gpu_only,
+                self._conf_name,
+                gpu_only=self._gpu_only,
                 rocm_root=ctx.config.rocm_root,
                 gpu_conf_dir=ctx.config.gpu_conf_dir,
             )
             if conf is None:
                 target = ctx.config.gpu_short_name or ctx.config.gpu_arch or "unknown"
-                print(f"UNSUPPORTED: No {self._human_label} config found for "
-                      f"{target} (GPU device id undetected)")
+                print(f"UNSUPPORTED: No {self._human_label} config found for " f"{target} (GPU device id undetected)")
                 return RunResult(unsupported=True)
 
         print(f"  Using RVS config: {conf}")
@@ -132,18 +133,21 @@ class _RvsBased(Test):
         # kfd_wait_on_events when this output goes to a pipe, so the
         # reproducer has to carry it or it will not reproduce the run we did.
         stdout_file = Path(ctx.run_dir) / "rvs_stdout.log"
-        reproduce = (f"{timeout_prefix}{rvs_bin} -c {conf} -d 3 "
-                     f"> {stdout_file.name} 2>&1")
-        rc = ctx.exec([rvs_bin, "-c", conf, "-d", "3"], timeout=watchdog,
-                      stdout_file=stdout_file)
+        reproduce = f"{timeout_prefix}{rvs_bin} -c {conf} -d 3 " f"> {stdout_file.name} 2>&1"
+        rc = ctx.exec([rvs_bin, "-c", conf, "-d", "3"], timeout=watchdog, stdout_file=stdout_file)
         if rc == 124:
-            print(f"  [{self.spec.name}] FAIL: watchdog timeout — RVS did "
-                  f"not complete within --per-iter-watchdog {watchdog}s")
+            print(
+                f"  [{self.spec.name}] FAIL: watchdog timeout — RVS did "
+                f"not complete within --per-iter-watchdog {watchdog}s"
+            )
             return RunResult(exit_code=1, reproduce_cmd=reproduce)
         return RunResult(exit_code=rc, reproduce_cmd=reproduce)
 
     @staticmethod
     def _make_spec(
-        *, name: str, goal: str, workload_profile: Dict,
+        *,
+        name: str,
+        goal: str,
+        workload_profile: dict,
     ) -> TestSpec:
         return TestSpec(name=name, goal=goal, workload_profile=workload_profile)

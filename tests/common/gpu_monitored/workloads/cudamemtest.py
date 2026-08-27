@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import shlex
 import time
-from pathlib import Path
 
 from tests.common.gpu_monitored.config import Config
 from tests.common.gpu_monitored.executor_bridge import format_shell_command, run_command, run_command_captured
@@ -51,13 +51,12 @@ class CudaMemtest(Test):
             return Path(override)
         return config.build_dir / "cuda_memtest"
 
-    def build(self, ctx: BuildContext) -> BuildStatus:
+    def build(self, ctx: BuildContext) -> BuildStatus:  # noqa: C901
         dir_ = self._source_dir(ctx.config)
         ex = ctx.monitor_executor
         print("  [build] cuda_memtest: building...")
         if not (dir_ / ".git").is_dir():
-            print("  [build] cuda_memtest: source missing — cuda_memtest_source "
-                  "fixture did not clone")
+            print("  [build] cuda_memtest: source missing — cuda_memtest_source " "fixture did not clone")
             return BuildStatus.BUILD_FAILED
         print("  [build] cuda_memtest: checking cached pinned source")
 
@@ -70,8 +69,7 @@ class CudaMemtest(Test):
             )
 
         if _reset_to_pin() != 0:
-            print(f"  [build] cuda_memtest: {self.COMMIT[:12]} not present; "
-                  f"fetching it explicitly")
+            print(f"  [build] cuda_memtest: {self.COMMIT[:12]} not present; " f"fetching it explicitly")
             fetch_rc = run_command(
                 ex,
                 ["git", "fetch", "--depth", "1", "origin", self.COMMIT],
@@ -79,27 +77,34 @@ class CudaMemtest(Test):
                 timeout=self.PIN_GIT_TIMEOUT_SEC,
             )
             if fetch_rc != 0 or _reset_to_pin() != 0:
-                print(f"  [build] cuda_memtest: FAILED — cannot check out the "
-                      f"pinned commit {self.COMMIT}. Upstream may have "
-                      f"force-pushed or pruned it. Refusing to build "
-                      f"origin/HEAD, which would change the algorithms and "
-                      f"output syntax this test validates.")
+                print(
+                    f"  [build] cuda_memtest: FAILED — cannot check out the "
+                    f"pinned commit {self.COMMIT}. Upstream may have "
+                    f"force-pushed or pruned it. Refusing to build "
+                    f"origin/HEAD, which would change the algorithms and "
+                    f"output syntax this test validates."
+                )
                 return BuildStatus.BUILD_FAILED
 
         clean_rc = run_command(
-            ex, ["git", "clean", "-dfx"], cwd=dir_, timeout=self.PIN_GIT_TIMEOUT_SEC,
+            ex,
+            ["git", "clean", "-dfx"],
+            cwd=dir_,
+            timeout=self.PIN_GIT_TIMEOUT_SEC,
         )
         if clean_rc != 0:
             print("  [build] cuda_memtest: FAILED — cannot clean cached source")
             return BuildStatus.BUILD_FAILED
 
         head_res = run_command_captured(
-            ex, ["git", "rev-parse", "HEAD"], cwd=dir_, timeout=self.PIN_GIT_TIMEOUT_SEC,
+            ex,
+            ["git", "rev-parse", "HEAD"],
+            cwd=dir_,
+            timeout=self.PIN_GIT_TIMEOUT_SEC,
         )
         head = head_res.stdout.strip() if head_res.exit_code == 0 else ""
         if head != self.COMMIT:
-            print(f"  [build] cuda_memtest: FAILED — HEAD is {head or 'unknown'}, "
-                  f"expected pinned {self.COMMIT}")
+            print(f"  [build] cuda_memtest: FAILED — HEAD is {head or 'unknown'}, " f"expected pinned {self.COMMIT}")
             return BuildStatus.BUILD_FAILED
         print(f"  [build] cuda_memtest: pinned at {self.COMMIT[:12]}")
         (dir_ / "cuda_memtest").unlink(missing_ok=True)
@@ -119,8 +124,7 @@ class CudaMemtest(Test):
         header = dir_ / "cuda_memtest.h"
         if header.is_file():
             content = header.read_text()
-            new = content.replace("MEMTEST_PP_CONCAT_DO(cuda, name)",
-                                  "MEMTEST_PP_CONCAT_DO(hip, name)")
+            new = content.replace("MEMTEST_PP_CONCAT_DO(cuda, name)", "MEMTEST_PP_CONCAT_DO(hip, name)")
             if new != content:
                 header.write_text(new)
 
@@ -128,8 +132,7 @@ class CudaMemtest(Test):
             src = dir_ / src_name
             if src.is_file():
                 content = src.read_text()
-                new = content.replace("hipHostGetDevicePointer(",
-                                      "hipHostGetDevicePointer((void **)")
+                new = content.replace("hipHostGetDevicePointer(", "hipHostGetDevicePointer((void **)")
                 if new != content:
                     src.write_text(new)
                 break
@@ -150,8 +153,7 @@ class CudaMemtest(Test):
         build_rc = run_command(ex, f"{build_cmd} 2> {stderr_q}", timeout=600)
 
         if not (dir_ / "cuda_memtest").is_file():
-            print(f"  [build] cuda_memtest: FAILED — binary not produced "
-                  f"(hipcc rc={build_rc}); see {stderr_path}")
+            print(f"  [build] cuda_memtest: FAILED — binary not produced " f"(hipcc rc={build_rc}); see {stderr_path}")
             return BuildStatus.BUILD_FAILED
         print("  [build] cuda_memtest: OK")
         return BuildStatus.OK
@@ -173,12 +175,16 @@ class CudaMemtest(Test):
                 monitor_executor=ctx.monitor_executor,
             )
             if auto_blocks is None:
-                print("  [cudamemtest] FAIL: cannot size the automatic memory "
-                      "target from amd-smi; pass --memtest-blocks explicitly")
+                print(
+                    "  [cudamemtest] FAIL: cannot size the automatic memory "
+                    "target from amd-smi; pass --memtest-blocks explicitly"
+                )
                 return RunResult(exit_code=1)
             blocks = str(auto_blocks)
-            print(f"  [cudamemtest] Auto memory target: {blocks} MB/GPU "
-                  f"({DEFAULT_FREE_VRAM_PCT}% of the least-free GPU)")
+            print(
+                f"  [cudamemtest] Auto memory target: {blocks} MB/GPU "
+                f"({DEFAULT_FREE_VRAM_PCT}% of the least-free GPU)"
+            )
         extra_args = ["--max_num_blocks", blocks]
 
         # Test9 ("Bit fade") hardcodes ``sleep(60*90)`` (90 min) in
@@ -225,7 +231,7 @@ class CudaMemtest(Test):
         # ``--num_passes 1``; on a sane GPU that's the only bound we
         # need. Test6 ("Moving inversions, 32-bit pattern") in
         # particular has been observed to take tens of minutes on
-        # high-VRAM HBM2e multi-GPU hosts (e.g. MI210 8×64 GB), so any
+        # high-VRAM HBM2e multi-GPU hosts (e.g. MI210 8x64 GB), so any
         # fixed floor short of that turned a healthy slow workload
         # into a false FAIL. CI / wedged-GPU detection now passes
         # ``--per-iter-watchdog <SEC>`` explicitly (recommended ≥ 3600
@@ -235,8 +241,7 @@ class CudaMemtest(Test):
         for test_num in sub_tests:
             if time.monotonic() >= deadline:
                 break
-            cmd = [str(bin_), "--disable_all", "--enable_test", str(test_num),
-                   "--num_passes", "1", *extra_args]
+            cmd = [str(bin_), "--disable_all", "--enable_test", str(test_num), "--num_passes", "1", *extra_args]
             iter_start = time.monotonic()
             rc = ctx.exec(cmd, timeout=per_iter_timeout)
             iter_dur = time.monotonic() - iter_start
@@ -245,8 +250,7 @@ class CudaMemtest(Test):
             # triaging "why did the loop only finish N/M sub-tests?" can
             # see which sub-test is slow without grepping ``console.log``
             # for the binary's own per-GPU "Test$n finished in ..." lines.
-            print(f"  [cudamemtest] enable_test {test_num} "
-                  f"finished in {iter_dur:.1f}s (rc={rc})")
+            print(f"  [cudamemtest] enable_test {test_num} " f"finished in {iter_dur:.1f}s (rc={rc})")
             if rc == 124:
                 # Watchdog timeout on a single sub-test — almost
                 # always a wedged GPU. Stop trying further sub-tests
@@ -267,21 +271,21 @@ class CudaMemtest(Test):
             # but never forget that an earlier sub-test failed.
             if rc != 0 and first_fail_rc == 0:
                 first_fail_rc = rc
-                print(f"  [cudamemtest] enable_test {test_num} exited "
-                      f"rc={rc} — continuing remaining sub-tests")
+                print(f"  [cudamemtest] enable_test {test_num} exited " f"rc={rc} — continuing remaining sub-tests")
 
-        print(f"  [cudamemtest] Ran {ran}/{len(sub_tests)} sub-test(s), "
-              f"first_fail_rc={first_fail_rc}")
+        print(f"  [cudamemtest] Ran {ran}/{len(sub_tests)} sub-test(s), " f"first_fail_rc={first_fail_rc}")
         if ran < len(sub_tests):
             # The required set is the coverage contract: reporting a truncated
             # prefix as PASS would let the sub-tests that never started break
             # unnoticed. Name the missing IDs and how to get them to run.
             missing = " ".join(str(n) for n in sub_tests[ran:])
-            print(f"  [cudamemtest] FAIL: incomplete coverage — {ran} of "
-                  f"{len(sub_tests)} required sub-tests ran; {missing} never "
-                  f"started within --memtest-duration "
-                  f"{ctx.config.memtest_duration}s. Raise --memtest-duration "
-                  f"or lower the footprint with --memtest-blocks.")
+            print(
+                f"  [cudamemtest] FAIL: incomplete coverage — {ran} of "
+                f"{len(sub_tests)} required sub-tests ran; {missing} never "
+                f"started within --memtest-duration "
+                f"{ctx.config.memtest_duration}s. Raise --memtest-duration "
+                f"or lower the footprint with --memtest-blocks."
+            )
             if first_fail_rc == 0:
                 first_fail_rc = 1
         return RunResult(exit_code=first_fail_rc, reproduce_cmd=reproduce)

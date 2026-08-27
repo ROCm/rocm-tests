@@ -10,6 +10,4 @@ import pytest
 def test_gpu_rvs_tst_monitored(run_monitored_test):
     """Run rvs_tst under amd-smi monitoring with full validation pipeline."""
     outcome = run_monitored_test()
-    assert outcome.status == "PASS", (
-        f"rvs_tst failed (exit={outcome.exit_code}):\n{outcome.validation}"
-    )
+    assert outcome.status == "PASS", f"rvs_tst failed (exit={outcome.exit_code}):\n{outcome.validation}"

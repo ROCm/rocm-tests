@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import os
 import shutil
 import subprocess
-from typing import Sequence
 
 
 def is_root() -> bool:
@@ -26,7 +26,7 @@ def run_priv(cmd: Sequence, **kwargs) -> subprocess.CompletedProcess:
     if is_root():
         return subprocess.run(cmd, **kwargs)
     if shutil.which("sudo"):
-        return subprocess.run(["sudo", "-n"] + cmd, **kwargs)
+        return subprocess.run(["sudo", "-n", *cmd], **kwargs)
     return subprocess.run(cmd, **kwargs)
 
 

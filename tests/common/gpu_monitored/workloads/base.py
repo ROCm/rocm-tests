@@ -5,15 +5,17 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+import contextlib
+from dataclasses import dataclass
+from enum import Enum
 import os
+from pathlib import Path
 import sys
 import threading
 import time
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from enum import Enum
-from pathlib import Path
-from typing import Dict, List, Optional, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from tests.common.gpu_monitored.config import Config
 from tests.common.gpu_monitored.executor_bridge import (
@@ -31,10 +33,10 @@ if TYPE_CHECKING:
 # Status enums
 # ---------------------------------------------------------------------------
 class BuildStatus(Enum):
-    OK = "ok"                    # binary available (installed or built)
+    OK = "ok"  # binary available (installed or built)
     BUILD_FAILED = "build_failed"
     SOURCE_MISSING = "source_missing"
-    SKIPPED = "skipped"          # test not selected, skipped
+    SKIPPED = "skipped"  # test not selected, skipped
 
 
 # ---------------------------------------------------------------------------
@@ -42,11 +44,11 @@ class BuildStatus(Enum):
 # ---------------------------------------------------------------------------
 @dataclass
 class TestSpec:
-    name: str                              # e.g. "cudamemtest"
-    goal: str                              # human-readable goal for banner
+    name: str  # e.g. "cudamemtest"
+    goal: str  # human-readable goal for banner
     # Monitoring workload profile (used by analyze_monitoring.py)
     # Example: {"min_util": 70, "min_vram_pct": 30, "serial": False}
-    workload_profile: Optional[Dict] = None
+    workload_profile: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +57,7 @@ class TestSpec:
 @dataclass
 class BuildContext:
     config: Config
-    monitor_executor: Optional["AbstractExecutor"] = None
+    monitor_executor: AbstractExecutor | None = None
 
     @property
     def rocm_root(self) -> Path:
@@ -84,9 +86,9 @@ class RunContext:
     config: Config
     run_dir: Path
     log_root: Path
-    target_executor: Optional["NodeExecutorGroup"] = None
-    monitor_executor: Optional["AbstractExecutor"] = None
-    console_log: Optional[Path] = None
+    target_executor: NodeExecutorGroup | None = None
+    monitor_executor: AbstractExecutor | None = None
+    console_log: Path | None = None
 
     @property
     def rocm_root(self) -> Path:
@@ -110,9 +112,14 @@ class RunContext:
             if not text.endswith("\n"):
                 fh.write("\n")
 
-    def exec(self, cmd: Sequence, env: Optional[Dict[str, str]] = None,
-             timeout: Optional[int] = None, check: bool = False,
-             stdout_file: Optional[Path] = None) -> int:
+    def exec(
+        self,
+        cmd: Sequence,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
+        check: bool = False,
+        stdout_file: Path | None = None,
+    ) -> int:
         """Execute a workload command via ``target_executor`` when wired.
 
         Falls back to subprocess only for standalone CLI use (no executor).
@@ -129,7 +136,7 @@ class RunContext:
 
             def _follow() -> None:
                 try:
-                    reader = open(stdout_file, "rb")
+                    reader = open(stdout_file, "rb")  # noqa: SIM115 — long-lived handle, closed explicitly
                 except OSError:
                     return
                 try:
@@ -147,10 +154,8 @@ class RunContext:
                 finally:
                     reader.close()
 
-            try:
+            with contextlib.suppress(OSError, ValueError):
                 sys.stdout.flush()
-            except (OSError, ValueError):
-                pass
             follower = threading.Thread(target=_follow, daemon=True)
             follower.start()
             try:
@@ -165,10 +170,8 @@ class RunContext:
                 done.set()
                 follower.join(timeout=30)
                 if self.console_log is not None and stdout_file.is_file():
-                    try:
+                    with contextlib.suppress(OSError):
                         self.append_console(stdout_file.read_text(errors="replace"))
-                    except OSError:
-                        pass
 
         executor = self.target_executor or self.monitor_executor
         if stdout_file is None and self.console_log is not None and executor is not None:

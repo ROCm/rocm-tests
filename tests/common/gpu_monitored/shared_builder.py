@@ -23,8 +23,8 @@ install check in the same interpreter (e.g. unit tests).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 from tests.common.gpu_monitored.config import Config
 
@@ -50,7 +50,7 @@ class SharedToolBuilder:
         self._label = label
         self._install_check = install_check
         self._build_fn = build_fn
-        self._result: Optional[bool] = None
+        self._result: bool | None = None
         self._announced_install = False
 
     def reset(self) -> None:

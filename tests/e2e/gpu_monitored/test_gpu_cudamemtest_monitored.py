@@ -11,6 +11,4 @@ import pytest
 def test_gpu_cudamemtest_monitored(run_monitored_test):
     """Run cudamemtest under amd-smi monitoring with full validation pipeline."""
     outcome = run_monitored_test()
-    assert outcome.status == "PASS", (
-        f"cudamemtest failed (exit={outcome.exit_code}):\n{outcome.validation}"
-    )
+    assert outcome.status == "PASS", f"cudamemtest failed (exit={outcome.exit_code}):\n{outcome.validation}"

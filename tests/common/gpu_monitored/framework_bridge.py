@@ -175,7 +175,4 @@ def make_monitored_config(
 def ensure_gpu_environment(config: Config) -> None:
     """Fail fast when whole-node prerequisites are missing."""
     if config.num_gpus < 1:
-        pytest.fail(
-            "Framework reports zero workload-visible GPUs. "
-            "Check NodePool allocation and device access."
-        )
+        pytest.fail("Framework reports zero workload-visible GPUs. " "Check NodePool allocation and device access.")

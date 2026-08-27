@@ -29,11 +29,23 @@ from tests.common.gpu_monitored.orchestrator import MonitoredTestOrchestrator, T
 from tests.common.gpu_monitored.validation import pretest_health_probe
 from tests.common.gpu_monitored.workloads import get_test
 from tests.common.gpu_monitored.workloads.base import BuildContext, BuildStatus
-from tests.e2e.rvs.conftest import export_rvs_env_paths
+from tests.e2e.rvs.conftest import (  # noqa: F401
+    export_rvs_env_paths,
+    gpu_conf_dir,
+    rvs_binary as _rvs_binary,
+    rvs_find_conf,
+    rvs_source as _rvs_source,
+    transferbench_binary as _transferbench_binary,
+)
 
 logger = logging.getLogger(__name__)
 
-pytest_plugins = ["tests.e2e.rvs.conftest"]
+# pytest only auto-loads conftest.py for its own directory tree, so the RVS
+# build fixtures from the sibling ``tests/e2e/rvs`` suite are re-exported here
+# to make them requestable by the monitored workloads below.
+rvs_binary = _rvs_binary
+rvs_source = _rvs_source
+transferbench_binary = _transferbench_binary
 
 _RVS_WORKLOADS = frozenset({"rvs_tst", "rvs_iet_stress"})
 _TRANSFERBENCH_WORKLOADS = frozenset({"transferbench"})
@@ -125,7 +137,9 @@ def monitored_config(
     """Per-test :class:`Config` from framework GPU detection + ROCm paths."""
     num_gpus = target_executor.visible_gpu_count
     arch, model, _bdf = resolve_gpu_identity(
-        gpu_monitored_monitor_executor, gpu_arch, rock_dir,
+        gpu_monitored_monitor_executor,
+        gpu_arch,
+        rock_dir,
     )
 
     from tests.common.gpu_monitored.environment import detect_gpu_device_id

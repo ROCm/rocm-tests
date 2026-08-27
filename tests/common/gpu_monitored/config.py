@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
 
 @dataclass
@@ -109,4 +108,4 @@ class Config:
     # would even matter; otherwise the run continues with the
     # annotation in place.
     pretest_kernel_dirty: bool = False
-    inherited_critical_categories: List[str] = field(default_factory=list)
+    inherited_critical_categories: list[str] = field(default_factory=list)
