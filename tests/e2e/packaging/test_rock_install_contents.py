@@ -3,7 +3,7 @@
 """
 test_rock_install_contents.py -- an extracted ROCm/TheRock install has core contents.
 
-Realizes the "extract + verify contents" half of TMS rock_tar_download_extract_verify
+Realizes the "extract + verify contents" half of rock_tar_download_extract_verify
 against the ROCm install under ``--rock-dir`` (which is itself an extracted TheRock
 tarball) rather than re-downloading the multi-GB tarball on every run: verifies the
 expected ROCm binaries and shared libraries are present and, for binaries, runnable.
@@ -52,12 +52,17 @@ def test_rock_install_has_core_libraries(rock_dir: str):
 
 
 @pytest.mark.runtime.fast
+@pytest.mark.hw.gpu
 def test_rock_install_binary_runs(target_executor, ld_path: dict, rock_dir: str):
-    """A core ROCm binary from the extracted tree executes (rocminfo --help)."""
+    """A core ROCm binary from the extracted tree executes (rocminfo --help).
+
+    hw.gpu overrides the directory's cpu_only default because this runs a binary
+    through ``target_executor``.
+    """
     root = pathlib.Path(rock_dir)
     rocminfo = root / "bin" / "rocminfo"
     if not rocminfo.exists():
-        pytest.skip("rocminfo not present in this ROCm install")
+        pytest.fail(f"rocminfo missing from the ROCm install at {rock_dir}; expected bin/rocminfo")
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(f"env LD_LIBRARY_PATH={ld} {rocminfo} --help")
     assert result.ok, f"rocminfo --help failed (exit={result.exit_code}):\n{result.stdout[:600]}\n{result.stderr[:600]}"

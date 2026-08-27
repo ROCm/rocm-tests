@@ -3,7 +3,7 @@
 """
 test_rock_native_package_install.py -- install ROCm from the public deb/rpm repos.
 
-Realizes TMS rock_apt_install_deb / rock_yum_install_rpm: configure the public
+Realizes rock_apt_install_deb / rock_yum_install_rpm: configure the public
 prerelease ROCm package repository, install the ``amdrocm-<gfx>`` metapackage, and
 verify it via ``dpkg -s`` / ``rpm -q``.
 
@@ -12,8 +12,9 @@ unless ``ROCM_TEST_ALLOW_PKG_INSTALL=1`` AND the process is root AND the host is
 matching distro family. Intended for disposable CI containers (the e2e job already
 runs in an ephemeral container), never a shared host. Marked ci.weekly.
 
-Override the package via ``ROCM_TEST_ROCM_PACKAGE`` (default derived from
-``ROCM_TEST_ARTIFACT_GROUP``, e.g. ``amdrocm-gfx94x``).
+The metapackage name is derived from the ``artifact_group`` fixture (itself
+derived from the mandatory ``--gpu-arch``), e.g. ``amdrocm-gfx94x``, and can be
+overridden via ``ROCM_TEST_ROCM_PACKAGE``.
 """
 
 import os
@@ -23,10 +24,14 @@ import shutil
 import pytest
 
 _ALLOW = os.environ.get("ROCM_TEST_ALLOW_PKG_INSTALL") == "1"
-_ARTIFACT_GROUP = os.environ.get("ROCM_TEST_ARTIFACT_GROUP", "gfx94X-dcgpu")
-_PACKAGE = os.environ.get("ROCM_TEST_ROCM_PACKAGE", "amdrocm-" + _ARTIFACT_GROUP.lower().split("-")[0])
 _PKG_BASE = "https://rocm.prereleases.amd.com/packages"
 _GPG_URL = f"{_PKG_BASE}/gpg/rocm.gpg"
+
+
+@pytest.fixture
+def rocm_package(artifact_group: str) -> str:
+    """Metapackage to install for the target GPU family, e.g. ``amdrocm-gfx94x``."""
+    return os.environ.get("ROCM_TEST_ROCM_PACKAGE", "amdrocm-" + artifact_group.lower().split("-")[0])
 
 
 def _os_profile() -> str | None:
@@ -52,7 +57,7 @@ def _is_root() -> bool:
 
 @pytest.mark.runtime.medium
 @pytest.mark.ci.weekly
-def test_rock_apt_install_deb(cpu_executor):
+def test_rock_apt_install_deb(cpu_executor, rocm_package: str):
     """Configure the public ROCm apt repo, install amdrocm-<gfx>, verify with dpkg."""
     if not _ALLOW:
         pytest.skip("destructive package install; set ROCM_TEST_ALLOW_PKG_INSTALL=1 to enable")
@@ -70,19 +75,19 @@ def test_rock_apt_install_deb(cpu_executor):
         "printf 'deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] "
         f"{_PKG_BASE}/{profile} stable main\\n' > /etc/apt/sources.list.d/rocm.list; "
         "apt-get update -qq; "
-        f"apt-get install -y --no-install-recommends {shlex.quote(_PACKAGE)}; "
-        f"dpkg -s {shlex.quote(_PACKAGE)}"
+        f"apt-get install -y --no-install-recommends {shlex.quote(rocm_package)}; "
+        f"dpkg -s {shlex.quote(rocm_package)}"
     )
     result = cpu_executor.run(f"bash -c {shlex.quote(script)}", timeout=3600)
-    assert result.ok, f"apt install of {_PACKAGE!r} failed (exit={result.exit_code}):\n{result.stdout[-2000:]}"
+    assert result.ok, f"apt install of {rocm_package!r} failed (exit={result.exit_code}):\n{result.stdout[-2000:]}"
     assert (
         "install ok installed" in result.stdout.lower()
-    ), f"dpkg did not confirm {_PACKAGE!r}:\n{result.stdout[-1500:]}"
+    ), f"dpkg did not confirm {rocm_package!r}:\n{result.stdout[-1500:]}"
 
 
 @pytest.mark.runtime.medium
 @pytest.mark.ci.weekly
-def test_rock_yum_install_rpm(cpu_executor):
+def test_rock_yum_install_rpm(cpu_executor, rocm_package: str):
     """Configure the public ROCm rpm repo, install amdrocm-<gfx>, verify with rpm -q."""
     if not _ALLOW:
         pytest.skip("destructive package install; set ROCM_TEST_ALLOW_PKG_INSTALL=1 to enable")
@@ -105,9 +110,11 @@ def test_rock_yum_install_rpm(cpu_executor):
         "set -e; "
         f"printf {shlex.quote(repo)} > /etc/yum.repos.d/rocm.repo; "
         f"{pkg_mgr} clean all; "
-        f"{pkg_mgr} install -y {shlex.quote(_PACKAGE)}; "
-        f"rpm -q {shlex.quote(_PACKAGE)}"
+        f"{pkg_mgr} install -y {shlex.quote(rocm_package)}; "
+        f"rpm -q {shlex.quote(rocm_package)}"
     )
     result = cpu_executor.run(f"bash -c {shlex.quote(script)}", timeout=3600)
-    assert result.ok, f"{pkg_mgr} install of {_PACKAGE!r} failed (exit={result.exit_code}):\n{result.stdout[-2000:]}"
-    assert _PACKAGE in result.stdout, f"rpm -q did not confirm {_PACKAGE!r}:\n{result.stdout[-1500:]}"
+    assert (
+        result.ok
+    ), f"{pkg_mgr} install of {rocm_package!r} failed (exit={result.exit_code}):\n{result.stdout[-2000:]}"
+    assert rocm_package in result.stdout, f"rpm -q did not confirm {rocm_package!r}:\n{result.stdout[-1500:]}"
