@@ -10,6 +10,8 @@ SPDX-License-Identifier: MIT
 //
 //   e4m3_azero / e4m3_bzero / e5m2_azero / e5m2_bzero   (or "all")
 //
+// The FP8 encoding follows the device: FNUZ on gfx94x, OCP on gfx950 and newer.
+//
 // Output/compute are FP32 so the zero check is exact. FP8 scale pointers are set
 // to 1.0 for robustness across hipBLASLt versions. Prints
 // "hipblaslt_zero_mat <check>: PASSED" per check.
@@ -144,11 +146,19 @@ struct Check {
 
 int main(int argc, char** argv) {
   std::string sel = (argc > 1) ? argv[1] : "all";
+  // gfx94x implements the FNUZ FP8 encodings; gfx950 and newer implement the
+  // OCP-standard ones, and requesting the wrong pair yields no algorithms.
+  hipDeviceProp_t prop;
+  const bool known = hipGetDeviceProperties(&prop, 0) == hipSuccess;
+  const bool fnuz = !known || std::strncmp(prop.gcnArchName, "gfx94", 5) == 0;
+  const hipDataType e4m3 = fnuz ? HIP_R_8F_E4M3_FNUZ : HIP_R_8F_E4M3;
+  const hipDataType e5m2 = fnuz ? HIP_R_8F_E5M2_FNUZ : HIP_R_8F_E5M2;
+  std::printf("hipblaslt_zero_mat: arch=%s fp8=%s\n", known ? prop.gcnArchName : "unknown", fnuz ? "FNUZ" : "OCP");
   const Check checks[] = {
-      {"e4m3_azero", HIP_R_8F_E4M3_FNUZ, true},
-      {"e4m3_bzero", HIP_R_8F_E4M3_FNUZ, false},
-      {"e5m2_azero", HIP_R_8F_E5M2_FNUZ, true},
-      {"e5m2_bzero", HIP_R_8F_E5M2_FNUZ, false},
+      {"e4m3_azero", e4m3, true},
+      {"e4m3_bzero", e4m3, false},
+      {"e5m2_azero", e5m2, true},
+      {"e5m2_bzero", e5m2, false},
   };
   int ran = 0, failed = 0;
   for (const auto& c : checks) {
