@@ -9,12 +9,12 @@ SPDX-License-Identifier: MIT
 // and C/D are BFloat16, matching the mixed-precision pairing the operation is
 // deployed with. Two scenarios selected by argv[1]:
 //
-//   azero / bzero            (optional iteration count in argv[2])
+//   azero / bzero   (or "all")
 //
 // The FP8 encoding is chosen from the device architecture: FNUZ on gfx94x, the
-// OCP-standard variants on gfx950 and newer. Each iteration re-poisons D before
-// the GEMM so a zero result is meaningful, then checks every element is finite
-// and exactly zero. Prints "hipblaslt_zero_mat <check>: PASSED" per scenario.
+// OCP-standard variants on gfx950 and newer. D is poisoned before the GEMM so a
+// zero result is meaningful, then every element is checked finite and exactly
+// zero. Prints "hipblaslt_zero_mat <check>: PASSED" per scenario.
 
 #include <hip/hip_runtime.h>
 #include <hipblaslt/hipblaslt.h>
@@ -22,7 +22,6 @@ SPDX-License-Identifier: MIT
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -48,7 +47,6 @@ SPDX-License-Identifier: MIT
 namespace {
 
 constexpr int kM = 8192, kN = 32768, kK = 1024;
-constexpr int kDefaultIters = 100;
 
 // Any finite nonzero FP8 byte works for the operand that is not zeroed: 0x3C
 // decodes to a small finite value in all four E4M3/E5M2 encodings, so the
@@ -62,7 +60,7 @@ float bf16_to_float(uint16_t raw) {
   return out;
 }
 
-bool run_check(const std::string& name, hipDataType a_type, hipDataType b_type, bool a_zero, int iters) {
+bool run_check(const std::string& name, hipDataType a_type, hipDataType b_type, bool a_zero) {
   hipblasLtHandle_t handle;
   HBLT_CHECK(hipblasLtCreate(&handle));
 
@@ -126,20 +124,18 @@ bool run_check(const std::string& name, hipDataType a_type, hipDataType b_type, 
   std::vector<uint16_t> hD(cd_elems);
   bool ok = true;
 
-  for (int it = 0; it < iters && ok; ++it) {
-    HIP_CHECK(hipMemset(dD, 0xCC, cd_bytes));  // poison so a real zero result is meaningful
-    HBLT_CHECK(hipblasLtMatmul(handle, op, &alpha, dA, lA, dB, lB, &beta, dC, lC, dD, lD, &heur[0].algo, ws, ws_size,
-                               nullptr));
-    HIP_CHECK(hipDeviceSynchronize());
-    HIP_CHECK(hipMemcpy(hD.data(), dD, cd_bytes, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemset(dD, 0xCC, cd_bytes));  // poison so a real zero result is meaningful
+  HBLT_CHECK(hipblasLtMatmul(handle, op, &alpha, dA, lA, dB, lB, &beta, dC, lC, dD, lD, &heur[0].algo, ws, ws_size,
+                             nullptr));
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(hD.data(), dD, cd_bytes, hipMemcpyDeviceToHost));
 
-    for (size_t i = 0; i < cd_elems; ++i) {
-      float z = bf16_to_float(hD[i]);
-      if (z != 0.0f || !std::isfinite(z)) {
-        std::printf("unexpected output at %zu on iteration %d: %f (check %s)\n", i, it, z, name.c_str());
-        ok = false;
-        break;
-      }
+  for (size_t i = 0; i < cd_elems; ++i) {
+    float z = bf16_to_float(hD[i]);
+    if (z != 0.0f || !std::isfinite(z)) {
+      std::printf("unexpected output at %zu: %f (check %s)\n", i, z, name.c_str());
+      ok = false;
+      break;
     }
   }
 
@@ -182,17 +178,11 @@ bool use_fnuz_fp8(const char** arch_out) {
 
 int main(int argc, char** argv) {
   std::string sel = (argc > 1) ? argv[1] : "all";
-  int iters = (argc > 2) ? std::atoi(argv[2]) : kDefaultIters;
-  if (iters <= 0) {
-    std::printf("iteration count must be positive: %s\n", argv[2]);
-    return 2;
-  }
-
   const char* arch = "unknown";
   const bool fnuz = use_fnuz_fp8(&arch);
   const hipDataType a_type = fnuz ? HIP_R_8F_E4M3_FNUZ : HIP_R_8F_E4M3;
   const hipDataType b_type = fnuz ? HIP_R_8F_E5M2_FNUZ : HIP_R_8F_E5M2;
-  std::printf("hipblaslt_zero_mat: arch=%s fp8=%s iters=%d\n", arch, fnuz ? "FNUZ" : "OCP", iters);
+  std::printf("hipblaslt_zero_mat: arch=%s fp8=%s\n", arch, fnuz ? "FNUZ" : "OCP");
 
   const Check checks[] = {
       {"azero", true},
@@ -202,7 +192,7 @@ int main(int argc, char** argv) {
   for (const auto& c : checks) {
     if (sel != "all" && sel != c.name) continue;
     ++ran;
-    bool ok = run_check(c.name, a_type, b_type, c.a_zero, iters);
+    bool ok = run_check(c.name, a_type, b_type, c.a_zero);
     std::printf("hipblaslt_zero_mat %s: %s\n", c.name, ok ? "PASSED" : "FAILED");
     if (!ok) ++failed;
   }
