@@ -30,7 +30,9 @@ from tests.common.gpu_monitored import analyze, csv_schema, report
 from tests.common.gpu_monitored.config import Config
 from tests.common.gpu_monitored.dmesg_capture import (
     DMESG_SNAPSHOT_UNAVAILABLE,
+    DMESG_SOURCE_RING_BUFFER,
     capture_dmesg_text,
+    dmesg_source_from_snapshot,
 )
 from tests.common.gpu_monitored.monitoring import (
     _MAX_CORRUPT_ROWS,
@@ -717,6 +719,14 @@ class MonitoredTestOrchestrator:
             "validation": validation,
             "metrics": metrics,
         }
+        # Record the kernel-log origin only when it is not the ring buffer, so
+        # a normal run keeps the summary shape it had before the fallback
+        # existed while a syslog-verified result stays auditable.
+        pretest_snapshot = path.parent / "dmesg_pretest.log"
+        if pretest_snapshot.is_file():
+            source = dmesg_source_from_snapshot(pretest_snapshot.read_text())
+            if source != DMESG_SOURCE_RING_BUFFER:
+                data["dmesg_source"] = source
         # Propagate pre-test health probe annotation, if any. Only
         # emit the keys when dirty so passing-clean runs keep the
         # exact summary.json shape they had before this feature.

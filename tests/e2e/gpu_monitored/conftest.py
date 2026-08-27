@@ -105,12 +105,19 @@ def _ensure_workload_prerequisites(request, test_name: str) -> None:
 
 
 @pytest.fixture(scope="session")
-def gpu_monitor_interval(framework_config) -> int:
-    """Monitoring sample interval — env override, then ``rocm-test.toml``."""
+def gpu_monitor_interval() -> int:
+    """Monitoring sample interval in seconds, overridable via env.
+
+    Defaults to 1 Hz to match the standalone suite (``--sample-interval``
+    default 1): the analysis thresholds — steady-state windows, ramp-up
+    detection, active-sample counts — are calibrated for per-second
+    telemetry. ``framework_config.gpu.monitor_interval_secs`` is
+    deliberately not consulted; that 15 s knob configures the framework's
+    separate ``--monitor-gpu`` background poller, and borrowing it here
+    made a 5-minute thermal test land only ~4 loaded samples per GPU.
+    """
     env_val = os.environ.get("GPU_MONITOR_INTERVAL", "").strip()
-    if env_val:
-        return int(env_val)
-    return int(getattr(framework_config.gpu, "monitor_interval_secs", 1) or 1)
+    return int(env_val) if env_val else 1
 
 
 @pytest.fixture
