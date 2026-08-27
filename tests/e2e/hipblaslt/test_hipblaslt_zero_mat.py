@@ -3,17 +3,17 @@
 """
 test_hipblaslt_zero_mat.py -- hipBLASLt FP8/BF8 GEMM with a zero input matrix.
 
-For ``D = alpha*A^T*B + beta*C`` (alpha=beta=1, C zeroed), zeroing either input
-makes the product zero, so every element of the BFloat16 output must be exactly
-0 and finite. A is FP8 (E4M3) and B is BF8 (E5M2), matching the mixed-precision
-pairing the operation is deployed with.
+For ``D = alpha*A*B + beta*C`` (alpha=1, beta=0), zeroing either input makes the
+product zero, so every element of the FP32 output must be exactly 0. Runs four
+parametrized checks (E4M3 / E5M2 inputs x {A zero, B zero}) against the
+``hipblaslt_zero_mat`` binary so a failure isolates to one dtype/operand.
 
 runtime.fast is declared explicitly; layer.math_lib is injected by the area profile.
 """
 
 import pytest
 
-_CHECKS = ["azero", "bzero"]
+_CHECKS = ["e4m3_azero", "e4m3_bzero", "e5m2_azero", "e5m2_bzero"]
 
 
 @pytest.mark.runtime.fast
