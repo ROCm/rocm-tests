@@ -79,7 +79,7 @@ on:
 
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 jobs:
   setup_matrix:
@@ -140,6 +140,12 @@ jobs:
           GH_TOKEN: ${{ steps.runner-health-token.outputs.token }}
           GH_OWNER: ROCm
           GITHUB_REPOSITORY: ${{ github.repository }}
+          DISPATCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REF: ${{ github.ref }}
+          SOURCE_REPO: ${{ inputs.source_repo || 'ROCm/rockrel' }}
+          ARTIFACT_SOURCE: ${{ inputs.artifact_source || 'multi_arch_release.yml' }}
+          INCLUDE_DEV: ${{ inputs.include_dev || 'true' }}
+          RESOLVED_RUN_ID: ${{ steps.get_runid.outputs.run_id || '' }}
         shell: python
         run: |
           import configparser
@@ -343,6 +349,60 @@ jobs:
                   'online_busy':  len(online_busy),
               }
 
+          def _dispatch_platform(entry, run_id_override=''):
+              """Dispatch e2e-tests.yml for this platform immediately via workflow_dispatch.
+
+              Called as soon as a runner is confirmed idle — does not wait for
+              other platforms.  Returns True on success, False on failure.
+              """
+              repo          = os.environ['GITHUB_REPOSITORY']
+              ref           = os.environ.get('GITHUB_REF', 'refs/heads/main')
+              token         = os.environ.get('DISPATCH_TOKEN', '').strip()
+              source_repo   = os.environ.get('SOURCE_REPO', 'ROCm/rockrel')
+              artifact_src  = os.environ.get('ARTIFACT_SOURCE', 'multi_arch_release.yml')
+              include_dev   = os.environ.get('INCLUDE_DEV', 'true').strip().lower()
+              resolved_run  = run_id_override or os.environ.get('RESOLVED_RUN_ID', '')
+
+              section = entry['name']
+              inputs_payload = {
+                  'name':            section,
+                  'runs_on':         entry.get('runs_on', ''),
+                  'artifact_group':  entry.get('artifact_group', ''),
+                  'gpu_arch':        entry.get('gpu_arch', ''),
+                  'tests_filters':   entry.get('tests_filters', ''),
+                  'source_repo':     source_repo,
+                  'artifact_source': artifact_src,
+                  'include_dev':     include_dev == 'true',
+                  'run_id':          resolved_run,
+                  'target_available': 'true',
+              }
+              payload = json.dumps({'ref': ref, 'inputs': inputs_payload})
+
+              try:
+                  result = subprocess.run(
+                      [
+                          'gh', 'api',
+                          '--method', 'POST',
+                          f'repos/{repo}/actions/workflows/e2e-tests.yml/dispatches',
+                          '--input', '-',
+                      ],
+                      input=payload,
+                      text=True,
+                      capture_output=True,
+                      check=False,
+                      timeout=30,
+                      env={**os.environ, 'GH_TOKEN': token},
+                  )
+                  if result.returncode == 0:
+                      print(f'[{section}] ✓ Dispatched e2e-tests.yml immediately', flush=True)
+                      return True
+                  err = result.stderr.strip() or result.stdout.strip()
+                  print(f'[{section}] ✗ Dispatch failed (rc={result.returncode}): {err}', flush=True)
+                  return False
+              except Exception as exc:  # noqa: BLE001
+                  print(f'[{section}] ✗ Dispatch raised: {exc}', flush=True)
+                  return False
+
           def _poll_one_section(entry, deadline):
               """Poll a single label independently until an idle runner appears
               or the shared deadline expires.
@@ -463,7 +523,7 @@ jobs:
               entry['skip_reason']      = 'Target disabled in testplan.ini'
               skipped.append({'name': entry['name'], 'reason': entry['skip_reason']})
               print(f"[{entry['name']}] Skipped — disabled in testplan.ini", flush=True)
-              all_targets.append(entry)
+              resolved[entry['name']] = entry
 
           # ── Enabled sections — poll all labels in parallel ──────────────────
           # Each section gets its own thread with its own poll loop and its own
@@ -524,10 +584,24 @@ jobs:
                           for entry in label_to_sections[lbl]:
                               section = entry['name']
                               if available:
-                                  entry['target_available'] = 'true'
-                                  entry['skip_reason']      = ''
+                                  # Dispatch immediately — do not wait for other platforms.
+                                  dispatched = _dispatch_platform(
+                                      entry,
+                                      run_id_override=os.environ.get('RESOLVED_RUN_ID', ''),
+                                  )
+                                  if dispatched:
+                                      # Mark as dispatched so the matrix cell shows grey
+                                      # (skipped) rather than running a second copy.
+                                      entry['target_available'] = 'false'
+                                      entry['skip_reason']      = 'Dispatched immediately on runner availability'
+                                      skipped.append({'name': section, 'reason': entry['skip_reason']})
+                                  else:
+                                      # Dispatch failed — fall back to matrix scheduling.
+                                      entry['target_available'] = 'true'
+                                      entry['skip_reason']      = ''
                                   print(
-                                      f'[{section}] Resolved: AVAILABLE (label={lbl!r})',
+                                      f'[{section}] Resolved: AVAILABLE (label={lbl!r})'
+                                      f' — {"dispatched" if dispatched else "fallback to matrix"}',
                                       flush=True,
                                   )
                               else:
