@@ -88,6 +88,7 @@ jobs:
     outputs:
       targets:         ${{ steps.testplan.outputs.targets }}
       skipped_targets: ${{ steps.testplan.outputs.skipped_targets }}
+      runner_check_status: ${{ steps.testplan.outputs.runner_check_status }}
       run_id:          ${{ steps.get_runid.outputs.run_id }}
     steps:
       - name: Checkout rocm-tests
@@ -124,64 +125,122 @@ jobs:
             f.write(f'run_id={run_id}\n')
           print(f'Latest completed run of {repo}/{workflow}: {run_id}')
 
+      - name: Create runner health app token
+        id: runner-health-token
+        uses: actions/create-github-app-token@2e564a0bb8e7cc2b907b2401a2afe177882d4325 # v3.0.0
+        with:
+          app-id: ${{ secrets.RUNNER_HEALTH_APP_ID }}
+          private-key: ${{ secrets.RUNNER_HEALTH_APP_PRIVATE_KEY }}
+          owner: ROCm
+          repositories: rocm-tests
+
       - name: Build test matrix from Test Configuration
         id: testplan
         env:
-          GITHUB_TOKEN: ${{ secrets.RUNNER_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.runner-health-token.outputs.token }}
+          GH_OWNER: ROCm
           GITHUB_REPOSITORY: ${{ github.repository }}
         shell: python
         run: |
           import configparser
           import json
           import os
-          from urllib.error import HTTPError, URLError
-          from urllib.request import Request, urlopen
+          import subprocess
 
           def _append_output(**kwargs):
               with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
                   for key, value in kwargs.items():
-                      f.write(f'{key}={json.dumps(value)}\n')
+                      payload = value if isinstance(value, str) else json.dumps(value)
+                      f.write(f'{key}={payload}\n')
 
-          def _load_runners():
-              """Return self-hosted runners visible to this repository."""
-              token = os.environ.get('GITHUB_TOKEN', '')
-              repo = os.environ['GITHUB_REPOSITORY']
+          def _collect_runners(endpoint):
+              """Return self-hosted runners from a GitHub API endpoint."""
+              token = os.environ.get('GH_TOKEN', '').strip()
               if not token:
-                  raise RuntimeError('GITHUB_TOKEN/RUNNER_READ_TOKEN is empty')
+                  raise PermissionError('GH_TOKEN is not configured')
 
               runners = []
-              url = f'https://api.github.com/repos/{repo}/actions/runners?per_page=100'
-              while url:
-                  req = Request(url, headers={
-                      'Authorization': f'Bearer {token}',
-                      'Accept': 'application/vnd.github+json',
-                      'X-GitHub-Api-Version': '2022-11-28',
-                  })
-                  with urlopen(req) as resp:
-                      data = json.loads(resp.read())
-                      runners.extend(data.get('runners', []))
-                      link = resp.headers.get('Link', '')
-                  url = ''
-                  for part in link.split(','):
-                      if 'rel="next"' in part:
-                          url = part.split(';', 1)[0].strip()[1:-1]
-                          break
-              return runners
+              page = 1
+              while True:
+                  completed = subprocess.run(
+                      ['gh', 'api', f'{endpoint}?per_page=100&page={page}'],
+                      text=True,
+                      capture_output=True,
+                      check=False,
+                      timeout=30,
+                  )
+                  if completed.returncode != 0:
+                      stderr = completed.stderr.strip() or completed.stdout.strip()
+                      raise RuntimeError(f'gh api runner inventory failed for {endpoint}: {stderr}')
+
+                  data = json.loads(completed.stdout)
+                  batch = data.get('runners', [])
+                  for runner in batch:
+                      if runner.get('status') == 'offline':
+                          status = 'unavailable'
+                      elif runner.get('busy'):
+                          status = 'running'
+                      else:
+                          status = 'idle'
+                      runners.append(
+                          {
+                              'name': runner.get('name', ''),
+                              'status': status,
+                              'labels': [label.get('name', '') for label in runner.get('labels', [])],
+                          }
+                      )
+
+                  if len(batch) < 100:
+                      return runners
+                  page += 1
+
+          def _labels_for(runners):
+              labels = set()
+              for runner in runners:
+                  labels.update(runner.get('labels', []))
+              return labels
+
+          def _merge_runners(*runner_sets):
+              merged = {}
+              for runners in runner_sets:
+                  for runner in runners:
+                      merged[runner.get('name', '')] = runner
+              return list(merged.values())
+
+          def _load_runners(required_labels):
+              """Return repository runners plus shared org runners when labels require them."""
+              repo = os.environ['GITHUB_REPOSITORY']
+              org = os.environ.get('GH_OWNER', repo.split('/', 1)[0])
+              repo_runners = _collect_runners(f'repos/{repo}/actions/runners')
+              missing = set(required_labels) - _labels_for(repo_runners)
+              if not missing:
+                  return repo_runners
+
+              try:
+                  org_runners = _collect_runners(f'orgs/{org}/actions/runners')
+              except (RuntimeError, subprocess.TimeoutExpired) as exc:
+                  missing_labels = ', '.join(sorted(missing))
+                  raise RuntimeError(
+                      'Repository runner inventory does not include required label(s): '
+                      f'{missing_labels}. These may be under "Shared with this repository"; '
+                      'GH_TOKEN must be able to read organization runner inventory to avoid unsafe scheduling. '
+                      f'Original error: {exc}'
+                  ) from exc
+              return _merge_runners(repo_runners, org_runners)
 
           def _runner_state(runners, required_label):
               matching = []
               online_idle = []
               online_busy = []
               for runner in runners:
-                  labels = {label.get('name', '') for label in runner.get('labels', [])}
+                  labels = set(runner.get('labels', []))
                   if required_label not in labels:
                       continue
                   matching.append(runner)
-                  if runner.get('status') == 'online':
-                      if runner.get('busy'):
-                          online_busy.append(runner)
-                      else:
-                          online_idle.append(runner)
+                  if runner.get('status') == 'idle':
+                      online_idle.append(runner)
+                  elif runner.get('status') == 'running':
+                      online_busy.append(runner)
               return {
                   'matching': len(matching),
                   'online_idle': len(online_idle),
@@ -190,15 +249,23 @@ jobs:
 
           conf = configparser.ConfigParser()
           conf.read('testplan.ini')
+          required_labels = {
+              conf.get(section, 'runs_on', fallback='').strip()
+              for section in conf.sections()
+              if conf.get(section, 'target_available', fallback='true').strip().lower() != 'false'
+          }
+          required_labels.discard('')
 
-          runner_check_error = ''
+          runner_check_status = ''
           try:
-              runners = _load_runners()
-              print(f'runner inventory: {len(runners)} runner(s) visible')
-          except (HTTPError, URLError, RuntimeError, TimeoutError) as exc:
-              runners = []
-              runner_check_error = f'{type(exc).__name__}: {exc}'
-              print(f'WARNING: runner inventory check failed: {runner_check_error}')
+              runners = _load_runners(required_labels)
+          except (json.JSONDecodeError, OSError, PermissionError, RuntimeError, subprocess.TimeoutExpired) as exc:
+              runner_check_status = f'{type(exc).__name__}: {exc}'
+              print(
+                  '::error::Runner inventory preflight is required to avoid 24-hour queued jobs. '
+                  f'GH_TOKEN could not query repository runner inventory. {runner_check_status}'
+              )
+              raise SystemExit(1)
 
           all_targets = []
           skipped     = []
@@ -208,31 +275,32 @@ jobs:
                   entry['target_available'] = 'false'
                   entry['skip_reason'] = 'Target disabled in testplan.ini'
                   skipped.append({'name': section, 'reason': entry['skip_reason']})
-              elif runner_check_error:
-                  entry['target_available'] = 'false'
-                  entry['skip_reason'] = f'Runner availability check failed: {runner_check_error}'
-                  skipped.append({'name': section, 'reason': entry['skip_reason']})
+                  print(f"Runner availability for {section}: skipped by testplan")
               else:
                   runs_on = entry.get('runs_on', '').strip()
                   state = _runner_state(runners, runs_on)
                   if state['online_idle'] == 0:
                       entry['target_available'] = 'false'
                       if state['matching'] == 0:
-                          reason = f'No self-hosted runner has label {runs_on!r}'
+                          reason = f'No runner currently available for label {runs_on!r}'
                       elif state['online_busy'] > 0:
-                          reason = f'Runner label {runs_on!r} has no idle online runner ({state["online_busy"]} busy)'
+                          reason = f'No idle runner currently available for label {runs_on!r}'
                       else:
-                          reason = f'Runner label {runs_on!r} has no online runner'
+                          reason = f'No online runner currently available for label {runs_on!r}'
                       entry['skip_reason'] = reason
                       skipped.append({'name': section, 'reason': reason})
+                      print(f"Runner availability for {section} label {runs_on!r}: unavailable")
                   else:
                       entry['target_available'] = 'true'
                       entry['skip_reason'] = ''
+                      print(f"Runner availability for {section} label {runs_on!r}: available")
               all_targets.append(entry)
 
-          print(f'all targets: {repr(all_targets)}')
-          print(f'skipped:     {repr(skipped)}')
-          _append_output(targets=all_targets, skipped_targets=skipped)
+          _append_output(
+              targets=all_targets,
+              skipped_targets=skipped,
+              runner_check_status=runner_check_status,
+          )
 
   e2e_nightly:
     name: "${{ matrix.target.name }}"
@@ -271,6 +339,7 @@ jobs:
         env:
           RUN_ID: ${{ needs.setup_matrix.outputs.run_id || inputs.artifact_source || 'latest-release' }}
           SKIPPED_TARGETS: ${{ needs.setup_matrix.outputs.skipped_targets }}
+          RUNNER_CHECK_STATUS: ${{ needs.setup_matrix.outputs.runner_check_status }}
         shell: python
         run: |
           import json, os, pathlib
@@ -292,6 +361,10 @@ jobs:
           run_id = os.environ["RUN_ID"]
           lines.append(f"## Nightly Results — {run_id} — All Platforms")
           lines.append("")
+          runner_check_status = os.environ.get("RUNNER_CHECK_STATUS", "").strip()
+          if runner_check_status:
+              lines.append(f"> Runner availability preflight not applied: {runner_check_status}")
+              lines.append("")
 
           if has_skip:
               lines.append("| Platform | Tests Run | Pass | Skip | Fail | Error | Status |")
