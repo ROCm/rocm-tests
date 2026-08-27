@@ -146,6 +146,11 @@ jobs:
           import json
           import os
           import subprocess
+          import time
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+
+          POLL_INTERVAL_SECS = 15
+          POLL_TIMEOUT_SECS  = 15 * 60   # 15 minutes
 
           def _append_output(**kwargs):
               with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
@@ -153,15 +158,26 @@ jobs:
                       payload = value if isinstance(value, str) else json.dumps(value)
                       f.write(f'{key}={payload}\n')
 
-          def _collect_runners(endpoint):
-              """Return self-hosted runners from a GitHub API endpoint."""
+          def _collect_runners(endpoint, target_label=None):
+              """Paginate a GitHub runner API endpoint and return a normalised list.
+
+              Prints the endpoint, per-page timing, and runner counts so that
+              a hang in ``gh api`` is immediately visible in the workflow log.
+
+              If ``target_label`` is given, pagination stops as soon as an idle
+              runner carrying that label is found — avoids fetching all remaining
+              pages when the target runner appears early in a large pool.
+              """
               token = os.environ.get('GH_TOKEN', '').strip()
               if not token:
                   raise PermissionError('GH_TOKEN is not configured')
 
               runners = []
               page = 1
+              print(f'  → querying {endpoint} …', flush=True)
               while True:
+                  t0 = time.monotonic()
+                  print(f'    gh api {endpoint}?per_page=100&page={page} (timeout=30s)', flush=True)
                   completed = subprocess.run(
                       ['gh', 'api', f'{endpoint}?per_page=100&page={page}'],
                       text=True,
@@ -169,19 +185,25 @@ jobs:
                       check=False,
                       timeout=30,
                   )
+                  elapsed = time.monotonic() - t0
                   if completed.returncode != 0:
                       stderr = completed.stderr.strip() or completed.stdout.strip()
+                      print(f'    ✗ failed in {elapsed:.1f}s: {stderr}', flush=True)
                       raise RuntimeError(f'gh api runner inventory failed for {endpoint}: {stderr}')
 
                   data = json.loads(completed.stdout)
                   batch = data.get('runners', [])
+                  idle_on_page = busy_on_page = offline_on_page = 0
                   for runner in batch:
                       if runner.get('status') == 'offline':
                           status = 'unavailable'
+                          offline_on_page += 1
                       elif runner.get('busy'):
                           status = 'running'
+                          busy_on_page += 1
                       else:
                           status = 'idle'
+                          idle_on_page += 1
                       runners.append(
                           {
                               'name': runner.get('name', ''),
@@ -189,8 +211,34 @@ jobs:
                               'labels': [label.get('name', '') for label in runner.get('labels', [])],
                           }
                       )
+                  print(
+                      f'    ✓ page {page}: {len(batch)} runner(s) in {elapsed:.1f}s'
+                      f' [idle={idle_on_page} busy={busy_on_page} offline={offline_on_page}]',
+                      flush=True,
+                  )
+
+                  # Early exit: stop fetching further pages once we already have
+                  # an idle runner with the target label — the remaining pages
+                  # cannot change the outcome for this section.
+                  if target_label:
+                      idle_match = any(
+                          r['status'] == 'idle' and target_label in r['labels']
+                          for r in runners
+                      )
+                      if idle_match:
+                          print(
+                              f'    → early exit after page {page}:'
+                              f' idle runner found for label {target_label!r}'
+                              f' ({len(runners)} runner(s) scanned so far)',
+                              flush=True,
+                          )
+                          return runners
 
                   if len(batch) < 100:
+                      print(
+                          f'  → done: {len(runners)} total runner(s) across {page} page(s)',
+                          flush=True,
+                      )
                       return runners
                   page += 1
 
@@ -207,17 +255,65 @@ jobs:
                       merged[runner.get('name', '')] = runner
               return list(merged.values())
 
-          def _load_runners(required_labels):
-              """Return repository runners plus shared org runners when labels require them."""
+          def _load_runners(required_labels, context=''):
+              """Return repository + org runners for the given label set.
+
+              Falls back to the org endpoint only when a required label is absent
+              from the repo runner list.  Every step is logged so the source of a
+              hang is unambiguous.
+
+              When ``required_labels`` contains exactly one label, that label is
+              forwarded to ``_collect_runners`` as ``target_label`` so pagination
+              can stop as soon as an idle match is found.
+              """
               repo = os.environ['GITHUB_REPOSITORY']
-              org = os.environ.get('GH_OWNER', repo.split('/', 1)[0])
-              repo_runners = _collect_runners(f'repos/{repo}/actions/runners')
-              missing = set(required_labels) - _labels_for(repo_runners)
+              org  = os.environ.get('GH_OWNER', repo.split('/', 1)[0])
+              tag  = f'[{context}] ' if context else ''
+
+              # Single-label callers (per-section poll threads) get early-exit
+              # pagination; multi-label callers always scan all pages.
+              target_label = next(iter(required_labels)) if len(required_labels) == 1 else None
+
+              print(f'{tag}Fetching repo runners (repos/{repo}/actions/runners)', flush=True)
+              try:
+                  repo_runners = _collect_runners(f'repos/{repo}/actions/runners', target_label=target_label)
+              except subprocess.TimeoutExpired as exc:
+                  raise RuntimeError(
+                      f'Repo runner API timed out for repos/{repo}/actions/runners'
+                  ) from exc
+              repo_labels = _labels_for(repo_runners)
+              # Only labels borne by at least one ONLINE runner count as "present".
+              # An offline-only runner would wrongly suppress the org lookup, hiding
+              # potentially idle org runners carrying the same label.
+              online_repo_labels = {
+                  label
+                  for r in repo_runners
+                  if r['status'] != 'unavailable'
+                  for label in r['labels']
+              }
+              print(
+                  f'{tag}Repo runners: {len(repo_runners)} total'
+                  f' (online labels: {sorted(online_repo_labels)})',
+                  flush=True,
+              )
+
+              missing = set(required_labels) - online_repo_labels
               if not missing:
+                  print(
+                      f'{tag}All required labels present in online repo runners — skipping org lookup',
+                      flush=True,
+                  )
                   return repo_runners
 
+              print(
+                  f'{tag}Label(s) not in repo runners: {sorted(missing)}'
+                  f' — fetching org runners (orgs/{org}/actions/runners)',
+                  flush=True,
+              )
               try:
-                  org_runners = _collect_runners(f'orgs/{org}/actions/runners')
+                  org_runners = _collect_runners(f'orgs/{org}/actions/runners', target_label=target_label)
+                  org_labels  = _labels_for(org_runners)
+                  print(f'{tag}Org runners: {len(org_runners)} total, labels seen: {sorted(org_labels)}', flush=True)
               except (RuntimeError, subprocess.TimeoutExpired) as exc:
                   missing_labels = ', '.join(sorted(missing))
                   raise RuntimeError(
@@ -229,7 +325,7 @@ jobs:
               return _merge_runners(repo_runners, org_runners)
 
           def _runner_state(runners, required_label):
-              matching = []
+              matching    = []
               online_idle = []
               online_busy = []
               for runner in runners:
@@ -242,13 +338,102 @@ jobs:
                   elif runner.get('status') == 'running':
                       online_busy.append(runner)
               return {
-                  'matching': len(matching),
-                  'online_idle': len(online_idle),
-                  'online_busy': len(online_busy),
+                  'matching':     len(matching),
+                  'online_idle':  len(online_idle),
+                  'online_busy':  len(online_busy),
               }
 
+          def _poll_one_section(entry, deadline):
+              """Poll a single label independently until an idle runner appears
+              or the shared deadline expires.
+
+              Each label runs in its own thread so fast runners are not held
+              back by sections whose runners are still busy or offline.
+              Returns ``(entry, available: bool, skip_reason: str)``.
+              """
+              section = entry['name']
+              runs_on = entry.get('runs_on', '').strip()
+              tag     = f'[{section}]'
+
+              print(f'{tag} Starting poll for label {runs_on!r}', flush=True)
+
+              # last_state persists across iterations so the timeout reason
+              # reflects the most recent known runner state, not the initial zeros.
+              last_state = {'matching': 0, 'online_idle': 0, 'online_busy': 0}
+
+              def _timeout_reason(s):
+                  if s['matching'] == 0:
+                      return f'No runner found for label {runs_on!r} after {POLL_TIMEOUT_SECS // 60}m'
+                  if s['online_busy'] > 0:
+                      return (
+                          f'Runner(s) still busy for label {runs_on!r}'
+                          f' after {POLL_TIMEOUT_SECS // 60}m'
+                      )
+                  return (
+                      f'Runner(s) offline for label {runs_on!r}'
+                      f' after {POLL_TIMEOUT_SECS // 60}m'
+                  )
+
+              attempt = 0
+              while True:
+                  # Pre-flight deadline check — avoids starting a new round of
+                  # API calls (potentially 2 × 30 s) when time has already run out.
+                  remaining = deadline - time.monotonic()
+                  if remaining <= 0:
+                      reason = _timeout_reason(last_state)
+                      print(
+                          f'{tag} ✗ deadline reached before attempt {attempt + 1} — {reason}',
+                          flush=True,
+                      )
+                      return entry, False, reason
+
+                  attempt += 1
+                  print(
+                      f'{tag} Attempt {attempt} — fetching runner state ({int(remaining)}s remaining)',
+                      flush=True,
+                  )
+
+                  try:
+                      # Each label thread fetches only its own label's runners
+                      # to keep the API surface minimal.
+                      runners = _load_runners({runs_on}, context=section)
+                  except (json.JSONDecodeError, OSError, PermissionError,
+                          RuntimeError, subprocess.TimeoutExpired) as exc:
+                      print(f'{tag} ✗ runner inventory fetch failed: {exc}', flush=True)
+                      runners = []
+
+                  last_state = _runner_state(runners, runs_on)
+                  print(
+                      f'{tag} label={runs_on!r}  '
+                      f'matching={last_state["matching"]}  '
+                      f'idle={last_state["online_idle"]}  '
+                      f'busy={last_state["online_busy"]}',
+                      flush=True,
+                  )
+
+                  if last_state['online_idle'] > 0:
+                      print(f'{tag} ✓ idle runner found — marking available', flush=True)
+                      return entry, True, ''
+
+                  # Post-API-call deadline check — the API calls themselves may
+                  # have consumed most of the remaining window.
+                  remaining = deadline - time.monotonic()
+                  if remaining <= 0:
+                      reason = _timeout_reason(last_state)
+                      print(
+                          f'{tag} ✗ deadline reached after attempt {attempt} — {reason}',
+                          flush=True,
+                      )
+                      return entry, False, reason
+
+                  wait = min(POLL_INTERVAL_SECS, remaining)
+                  print(f'{tag} Waiting {int(wait)}s before next poll …', flush=True)
+                  time.sleep(wait)
+
+          # ── Load testplan ──────────────────────────────────────────────────
           conf = configparser.ConfigParser()
           conf.read('testplan.ini')
+
           required_labels = {
               conf.get(section, 'runs_on', fallback='').strip()
               for section in conf.sections()
@@ -256,32 +441,16 @@ jobs:
           }
           required_labels.discard('')
 
-          import time
+          print(f'Enabled sections require labels: {sorted(required_labels)}', flush=True)
 
-          POLL_INTERVAL_SECS = 15
-          POLL_TIMEOUT_SECS  = 15 * 60   # 15 minutes
-
-          runner_check_status = ''
-          try:
-              runners = _load_runners(required_labels)
-          except (json.JSONDecodeError, OSError, PermissionError, RuntimeError, subprocess.TimeoutExpired) as exc:
-              runner_check_status = f'{type(exc).__name__}: {exc}'
-              print(
-                  '::error::Runner inventory preflight is required to avoid 24-hour queued jobs. '
-                  f'GH_TOKEN could not query repository runner inventory. {runner_check_status}'
-              )
-              raise SystemExit(1)
-
-          # Sections disabled in testplan.ini are resolved immediately.
-          # For enabled sections, poll until an idle runner appears or the
-          # timeout expires — busy runners may become idle within 15 minutes.
           all_targets = []
           skipped     = []
+          resolved    = {}
+          runner_check_status = ''
 
-          # Separate disabled sections (resolved immediately) from sections
-          # that need runner polling.
-          disabled_sections  = []
-          pending_sections   = []   # (section, runs_on)
+          # ── Disabled sections — resolve immediately ─────────────────────────
+          disabled_sections = []
+          pending_sections  = []
           for section in conf.sections():
               entry = {'name': section, **dict(conf.items(section))}
               if entry.get('target_available', 'true').strip().lower() == 'false':
@@ -289,73 +458,98 @@ jobs:
               else:
                   pending_sections.append(entry)
 
-          # Resolve disabled sections right away.
           for entry in disabled_sections:
               entry['target_available'] = 'false'
-              entry['skip_reason'] = 'Target disabled in testplan.ini'
+              entry['skip_reason']      = 'Target disabled in testplan.ini'
               skipped.append({'name': entry['name'], 'reason': entry['skip_reason']})
-              print(f"Runner availability for {entry['name']}: skipped by testplan")
+              print(f"[{entry['name']}] Skipped — disabled in testplan.ini", flush=True)
               all_targets.append(entry)
 
-          # Poll for idle runners on enabled sections.
-          deadline = time.monotonic() + POLL_TIMEOUT_SECS
-          resolved = {}   # section_name -> entry (once resolved as available)
+          # ── Enabled sections — poll all labels in parallel ──────────────────
+          # Each section gets its own thread with its own poll loop and its own
+          # runner API calls.  A section whose runner is already idle resolves in
+          # seconds without waiting for sections whose runners are still busy.
+          # All threads share the same deadline so the total wall-clock wait is
+          # bounded by POLL_TIMEOUT_SECS regardless of the number of sections.
+          if pending_sections:
+              from collections import defaultdict
 
-          while pending_sections:
-              still_pending = []
+              # Group sections by their runner label so that sections sharing a
+              # label share a single poll thread — prevents redundant API calls
+              # when multiple testplan sections target the same runner pool.
+              label_to_sections = defaultdict(list)
               for entry in pending_sections:
-                  section  = entry['name']
-                  runs_on  = entry.get('runs_on', '').strip()
-                  state    = _runner_state(runners, runs_on)
-                  if state['online_idle'] > 0:
-                      entry['target_available'] = 'true'
-                      entry['skip_reason'] = ''
-                      print(f"Runner availability for {section} label {runs_on!r}: available")
-                      resolved[section] = entry
-                  else:
-                      still_pending.append(entry)
+                  label_to_sections[entry.get('runs_on', '').strip()].append(entry)
 
-              pending_sections = still_pending
-
-              if not pending_sections:
-                  break
-
-              remaining = deadline - time.monotonic()
-              if remaining <= 0:
-                  break
-
-              wait = min(POLL_INTERVAL_SECS, remaining)
-              labels_waiting = [e.get('runs_on', '').strip() for e in pending_sections]
+              unique_labels = sorted(label_to_sections)
+              n_threads  = len(unique_labels)
+              n_sections = len(pending_sections)
               print(
-                  f"Waiting {int(wait)}s for idle runners on: {labels_waiting} "
-                  f"({int(remaining)}s remaining)"
+                  f'\nLaunching {n_threads} parallel poll thread(s)'
+                  f' for {n_sections} section(s)'
+                  f' (timeout={POLL_TIMEOUT_SECS // 60}m, interval={POLL_INTERVAL_SECS}s) …',
+                  flush=True,
               )
-              time.sleep(wait)
+              for lbl in unique_labels:
+                  names = [s['name'] for s in label_to_sections[lbl]]
+                  print(f'  label={lbl!r} → sections: {names}', flush=True)
 
-              # Refresh runner inventory before the next iteration.
+              deadline = time.monotonic() + POLL_TIMEOUT_SECS
+
               try:
-                  runners = _load_runners(required_labels)
-              except (json.JSONDecodeError, OSError, PermissionError, RuntimeError, subprocess.TimeoutExpired) as exc:
-                  print(f'::warning::Runner inventory refresh failed — using last known state. {exc}')
+                  with ThreadPoolExecutor(max_workers=n_threads) as pool:
+                      # One future per unique label, not per section.
+                      # Sections sharing a label receive the same result.
+                      futures = {
+                          pool.submit(
+                              _poll_one_section,
+                              {'name': lbl, 'runs_on': lbl},
+                              deadline,
+                          ): lbl
+                          for lbl in unique_labels
+                      }
+                      for future in as_completed(futures):
+                          # Broadened to Exception so AttributeError / TypeError /
+                          # ValueError from malformed API responses surface here
+                          # instead of propagating as an unhandled exception past
+                          # the try/except and leaving runner_check_status unset.
+                          try:
+                              _, available, reason = future.result()
+                          except Exception as exc:  # noqa: BLE001
+                              available = False
+                              reason    = f'{type(exc).__name__}: {exc}'
+                              print(f'::error::Poll thread raised unexpected error: {reason}', flush=True)
 
-          # Any sections still pending after the deadline are marked unavailable.
-          for entry in pending_sections:
-              section = entry['name']
-              runs_on = entry.get('runs_on', '').strip()
-              state   = _runner_state(runners, runs_on)
-              if state['matching'] == 0:
-                  reason = f'No runner found for label {runs_on!r} after {POLL_TIMEOUT_SECS // 60}m'
-              elif state['online_busy'] > 0:
-                  reason = f'Runner(s) still busy for label {runs_on!r} after {POLL_TIMEOUT_SECS // 60}m'
-              else:
-                  reason = f'Runner(s) offline for label {runs_on!r} after {POLL_TIMEOUT_SECS // 60}m'
-              entry['target_available'] = 'false'
-              entry['skip_reason'] = reason
-              skipped.append({'name': section, 'reason': reason})
-              print(f"Runner availability for {section} label {runs_on!r}: unavailable (timed out)")
-              resolved[section] = entry
+                          lbl = futures[future]
+                          for entry in label_to_sections[lbl]:
+                              section = entry['name']
+                              if available:
+                                  entry['target_available'] = 'true'
+                                  entry['skip_reason']      = ''
+                                  print(
+                                      f'[{section}] Resolved: AVAILABLE (label={lbl!r})',
+                                      flush=True,
+                                  )
+                              else:
+                                  entry['target_available'] = 'false'
+                                  entry['skip_reason']      = reason
+                                  skipped.append({'name': section, 'reason': reason})
+                                  print(
+                                      f'[{section}] Resolved: UNAVAILABLE'
+                                      f' (label={lbl!r}) — {reason}',
+                                      flush=True,
+                                  )
+                              resolved[section] = entry
+              except Exception as exc:
+                  runner_check_status = f'{type(exc).__name__}: {exc}'
+                  print(
+                      '::error::Runner inventory preflight failed — cannot determine runner'
+                      f' availability. {runner_check_status}',
+                      flush=True,
+                  )
+                  raise SystemExit(1)
 
-          # Restore original testplan.ini section order.
+          # ── Restore testplan.ini section order ──────────────────────────────
           seen = set()
           for section in conf.sections():
               if section in resolved and section not in seen:
