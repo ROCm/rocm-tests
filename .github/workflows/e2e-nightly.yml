@@ -256,6 +256,11 @@ jobs:
           }
           required_labels.discard('')
 
+          import time
+
+          POLL_INTERVAL_SECS = 15
+          POLL_TIMEOUT_SECS  = 15 * 60   # 15 minutes
+
           runner_check_status = ''
           try:
               runners = _load_runners(required_labels)
@@ -267,34 +272,95 @@ jobs:
               )
               raise SystemExit(1)
 
+          # Sections disabled in testplan.ini are resolved immediately.
+          # For enabled sections, poll until an idle runner appears or the
+          # timeout expires — busy runners may become idle within 15 minutes.
           all_targets = []
           skipped     = []
+
+          # Separate disabled sections (resolved immediately) from sections
+          # that need runner polling.
+          disabled_sections  = []
+          pending_sections   = []   # (section, runs_on)
           for section in conf.sections():
               entry = {'name': section, **dict(conf.items(section))}
               if entry.get('target_available', 'true').strip().lower() == 'false':
-                  entry['target_available'] = 'false'
-                  entry['skip_reason'] = 'Target disabled in testplan.ini'
-                  skipped.append({'name': section, 'reason': entry['skip_reason']})
-                  print(f"Runner availability for {section}: skipped by testplan")
+                  disabled_sections.append(entry)
               else:
-                  runs_on = entry.get('runs_on', '').strip()
-                  state = _runner_state(runners, runs_on)
-                  if state['online_idle'] == 0:
-                      entry['target_available'] = 'false'
-                      if state['matching'] == 0:
-                          reason = f'No runner currently available for label {runs_on!r}'
-                      elif state['online_busy'] > 0:
-                          reason = f'No idle runner currently available for label {runs_on!r}'
-                      else:
-                          reason = f'No online runner currently available for label {runs_on!r}'
-                      entry['skip_reason'] = reason
-                      skipped.append({'name': section, 'reason': reason})
-                      print(f"Runner availability for {section} label {runs_on!r}: unavailable")
-                  else:
+                  pending_sections.append(entry)
+
+          # Resolve disabled sections right away.
+          for entry in disabled_sections:
+              entry['target_available'] = 'false'
+              entry['skip_reason'] = 'Target disabled in testplan.ini'
+              skipped.append({'name': entry['name'], 'reason': entry['skip_reason']})
+              print(f"Runner availability for {entry['name']}: skipped by testplan")
+              all_targets.append(entry)
+
+          # Poll for idle runners on enabled sections.
+          deadline = time.monotonic() + POLL_TIMEOUT_SECS
+          resolved = {}   # section_name -> entry (once resolved as available)
+
+          while pending_sections:
+              still_pending = []
+              for entry in pending_sections:
+                  section  = entry['name']
+                  runs_on  = entry.get('runs_on', '').strip()
+                  state    = _runner_state(runners, runs_on)
+                  if state['online_idle'] > 0:
                       entry['target_available'] = 'true'
                       entry['skip_reason'] = ''
                       print(f"Runner availability for {section} label {runs_on!r}: available")
-              all_targets.append(entry)
+                      resolved[section] = entry
+                  else:
+                      still_pending.append(entry)
+
+              pending_sections = still_pending
+
+              if not pending_sections:
+                  break
+
+              remaining = deadline - time.monotonic()
+              if remaining <= 0:
+                  break
+
+              wait = min(POLL_INTERVAL_SECS, remaining)
+              labels_waiting = [e.get('runs_on', '').strip() for e in pending_sections]
+              print(
+                  f"Waiting {int(wait)}s for idle runners on: {labels_waiting} "
+                  f"({int(remaining)}s remaining)"
+              )
+              time.sleep(wait)
+
+              # Refresh runner inventory before the next iteration.
+              try:
+                  runners = _load_runners(required_labels)
+              except (json.JSONDecodeError, OSError, PermissionError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                  print(f'::warning::Runner inventory refresh failed — using last known state. {exc}')
+
+          # Any sections still pending after the deadline are marked unavailable.
+          for entry in pending_sections:
+              section = entry['name']
+              runs_on = entry.get('runs_on', '').strip()
+              state   = _runner_state(runners, runs_on)
+              if state['matching'] == 0:
+                  reason = f'No runner found for label {runs_on!r} after {POLL_TIMEOUT_SECS // 60}m'
+              elif state['online_busy'] > 0:
+                  reason = f'Runner(s) still busy for label {runs_on!r} after {POLL_TIMEOUT_SECS // 60}m'
+              else:
+                  reason = f'Runner(s) offline for label {runs_on!r} after {POLL_TIMEOUT_SECS // 60}m'
+              entry['target_available'] = 'false'
+              entry['skip_reason'] = reason
+              skipped.append({'name': section, 'reason': reason})
+              print(f"Runner availability for {section} label {runs_on!r}: unavailable (timed out)")
+              resolved[section] = entry
+
+          # Restore original testplan.ini section order.
+          seen = set()
+          for section in conf.sections():
+              if section in resolved and section not in seen:
+                  all_targets.append(resolved[section])
+                  seen.add(section)
 
           _append_output(
               targets=all_targets,
