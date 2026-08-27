@@ -130,7 +130,7 @@ jobs:
         uses: actions/create-github-app-token@2e564a0bb8e7cc2b907b2401a2afe177882d4325 # v3.0.0
         with:
           app-id: ${{ secrets.RUNNER_HEALTH_APP_ID }}
-          private-key: ${{ secrets.RUNNER_HEALTH_APP_PRIVATE_KEY }}
+          private-key: ${{ secrets.RUNNER_HEALTH_PRIVATE_KEY }}
           owner: ROCm
           repositories: rocm-tests
 
