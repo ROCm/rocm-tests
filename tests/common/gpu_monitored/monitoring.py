@@ -525,7 +525,10 @@ class Monitor:
             return 0.0
         # Detect suffix first — match only a trailing " GB"/" MB"/" B" so
         # substrings like "GB" inside a device name can't trigger scaling.
-        m = re.match(r"^\s*([0-9.+-eE]+)\s*(GB|MB|KB|B)?\s*$", s, flags=re.IGNORECASE)
+        # The numeric part is spelled out rather than gathered in a character
+        # class: "[0-9.+-eE]" reads "+" to "e" as a range, which swallows
+        # letters and punctuation instead of just a signed decimal/exponent.
+        m = re.match(r"^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*(GB|MB|KB|B)?\s*$", s, flags=re.IGNORECASE)
         if m is None:
             return 0.0
         try:
