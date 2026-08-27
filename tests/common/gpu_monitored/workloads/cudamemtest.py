@@ -16,6 +16,26 @@ from tests.common.gpu_monitored.workloads._memory_sizing import DEFAULT_FREE_VRA
 from tests.common.gpu_monitored.workloads.base import BuildContext, BuildStatus, RunContext, RunResult, Test, TestSpec
 
 
+def _emit(ctx: RunContext, msg: str) -> None:
+    """Print a marker and mirror it into ``console.log``.
+
+    ``console.log`` has two independent writers: the orchestrator's fd-level
+    pump (which owns a ``"wb"`` handle carrying ``print`` output) and
+    ``append_console`` (which opens the same path in ``"a"`` mode for captured
+    sub-process output). The two hold separate file offsets, so a bare ``print``
+    issued after the first ``ctx.exec`` is written at a stale offset and does
+    not survive in the artifact. Layer 2 greps ``console.log`` for the coverage
+    line, the per-sub-test ``(rc=...)`` markers and the watchdog sentinel, so
+    those have to be appended explicitly -- otherwise a run in which every
+    sub-test passed is still reported as ``missing cudamemtest coverage
+    summary``. Keep the wording in sync with the regexes in
+    ``validation._validate_memtest``; appending a marker twice is not harmless,
+    because the identity check compares the full list of parsed sub-test IDs.
+    """
+    print(msg)
+    ctx.append_console(msg)
+
+
 class CudaMemtest(Test):
     spec = TestSpec(
         name="cudamemtest",
@@ -250,18 +270,19 @@ class CudaMemtest(Test):
             # triaging "why did the loop only finish N/M sub-tests?" can
             # see which sub-test is slow without grepping ``console.log``
             # for the binary's own per-GPU "Test$n finished in ..." lines.
-            print(f"  [cudamemtest] enable_test {test_num} " f"finished in {iter_dur:.1f}s (rc={rc})")
+            _emit(ctx, f"  [cudamemtest] enable_test {test_num} " f"finished in {iter_dur:.1f}s (rc={rc})")
             if rc == 124:
                 # Watchdog timeout on a single sub-test — almost
                 # always a wedged GPU. Stop trying further sub-tests
                 # (they'd just hang the same way) and surface a clean
                 # FAIL with an actionable message. Same convention as
                 # transferbench / sln_stress / hmm_cuda_memtest.
-                print(
+                _emit(
+                    ctx,
                     f"  [cudamemtest] FAIL: watchdog timeout — "
                     f"enable_test {test_num} did not complete within "
                     f"--per-iter-watchdog {per_iter_timeout}s. GPU is "
-                    f"likely wedged; stopping further sub-tests."
+                    f"likely wedged; stopping further sub-tests.",
                 )
                 if first_fail_rc == 0:
                     first_fail_rc = 1
@@ -271,20 +292,23 @@ class CudaMemtest(Test):
             # but never forget that an earlier sub-test failed.
             if rc != 0 and first_fail_rc == 0:
                 first_fail_rc = rc
-                print(f"  [cudamemtest] enable_test {test_num} exited " f"rc={rc} — continuing remaining sub-tests")
+                _emit(
+                    ctx, f"  [cudamemtest] enable_test {test_num} exited " f"rc={rc} — continuing remaining sub-tests"
+                )
 
-        print(f"  [cudamemtest] Ran {ran}/{len(sub_tests)} sub-test(s), " f"first_fail_rc={first_fail_rc}")
+        _emit(ctx, f"  [cudamemtest] Ran {ran}/{len(sub_tests)} sub-test(s), " f"first_fail_rc={first_fail_rc}")
         if ran < len(sub_tests):
             # The required set is the coverage contract: reporting a truncated
             # prefix as PASS would let the sub-tests that never started break
             # unnoticed. Name the missing IDs and how to get them to run.
             missing = " ".join(str(n) for n in sub_tests[ran:])
-            print(
+            _emit(
+                ctx,
                 f"  [cudamemtest] FAIL: incomplete coverage — {ran} of "
                 f"{len(sub_tests)} required sub-tests ran; {missing} never "
                 f"started within --memtest-duration "
                 f"{ctx.config.memtest_duration}s. Raise --memtest-duration "
-                f"or lower the footprint with --memtest-blocks."
+                f"or lower the footprint with --memtest-blocks.",
             )
             if first_fail_rc == 0:
                 first_fail_rc = 1
