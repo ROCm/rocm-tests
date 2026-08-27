@@ -3,25 +3,30 @@
 """
 test_hipblaslt_zero_mat.py -- hipBLASLt FP8/BF8 GEMM with a zero input matrix.
 
-For ``D = alpha*A*B + beta*C`` (alpha=1, beta=0), zeroing either input makes the
-product zero, so every element of the FP32 output must be exactly 0. Runs four
-parametrized checks (E4M3 / E5M2 inputs x {A zero, B zero}) against the
-``hipblaslt_zero_mat`` binary so a failure isolates to one dtype/operand.
+For ``D = alpha*A^T*B + beta*C`` (alpha=beta=1, C zeroed), zeroing either input
+makes the product zero, so every element of the BFloat16 output must be exactly
+0 and finite. A is FP8 (E4M3) and B is BF8 (E5M2); the run repeats the GEMM so a
+transient artefact is caught rather than a single lucky pass.
 
-runtime.fast is declared explicitly; layer.math_lib is injected by the area profile.
+runtime.medium is declared explicitly; the remaining markers are injected by the
+area profile.
 """
 
 import pytest
 
-_CHECKS = ["e4m3_azero", "e4m3_bzero", "e5m2_azero", "e5m2_bzero"]
+_CHECKS = ["azero", "bzero"]
+
+# The repeated GEMM plus a full host-side scan of the 8192x32768 output runs well
+# past the executor's 300s default.
+_TIMEOUT = 1800.0
 
 
-@pytest.mark.runtime.fast
+@pytest.mark.runtime.medium
 @pytest.mark.parametrize("check", _CHECKS)
 def test_hipblaslt_zero_mat(target_executor, ld_path: dict, hipblaslt_zero_mat_binary: str, check: str):
     """FP8/BF8 GEMM with one zero operand yields an all-zero output."""
     ld = ld_path["LD_LIBRARY_PATH"]
-    result = target_executor.run(f"env LD_LIBRARY_PATH={ld} {hipblaslt_zero_mat_binary} {check}")
+    result = target_executor.run(f"env LD_LIBRARY_PATH={ld} {hipblaslt_zero_mat_binary} {check}", timeout=_TIMEOUT)
     assert result.ok, (
         f"hipblaslt_zero_mat {check!r} failed (exit={result.exit_code}):\n"
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
