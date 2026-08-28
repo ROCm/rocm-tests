@@ -140,7 +140,7 @@ jobs:
           # across all trigger types that reach e2e-tests.yml via workflow_call.
           WORKFLOW_QUEUED_AT: ${{ github.event.created_at }}
           RUNNER_NAME: ${{ inputs.runs_on }}
-          MAX_QUEUE_WAIT_SECS: '900'   # 15 min — matches setup_matrix poll timeout
+          MAX_QUEUE_WAIT_SECS: '600'   # 10 min
         shell: python
         run: |
           import os
@@ -167,7 +167,7 @@ jobs:
 
               if waited > max_wait:
                   print(
-                      f"::warning::Runner {runner!r} not acquired within {max_wait // 60} min"
+                      f"::warning::Runner {runner!r} not acquired within {max_wait // 60}min"
                       f" (waited {waited:.0f}s) — platform skipped",
                       flush=True,
                   )
