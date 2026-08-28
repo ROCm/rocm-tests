@@ -22,7 +22,7 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     # CI gate membership (REQUIRED)
     "ci": {"pr", "nightly", "weekly"},
     # ROCm stack layer under test (REQUIRED)
-    "layer": {"runtime", "math_lib"},
+    "layer": {"runtime", "math_lib", "packaging"},
     # Expected duration (optional but strongly recommended)
     "runtime": {"fast", "medium", "soak"},
     # Target platform (optional)
@@ -143,6 +143,14 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "layer.math_lib",
         "ci.nightly",
         "e2e.stack",
+        "os.linux",
+    ],
+    # Packaging / distribution checks: no GPU, verify public ROCm artifact
+    # endpoints (tarball / pip index / deb+rpm repos) are reachable.
+    "tests/e2e/packaging": [
+        "hw.cpu_only",
+        "layer.packaging",
+        "ci.pr",
         "os.linux",
     ],
     "tests/e2e/rocprim": [
