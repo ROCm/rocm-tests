@@ -172,10 +172,17 @@ jobs:
       targets:         ${{ steps.poll.outputs.targets }}
       skipped_targets: ${{ steps.poll.outputs.skipped_targets }}
     steps:
+      - name: Generate GitHub App token (runner health)
+        id: app_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id:     ${{ secrets.RUNNER_HEALTH_APP_ID }}
+          private-key: ${{ secrets.RUNNER_HEALTH_PRIVATE_KEY }}
+
       - name: Poll runner availability (10 min window)
         id: poll
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app_token.outputs.token }}
           TARGETS_JSON: ${{ needs.setup_matrix.outputs.targets }}
           MAX_WAIT_SECS: '600'
           POLL_INTERVAL_SECS: '30'
