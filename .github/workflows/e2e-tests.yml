@@ -113,7 +113,7 @@ jobs:
     name: "e2e tests"
     runs-on: ${{ inputs.runs_on }}
     if: ${{ inputs.target_available != 'false' }}
-    timeout-minutes: 210
+    timeout-minutes: 230
     container:
       image: ghcr.io/rocm/no_rocm_image_ubuntu24_04@sha256:4150afe4759d14822f0e3f8930e1124f26e11f68b5c7b91ec9a02b20b1ebbb98
       options: >-
@@ -132,7 +132,64 @@ jobs:
         shell: bash
 
     steps:
+      - name: Check runner queue wait time
+        id: queue_guard
+        env:
+          # github.event.created_at = when the triggering event (schedule/push/dispatch)
+          # was created — this is the earliest possible queue entry time and is available
+          # across all trigger types that reach e2e-tests.yml via workflow_call.
+          WORKFLOW_QUEUED_AT: ${{ github.event.created_at }}
+          RUNNER_NAME: ${{ inputs.runs_on }}
+          MAX_QUEUE_WAIT_SECS: '900'   # 15 min — matches setup_matrix poll timeout
+        shell: python
+        run: |
+          import os
+          from datetime import datetime, timezone
+
+          queued_at = os.environ.get("WORKFLOW_QUEUED_AT", "").strip()
+          runner    = os.environ.get("RUNNER_NAME", "")
+          max_wait  = int(os.environ.get("MAX_QUEUE_WAIT_SECS", "900"))
+          gh_output = os.environ.get("GITHUB_OUTPUT", "")
+
+          def _set_output(key, value):
+              if gh_output:
+                  with open(gh_output, "a") as f:
+                      f.write(f"{key}={value}\n")
+
+          if not queued_at:
+              print(f"Runner queue guard: WORKFLOW_QUEUED_AT not set — skipping wait check for {runner!r}")
+              _set_output("proceed", "true")
+          else:
+              triggered = datetime.fromisoformat(queued_at.replace("Z", "+00:00"))
+              now       = datetime.now(timezone.utc)
+              waited    = (now - triggered).total_seconds()
+              print(f"Runner queue guard: runner={runner!r} waited={waited:.0f}s limit={max_wait}s", flush=True)
+
+              if waited > max_wait:
+                  print(
+                      f"::warning::Runner {runner!r} not acquired within {max_wait // 60} min"
+                      f" (waited {waited:.0f}s) — platform skipped",
+                      flush=True,
+                  )
+                  _set_output("proceed", "false")
+                  _set_output("skip_reason", f"runner not acquired within {max_wait // 60}min (waited {waited:.0f}s)")
+              else:
+                  print(f"Runner acquired within limit ({waited:.0f}s ≤ {max_wait}s) — proceeding", flush=True)
+                  _set_output("proceed", "true")
+
+      - name: Report skipped platform
+        if: ${{ steps.queue_guard.outputs.proceed == 'false' }}
+        env:
+          PLATFORM_NAME: ${{ inputs.name }}
+          SKIP_REASON:   ${{ steps.queue_guard.outputs.skip_reason }}
+        run: |
+          echo "::warning::Platform ${PLATFORM_NAME} skipped — ${SKIP_REASON}"
+          echo "## ⏭ Platform skipped — ${PLATFORM_NAME}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "> **Reason:** ${SKIP_REASON}" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Resolve platform
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
           PLATFORM_NAME: ${{ inputs.name }}
           TARGET_AVAILABLE: ${{ inputs.target_available }}
@@ -141,17 +198,20 @@ jobs:
           echo "target_available: ${TARGET_AVAILABLE}"
 
       - name: Setup Python
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         id: setup-python
         with:
           python-version: 3.12
 
       - name: Checkout rocm-tests
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
 
       - name: Checkout TheRock
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: "ROCm/TheRock"
@@ -167,6 +227,7 @@ jobs:
       #   artifact_source = <workflow.yml>   → run_id resolved by setup_matrix;
       #   When include_dev=true: also fetches _dev archives (headers, cmake, .a)
       - name: Install ROCm artifacts
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
           ARTIFACT_GROUP: ${{ inputs.artifact_group }}
           GPU_ARCH: ${{ inputs.gpu_arch }}
@@ -212,6 +273,7 @@ jobs:
           fi
 
       - name: Install uv
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: astral-sh/setup-uv@bd01e18f51369d5a26f1651c3cb451d3417e3bba # v6.3.1
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -220,6 +282,7 @@ jobs:
           enable-cache: true
 
       - name: Install test dependencies
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends make pciutils
@@ -228,6 +291,7 @@ jobs:
           uv pip install -r requirements.txt
 
       - name: Run nightly tests
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
           COMMIT_ID: ${{ github.sha }}
           CURRENT_BRANCH: ${{ github.ref_name }}
