@@ -141,7 +141,7 @@ jobs:
           WORKFLOW_QUEUED_AT: ${{ github.event.created_at }}
           RUNNER_NAME: ${{ inputs.runs_on }}
           MAX_QUEUE_WAIT_SECS: '600'   # 10 min
-        shell: python
+        shell: python3 {0}
         run: |
           import os
           from datetime import datetime, timezone
@@ -329,7 +329,7 @@ jobs:
         if: always()
         env:
           PLATFORM_NAME: ${{ inputs.name }}
-        shell: python
+        shell: python3 {0}
         run: |
           import re, json, os
 
@@ -394,7 +394,7 @@ jobs:
 
       - name: Write per-platform step summary
         if: always()
-        shell: python
+        shell: python3 {0}
         run: |
           import json, os, pathlib
 
