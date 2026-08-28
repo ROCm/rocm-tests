@@ -164,13 +164,166 @@ jobs:
               f.write(f'targets={json.dumps(all_targets)}\n')
               f.write(f'skipped_targets={json.dumps(skipped)}\n')
 
+  check_runners:
+    name: Check runner availability
+    needs: setup_matrix
+    runs-on: ubuntu-latest
+    outputs:
+      targets:         ${{ steps.poll.outputs.targets }}
+      skipped_targets: ${{ steps.poll.outputs.skipped_targets }}
+    steps:
+      - name: Poll runner availability (10 min window)
+        id: poll
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGETS_JSON: ${{ needs.setup_matrix.outputs.targets }}
+          MAX_WAIT_SECS: '600'
+          POLL_INTERVAL_SECS: '30'
+        shell: python3 {0}
+        run: |
+          import json, os, sys, time
+          from urllib.request import urlopen, Request
+          from urllib.error import HTTPError, URLError
+
+          token    = os.environ["GITHUB_TOKEN"]
+          repo     = os.environ["GITHUB_REPOSITORY"]            # "owner/repo"
+          org      = repo.split("/")[0]
+          targets  = json.loads(os.environ["TARGETS_JSON"])
+          max_wait = int(os.environ.get("MAX_WAIT_SECS",      "600"))
+          interval = int(os.environ.get("POLL_INTERVAL_SECS", "30"))
+
+          def get_online_labels():
+              """Return set of runner label names that have at least one online runner.
+
+              Tries the repo-level endpoint first, then the org-level endpoint.
+              Handles 403 gracefully so a missing permission on one level does not
+              prevent the other level from being checked.
+              """
+              online = set()
+              endpoints = [
+                  f"https://api.github.com/repos/{repo}/actions/runners",
+                  f"https://api.github.com/orgs/{org}/actions/runners",
+              ]
+              for base_url in endpoints:
+                  page = 1
+                  while True:
+                      url = f"{base_url}?per_page=100&page={page}"
+                      req = Request(url, headers={
+                          "Authorization":        f"Bearer {token}",
+                          "Accept":               "application/vnd.github+json",
+                          "X-GitHub-Api-Version": "2022-11-28",
+                      })
+                      try:
+                          with urlopen(req, timeout=15) as resp:
+                              data = json.loads(resp.read())
+                      except HTTPError as exc:
+                          level = "repo" if "repos" in base_url else "org"
+                          if exc.code == 403:
+                              print(f"  [{level}] runners API: 403 insufficient permissions — skipping")
+                          else:
+                              print(f"  [{level}] runners API: HTTP {exc.code} — skipping")
+                          break
+                      except URLError as exc:
+                          print(f"  runners API network error ({exc.reason}) — skipping")
+                          break
+
+                      runners = data.get("runners", [])
+                      if not runners:
+                          break
+                      for r in runners:
+                          if r.get("status") == "online":
+                              for lbl in r.get("labels", []):
+                                  online.add(lbl["name"])
+                      if len(runners) < 100:
+                          break
+                      page += 1
+              return online
+
+          # ── Resolve testplan.ini authoritative skips ──────────────────────
+          # target_available=false in testplan.ini is final — never override it.
+          resolved = {}   # platform name → True (run) | False (skip)
+          pending  = []   # entries still needing a live runner check
+
+          for t in targets:
+              if t.get("target_available", "true").strip().lower() == "false":
+                  resolved[t["name"]] = False
+                  print(f"  {t['name']}: testplan.ini says target_available=false — skipping runner check")
+              else:
+                  pending.append(t)
+
+          # ── Poll until all pending platforms resolve or deadline reached ──
+          if not pending:
+              print("All platforms resolved from testplan.ini — no runner polling required.")
+          else:
+              deadline = time.monotonic() + max_wait
+              attempt  = 0
+              print(f"\nPolling runner availability for {len(pending)} platform(s) "
+                    f"(budget: {max_wait}s, interval: {interval}s) …\n")
+
+              while pending:
+                  attempt += 1
+                  online = get_online_labels()
+                  print(f"[poll #{attempt}] online labels: {sorted(online) or '(none detected)'}")
+
+                  still_pending = []
+                  for t in pending:
+                      label = t["runs_on"]
+                      if label in online:
+                          resolved[t["name"]] = True
+                          print(f"  ✓ {t['name']} ({label}): runner online — e2e tests will run")
+                      else:
+                          still_pending.append(t)
+                  pending = still_pending
+
+                  if not pending:
+                      print("\nAll platforms resolved — proceeding immediately.")
+                      break
+
+                  remaining = deadline - time.monotonic()
+                  if remaining <= 0:
+                      for t in pending:
+                          resolved[t["name"]] = False
+                          print(f"  ✗ {t['name']} ({t['runs_on']}): "
+                                f"no runner available after {max_wait}s — will skip")
+                      pending = []
+                      break
+
+                  sleep_secs = min(interval, remaining)
+                  names_left = [t["name"] for t in pending]
+                  print(f"  Still pending: {names_left} — "
+                        f"next check in {sleep_secs:.0f}s ({remaining:.0f}s budget remaining)\n")
+                  time.sleep(sleep_secs)
+
+          # ── Build updated targets matrix and skipped list ─────────────────
+          updated_targets = []
+          skipped_names   = []
+
+          for t in targets:
+              # Platforms not seen by the API check keep their testplan.ini value
+              avail   = resolved.get(t["name"], True)
+              updated = {**t, "target_available": str(avail).lower()}
+              updated_targets.append(updated)
+              if not avail:
+                  skipped_names.append(t["name"])
+
+          print("\n── Runner availability summary ──")
+          for t in updated_targets:
+              status = "✓ will run" if t["target_available"] == "true" else "✗ skipped"
+              print(f"  {t['name']}: {status}")
+
+          gh_output = os.environ.get("GITHUB_OUTPUT", "")
+          if gh_output:
+              with open(gh_output, "a") as fh:
+                  fh.write(f"targets={json.dumps(updated_targets)}\n")
+                  fh.write(f"skipped_targets={json.dumps(skipped_names)}\n")
+
   e2e_nightly:
     name: "${{ matrix.target.name }}"
-    needs: setup_matrix
+    needs: [setup_matrix, check_runners]
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.setup_matrix.outputs.targets) }}
+        target: ${{ fromJSON(needs.check_runners.outputs.targets) }}
     uses: ./.github/workflows/e2e-tests.yml
     with:
       name:             ${{ matrix.target.name }}
@@ -186,7 +339,7 @@ jobs:
 
   report:
     name: "Nightly Test Summary — ${{ needs.setup_matrix.outputs.run_id || inputs.artifact_source || 'latest-release' }}"
-    needs: [setup_matrix, e2e_nightly]
+    needs: [setup_matrix, check_runners, e2e_nightly]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -200,7 +353,7 @@ jobs:
       - name: Build master summary table
         env:
           RUN_ID: ${{ needs.setup_matrix.outputs.run_id || inputs.artifact_source || 'latest-release' }}
-          SKIPPED_TARGETS: ${{ needs.setup_matrix.outputs.skipped_targets }}
+          SKIPPED_TARGETS: ${{ needs.check_runners.outputs.skipped_targets }}
         shell: python
         run: |
           import json, os, pathlib
