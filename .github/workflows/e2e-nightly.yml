@@ -174,10 +174,11 @@ jobs:
     steps:
       - name: Generate GitHub App token (runner health)
         id: app_token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v2
         with:
-          app-id:     ${{ secrets.RUNNER_HEALTH_APP_ID }}
+          app-id:      ${{ secrets.RUNNER_HEALTH_APP_ID }}
           private-key: ${{ secrets.RUNNER_HEALTH_PRIVATE_KEY }}
+          owner: ROCm
 
       - name: Poll runner availability (10 min window)
         id: poll
@@ -226,7 +227,12 @@ jobs:
                       except HTTPError as exc:
                           level = "repo" if "repos" in base_url else "org"
                           if exc.code == 403:
-                              print(f"  [{level}] runners API: 403 insufficient permissions — skipping")
+                              print(
+                                  f"  [{level}] runners API: 403 — token lacks manage_runners:org. "
+                                  f"ossci-rocm runners (MI355, MI325, MI300A, MI308X) will NOT be "
+                                  f"detected via this endpoint. Ensure RUNNER_HEALTH_APP_ID has "
+                                  f"'Administration: Read' installed at the ROCm org level."
+                              )
                           else:
                               print(f"  [{level}] runners API: HTTP {exc.code} — skipping")
                           break
