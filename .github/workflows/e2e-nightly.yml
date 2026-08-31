@@ -29,11 +29,7 @@ name: ROCm Nightly Tests
 
 on:
   schedule:
-    - cron: '0 11 * * *'   # 11:00 AM UTC daily — runs from users/mparamas/runners
-
-  push:
-    branches:
-      - users/mparamas/runners
+    - cron: '0 11 * * *'   # 11:00 AM UTC daily
 
   workflow_call:
     inputs:
