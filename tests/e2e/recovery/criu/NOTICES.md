@@ -3,7 +3,7 @@
 The tests under `tests/e2e/recovery/criu/` **fetch, build, and run** third-party open-source
 projects **at test run time**. No project's source or binaries are vendored, committed, or
 redistributed as part of the rocm-tests repository — clones land in the gitignored `output/`
-build directory (cuda_memtest, pytorch/examples, RAJAPerf, Kokkos). (CRIU, the checkpoint/restore
+build directory (cuda_memtest, pytorch/examples, RAJAPerf, hip-tests, Kokkos). (CRIU, the checkpoint/restore
 tool these tests drive, is covered separately by `tests/common/criu/NOTICES.md`.)
 
 This file documents each component, exactly how it is used, and the resulting license
@@ -19,6 +19,7 @@ product distribution should come from AMD OSS/legal review.
 | cuda_memtest | https://github.com/ComputationalRadiationPhysics/cuda_memtest | commit `0cd3a996ce82682fcf50fa6f433b6f1f2ce1353d` | University of Illinois/NCSA Open Source License (permissive) |
 | pytorch/examples (MNIST) | https://github.com/pytorch/examples | latest `main` (shallow clone) | BSD-3-Clause (permissive) |
 | RAJAPerf | https://github.com/LLNL/rajaperf | default branch (pinnable via `ROCM_TEST_RAJAPERF_REF`) | BSD-3-Clause (permissive) |
+| hip-tests | https://github.com/ROCm/hip-tests | commit `3543bc3b9140e0a506ed3dec643b4def672bd171` | MIT |
 | Kokkos | https://github.com/kokkos/kokkos | tag `4.2.01` (pinnable via `ROCM_TEST_KOKKOS_REF`) | Apache-2.0 WITH LLVM-exception (permissive) |
 
 ### cuda_memtest
@@ -44,6 +45,15 @@ product distribution should come from AMD OSS/legal review.
    not patched.
 3. Run the built `raja-perf.exe` binary as a subprocess, checkpoint/restore it with CRIU.
 
+### hip-tests
+1. `git clone` at the pinned commit into `output/test-binaries/recovery/hip_tests`.
+2. **Modify** the `samples/2_Cookbook/0_MatrixTranspose` sample in place via the single
+   AMD-authored `tests/common/criu/patch_matrix_transpose.py`: `MatrixTranspose.cpp` gets `<thread>`/`<chrono>`
+   includes and a 100-iteration kernel-relaunch loop, and `CMakeLists.txt` gets the ROCm device-lib
+   flag. No upstream file is replaced or redistributed.
+3. Build a standalone binary with CMake's HIP language mode.
+4. Run the built `MatrixTranspose` binary as a subprocess, checkpoint/restore it with CRIU.
+
 ### Kokkos
 1. `git clone` tag `4.2.01` into `output/external/recovery/kokkos` (pin with
    `ROCM_TEST_KOKKOS_REF`; override the URL with `ROCM_TEST_KOKKOS_URL`).
@@ -57,7 +67,7 @@ product distribution should come from AMD OSS/legal review.
 ## Obligations assessment
 
 - **No redistribution.** rocm-tests does not ship any of these projects' code or binaries; all are
-  obtained at runtime from their upstream repositories. NCSA, BSD-3-Clause, and Apache-2.0
+  obtained at runtime from their upstream repositories. NCSA, BSD-3-Clause, MIT, and Apache-2.0
   obligations attach to *distribution*, which does not occur here.
 - **cuda_memtest (NCSA)** permits use, modification, and redistribution with attribution. The
   hipify/`sed` modifications are allowed; the built binary is not redistributed.
@@ -66,19 +76,23 @@ product distribution should come from AMD OSS/legal review.
   *redistribution*, which does not occur here.
 - **RAJAPerf (BSD-3-Clause)** permits use, modification, and redistribution. It is built
   **unmodified** and its binary is not redistributed, so no obligation is triggered.
+- **hip-tests (MIT)** permits use, modification, and redistribution provided the copyright and
+  permission notice are retained on *redistribution*. The in-place loop patch is allowed; the
+  source and built binary are not redistributed (obtained at runtime), so no obligation attaches
+  under the current runtime-fetch model.
 - **Kokkos (Apache-2.0 WITH LLVM-exception)** permits use, modification, and redistribution with
   attribution. Kokkos is built **unmodified** and its binary is not redistributed, so the only
   attribution/notice obligations would attach on *distribution*, which does not occur here.
-- **Modification imposes no obligation.** NCSA, BSD-3-Clause, and Apache-2.0 are permissive:
-  modifying sources (cuda_memtest's hipify + `sed`) requires nothing on its own — it does **not**
-  require marking changed files or disclosing the diff. Their retain-the-notice conditions trigger
-  only on *redistribution*, which does not occur. pytorch/examples, RAJAPerf, and Kokkos are not
-  modified.
+- **Modification imposes no obligation.** NCSA, BSD-3-Clause, MIT, and Apache-2.0 are permissive:
+  modifying sources (cuda_memtest's hipify + `sed`, hip-tests' in-place loop patch) requires
+  nothing on its own — it does **not** require marking changed files or disclosing the diff. Their
+  retain-the-notice conditions trigger only on *redistribution*, which does not occur.
+  pytorch/examples, RAJAPerf, and Kokkos are not modified.
 - **If distribution is ever added** (e.g. bundling the sources or built binaries): retain the NCSA
   copyright notices and disclaimer for cuda_memtest; retain the BSD-3-Clause notice for
-  pytorch/examples and for RAJAPerf (and its submodules) with the no-endorsement clause; and retain
-  the Apache-2.0 license, `NOTICE` file, and attribution for Kokkos. This is out of scope for the
-  current runtime-fetch model.
+  pytorch/examples and for RAJAPerf (and its submodules) with the no-endorsement clause; retain the
+  MIT copyright and permission notice for hip-tests; and retain the Apache-2.0 license, `NOTICE`
+  file, and attribution for Kokkos. This is out of scope for the current runtime-fetch model.
 
 ---
 
@@ -138,6 +152,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 Full license text: `LICENSE` in the RAJAPerf repository. RAJAPerf's submodules (RAJA, BLT, camp,
 desul, kokkos) carry their own licenses (predominantly BSD-3-Clause); see each submodule's `LICENSE`.
+
+### hip-tests — MIT License
+```
+Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+SPDX-License-Identifier: MIT
+```
+Full license text: `LICENSE` in the hip-tests repository (https://github.com/ROCm/hip-tests).
 
 ### Kokkos — Apache License 2.0 WITH LLVM-exception
 ```
