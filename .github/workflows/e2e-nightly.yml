@@ -29,7 +29,11 @@ name: ROCm Nightly Tests
 
 on:
   schedule:
-    - cron: '0 11 * * *'   # 11:00 AM UTC daily
+    - cron: '0 11 * * *'   # 11:00 AM UTC daily — runs from users/mparamas/runners
+
+  push:
+    branches:
+      - users/mparamas/runners
 
   workflow_call:
     inputs:
@@ -164,13 +168,195 @@ jobs:
               f.write(f'targets={json.dumps(all_targets)}\n')
               f.write(f'skipped_targets={json.dumps(skipped)}\n')
 
+  check_runners:
+    name: Check runner availability
+    needs: setup_matrix
+    runs-on: ubuntu-latest
+    outputs:
+      targets:         ${{ steps.poll.outputs.targets }}
+      skipped_targets: ${{ steps.poll.outputs.skipped_targets }}
+    steps:
+      - name: Generate GitHub App token (runner health)
+        id: app_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2
+        with:
+          app-id:      ${{ secrets.RUNNER_HEALTH_APP_ID }}
+          private-key: ${{ secrets.RUNNER_HEALTH_PRIVATE_KEY }}
+          owner: ROCm
+
+      - name: Poll runner availability (persistent runners only)
+        id: poll
+        env:
+          GITHUB_TOKEN: ${{ steps.app_token.outputs.token }}
+          TARGETS_JSON: ${{ needs.setup_matrix.outputs.targets }}
+          MAX_WAIT_SECS: '120'
+          POLL_INTERVAL_SECS: '15'
+        shell: python3 {0}
+        run: |
+          import json, os, sys, time
+          from urllib.request import urlopen, Request
+          from urllib.error import HTTPError, URLError
+
+          token    = os.environ["GITHUB_TOKEN"]
+          repo     = os.environ["GITHUB_REPOSITORY"]            # "owner/repo"
+          org      = repo.split("/")[0]
+          targets  = json.loads(os.environ["TARGETS_JSON"])
+          max_wait = int(os.environ.get("MAX_WAIT_SECS",      "120"))
+          interval = int(os.environ.get("POLL_INTERVAL_SECS", "15"))
+
+          def is_arc(label: str) -> bool:
+              """ARC (Actions Runner Controller) runners are ephemeral Kubernetes pods.
+              They register only when a job is dispatched and deregister on completion,
+              so they are never visible in the runner API when idle. Detect them by the
+              'ossci' substring present in all ARC scale-set labels in this repo.
+              queue_guard in e2e-tests.yml handles the post-dispatch timeout for these.
+              """
+              return "ossci" in label.lower()
+
+          def get_registered_labels(wanted: set[str]) -> set[str]:
+              """Return the subset of *wanted* label names that have at least one
+              registered runner (online or in_use). Stops paginating an endpoint as
+              soon as all wanted labels are found — avoids fetching the full fleet
+              when only a handful of persistent runners need checking.
+              Tries repo-level then org-level endpoints.
+              """
+              found = set()
+              endpoints = [
+                  f"https://api.github.com/repos/{repo}/actions/runners",
+                  f"https://api.github.com/orgs/{org}/actions/runners",
+              ]
+              for base_url in endpoints:
+                  if found >= wanted:
+                      break           # all labels already located — skip remaining endpoint
+                  page = 1
+                  while True:
+                      url = f"{base_url}?per_page=100&page={page}"
+                      req = Request(url, headers={
+                          "Authorization":        f"Bearer {token}",
+                          "Accept":               "application/vnd.github+json",
+                          "X-GitHub-Api-Version": "2022-11-28",
+                      })
+                      try:
+                          with urlopen(req, timeout=15) as resp:
+                              data = json.loads(resp.read())
+                      except HTTPError as exc:
+                          level = "repo" if "repos" in base_url else "org"
+                          print(f"  [{level}] runners API: HTTP {exc.code} — skipping")
+                          break
+                      except URLError as exc:
+                          print(f"  runners API network error ({exc.reason}) — skipping")
+                          break
+
+                      runners = data.get("runners", [])
+                      if not runners:
+                          break
+                      for r in runners:
+                          if r.get("status") in ("online", "in_use"):
+                              for lbl in r.get("labels", []):
+                                  if lbl["name"] in wanted:
+                                      found.add(lbl["name"])
+                      if len(runners) < 100 or found >= wanted:
+                          break
+                      page += 1
+              return found
+
+          # ── Classify targets ──────────────────────────────────────────────
+          # target_available=false  → final skip (testplan.ini decision)
+          # ARC runner (ossci label) → trust target_available=true; queue_guard handles post-dispatch
+          # persistent runner        → poll the runner API for online/in_use status
+          resolved   = {}   # platform name → True (run) | False (skip)
+          to_poll    = []   # persistent runners needing a live API check
+
+          for t in targets:
+              label = t.get("runs_on", "")
+              if t.get("target_available", "true").strip().lower() == "false":
+                  resolved[t["name"]] = False
+                  print(f"  {t['name']}: testplan.ini target_available=false — skip")
+              elif is_arc(label):
+                  resolved[t["name"]] = True
+                  print(f"  {t['name']} ({label}): ARC ephemeral runner — bypassing poll, queue_guard handles dispatch timeout")
+              elif not label:
+                  resolved[t["name"]] = True
+                  print(f"  {t['name']}: no runs_on label configured — passing through")
+              else:
+                  to_poll.append(t)
+
+          # ── Poll persistent runners until resolved or deadline reached ────
+          if not to_poll:
+              print("\nNo persistent runners to poll — done.")
+          else:
+              wanted   = {t["runs_on"] for t in to_poll}   # labels we actually care about
+              deadline = time.monotonic() + max_wait
+              attempt  = 0
+              print(f"\nPolling {len(to_poll)} persistent runner(s) "
+                    f"(budget: {max_wait}s, interval: {interval}s) …\n")
+
+              while to_poll:
+                  attempt += 1
+                  registered = get_registered_labels(wanted)
+                  print(f"[poll #{attempt}]")
+
+                  still_pending = []
+                  for t in to_poll:
+                      label = t["runs_on"]
+                      if label in registered:
+                          resolved[t["name"]] = True
+                          wanted.discard(label)
+                          print(f"  ✓ {t['name']} ({label}): online")
+                      else:
+                          print(f"  … {t['name']} ({label}): not yet registered")
+                          still_pending.append(t)
+                  to_poll = still_pending
+
+                  if not to_poll:
+                      print("\nAll persistent runners resolved — proceeding immediately.")
+                      break
+
+                  remaining = deadline - time.monotonic()
+                  if remaining <= 0:
+                      for t in to_poll:
+                          resolved[t["name"]] = False
+                          print(f"  ✗ {t['name']} ({t['runs_on']}): "
+                                f"not registered after {max_wait}s — will skip")
+                      to_poll = []
+                      break
+
+                  sleep_secs = min(interval, remaining)
+                  names_left = [t["name"] for t in to_poll]
+                  print(f"  Still pending: {names_left} — "
+                        f"next check in {sleep_secs:.0f}s ({remaining:.0f}s budget remaining)\n")
+                  time.sleep(sleep_secs)
+
+          # ── Build updated targets matrix and skipped list ─────────────────
+          updated_targets = []
+          skipped_names   = []
+
+          for t in targets:
+              # Platforms not seen by the API check keep their testplan.ini value
+              avail   = resolved.get(t["name"], True)
+              updated = {**t, "target_available": str(avail).lower()}
+              updated_targets.append(updated)
+              if not avail:
+                  skipped_names.append(t["name"])
+
+          print("\n── Runner availability summary ──")
+          for t in updated_targets:
+              status = "✓ will run" if t["target_available"] == "true" else "✗ skipped"
+              print(f"  {t['name']}: {status}")
+
+          gh_output = os.environ.get("GITHUB_OUTPUT", "")
+          if gh_output:
+              with open(gh_output, "a") as fh:
+                  fh.write(f"targets={json.dumps(updated_targets)}\n")
+                  fh.write(f"skipped_targets={json.dumps(skipped_names)}\n")
+
   e2e_nightly:
     name: "${{ matrix.target.name }}"
-    needs: setup_matrix
+    needs: [setup_matrix, check_runners]
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.setup_matrix.outputs.targets) }}
+        target: ${{ fromJSON(needs.check_runners.outputs.targets) }}
     uses: ./.github/workflows/e2e-tests.yml
     with:
       name:             ${{ matrix.target.name }}
@@ -186,7 +372,7 @@ jobs:
 
   report:
     name: "Nightly Test Summary — ${{ needs.setup_matrix.outputs.run_id || inputs.artifact_source || 'latest-release' }}"
-    needs: [setup_matrix, e2e_nightly]
+    needs: [setup_matrix, check_runners, e2e_nightly]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -200,7 +386,7 @@ jobs:
       - name: Build master summary table
         env:
           RUN_ID: ${{ needs.setup_matrix.outputs.run_id || inputs.artifact_source || 'latest-release' }}
-          SKIPPED_TARGETS: ${{ needs.setup_matrix.outputs.skipped_targets }}
+          SKIPPED_TARGETS: ${{ needs.check_runners.outputs.skipped_targets }}
         shell: python
         run: |
           import json, os, pathlib
@@ -232,23 +418,32 @@ jobs:
 
           total_run = total_pass = total_skip = total_fail = total_err = 0
           for r in rows:
-              ok = r["failed"] == 0 and r["error"] == 0 and r["total"] > 0
-              status = "✅ Passed" if ok else "❌ Failed"
-              if has_skip:
-                  lines.append(
-                      f"| {r['platform']} | {r['total']} | {r['passed']} | "
-                      f"{r.get('skipped', 0)} | {r['failed']} | {r['error']} | {status} |"
-                  )
+              if r.get("runner_timeout"):
+                  # Platform dispatched but runner never acquired — distinct from a test failure
+                  status = "⏭ Runner timeout"
+                  dash = "—"
+                  if has_skip:
+                      lines.append(f"| {r['platform']} | {dash} | {dash} | {dash} | {dash} | {dash} | {status} |")
+                  else:
+                      lines.append(f"| {r['platform']} | {dash} | {dash} | {dash} | {dash} | {status} |")
               else:
-                  lines.append(
-                      f"| {r['platform']} | {r['total']} | {r['passed']} | "
-                      f"{r['failed']} | {r['error']} | {status} |"
-                  )
-              total_run  += r["total"]
-              total_pass += r["passed"]
-              total_skip += r.get("skipped", 0)
-              total_fail += r["failed"]
-              total_err  += r["error"]
+                  ok = r["failed"] == 0 and r["error"] == 0 and r["total"] > 0
+                  status = "✅ Passed" if ok else "❌ Failed"
+                  if has_skip:
+                      lines.append(
+                          f"| {r['platform']} | {r['total']} | {r['passed']} | "
+                          f"{r.get('skipped', 0)} | {r['failed']} | {r['error']} | {status} |"
+                      )
+                  else:
+                      lines.append(
+                          f"| {r['platform']} | {r['total']} | {r['passed']} | "
+                          f"{r['failed']} | {r['error']} | {status} |"
+                      )
+                  total_run  += r["total"]
+                  total_pass += r["passed"]
+                  total_skip += r.get("skipped", 0)
+                  total_fail += r["failed"]
+                  total_err  += r["error"]
 
           for name in skipped_names:
               if has_skip:
