@@ -8,6 +8,7 @@ asserts every sub-test passes; the ``apex_repo`` fixture provides the checkout.
 """
 
 import logging
+import sys
 
 import pytest
 
@@ -33,6 +34,29 @@ _CRASH_MARKERS = (
     "Aborted (",
     "Fatal Python error",
 )
+
+
+def _print_summary(summary, exit_code, crash_markers):
+    """Print a formatted result table to stdout after the Apex L0 suite runs."""
+    status = "PASSED" if summary.is_clean and exit_code == 0 and not crash_markers else "FAILED"
+    lines = [
+        "",
+        "=" * 60,
+        "  Apex L0 Suite Results",
+        "=" * 60,
+        f"  Status    : {status}",
+        f"  Passed    : {summary.passed}",
+        f"  Skipped   : {summary.skipped}",
+        f"  Failed    : {summary.failed}",
+        f"  Errored   : {summary.errored}",
+        f"  Unresolved: {len(summary.unresolved_names)}",
+        f"  Total run : {summary.ran_total}",
+        f"  Exit code : {exit_code}",
+        f"  Crashes   : {', '.join(crash_markers) if crash_markers else 'none'}",
+        "=" * 60,
+        "",
+    ]
+    print("\n".join(lines), file=sys.stdout, flush=True)
 
 
 @pytest.mark.container(ipc="host", extra_run_flags=CONTAINER_MOUNT_FLAGS)
@@ -67,6 +91,10 @@ def test_apex_l0_suite(target_executor, apex_repo):
         result.exit_code,
         crash_markers or "none",
     )
+
+    # Print a human-readable summary table to stdout so it appears in the
+    # pytest live log regardless of log level configuration.
+    _print_summary(summary, result.exit_code, crash_markers)
 
     # No parsed results means the kernel build or runner never produced sub-tests.
     assert summary.total > 0 or summary.ran_total > 0, (
