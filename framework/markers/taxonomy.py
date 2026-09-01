@@ -152,6 +152,15 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # CRIU checkpoint/restore suite: GPU workloads checkpointed and restored with CRIU +
+    # amdgpu_plugin. Weekly cadence (happy path is a soak run); runtime.* is per test function.
+    "tests/e2e/recovery/criu": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # TorchVision P1 image-transform correctness UT suite (ML frameworks):
     # builds the torchvision ops in-tree and runs the cuda-tagged functional /
     # transforms tensor UTs, validating the transform-op compute against CPU/PIL.
@@ -163,6 +172,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "os.linux",
     ],
     "tests/e2e/rocm_examples": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/hip_directed": [
         "hw.gpu",
         "layer.runtime",
         "ci.nightly",
