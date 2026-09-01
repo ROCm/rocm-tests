@@ -46,6 +46,10 @@ _BUILD_CMD = "\n".join(
     )
 )
 
+# Tracks repos that have already been built this process; keyed by container path.
+# Prevents each parametrized invocation from git-cleaning and rebuilding.
+_built_repos: set[str] = set()
+
 
 def _resolve_url_commit(target_executor) -> tuple[str, str]:
     """Return (url, commit) from the container's related_commits; fail if absent."""
@@ -66,14 +70,15 @@ def _resolve_url_commit(target_executor) -> tuple[str, str]:
     return url, commit
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def torchvision_repo(external_build, compiler_build_dir: str, target_executor) -> str:
-    """Clone and build torchvision once per session; return its container path.
+    """Clone and build torchvision; return its container path.
 
     Reads the commit from the container's related_commits, clones on the host
-    into the bind-mounted output tree, builds the in-tree ops, and returns the
-    checkout path inside the container.  Session scope prevents each parametrized
-    test from rebuilding (and git-cleaning) the shared checkout.
+    into the bind-mounted output tree, and returns the checkout path inside the
+    container.  The ops build (git clean + build_ext) runs only once per process
+    even when multiple parametrized tests call this fixture, so later calls reuse
+    the .so without wiping the tree a sibling test built.
     """
     url, commit = _resolve_url_commit(target_executor)
     dest = pathlib.Path(compiler_build_dir) / "vision"
@@ -82,15 +87,16 @@ def torchvision_repo(external_build, compiler_build_dir: str, target_executor) -
 
     container_repo = f"{_CONTAINER_WORKSPACE}/external/{pathlib.Path(repo).name}"
 
-    # Build the ops inside the container exactly once.
-    build_result = target_executor.run(
-        _BUILD_CMD.format(repo=container_repo),
-        timeout=_RESOLVE_TIMEOUT * 10,
-    )
-    if build_result.exit_code != 0:
-        pytest.fail(
-            f"torchvision ops build failed (exit={build_result.exit_code}):\n"
-            f"stdout: {build_result.stdout[-3000:]}\nstderr: {build_result.stderr[-3000:]}"
+    if container_repo not in _built_repos:
+        build_result = target_executor.run(
+            _BUILD_CMD.format(repo=container_repo),
+            timeout=_RESOLVE_TIMEOUT * 10,
         )
+        if build_result.exit_code != 0:
+            pytest.fail(
+                f"torchvision ops build failed (exit={build_result.exit_code}):\n"
+                f"stdout: {build_result.stdout[-3000:]}\nstderr: {build_result.stderr[-3000:]}"
+            )
+        _built_repos.add(container_repo)
 
     return container_repo
