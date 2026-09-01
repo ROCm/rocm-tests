@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os as _os
 import pathlib
 import shlex
 
@@ -30,3 +31,10 @@ RUN_TIMEOUT = 14400.0
 
 # Seconds for the in-container related_commits lookup and ops build baseline.
 _RESOLVE_TIMEOUT = 120.0
+
+# Optional overrides: set these env vars to skip the related_commits lookup.
+# Example: export TORCHVISION_URL=https://github.com/pytorch/vision
+#          export TORCHVISION_COMMIT=<sha>
+# To find values: docker run --rm <image> cat /workspace/pytorch/related_commits
+TORCHVISION_URL = _os.environ.get("TORCHVISION_URL", "").strip()
+TORCHVISION_COMMIT = _os.environ.get("TORCHVISION_COMMIT", "").strip()

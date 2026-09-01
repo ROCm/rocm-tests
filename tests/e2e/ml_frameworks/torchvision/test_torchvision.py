@@ -3,8 +3,10 @@
 
 """TorchVision P1 image-transform correctness UT suite.
 
-Runs the cuda-tagged tensor UT suites in a container against torchvision ops built
-once per session; the JUnit report is parsed so the assertion names any failing case.
+Runs the cuda-tagged tensor UT suites in a container against torchvision ops.
+The ops are built once per process (inside the container); subsequent parametrized
+test cases reuse the built tree without re-running git-clean or setup.py.
+The JUnit report is parsed so the assertion names any failing GPU case.
 """
 
 import logging
@@ -13,6 +15,7 @@ import os
 import pytest
 
 from tests.e2e.ml_frameworks.torchvision._constants import (
+    _RESOLVE_TIMEOUT,
     CONTAINER_MOUNT_FLAGS,
     GPU_COUNT_ARG,
     PYTEST_SELECTOR,
@@ -20,6 +23,7 @@ from tests.e2e.ml_frameworks.torchvision._constants import (
     TEST_FILES,
 )
 from tests.e2e.ml_frameworks.torchvision._result_parser import parse_junit_xml
+from tests.e2e.ml_frameworks.torchvision.conftest import resolve_url_commit
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,23 @@ _CRASH_MARKERS = (
     "Fatal Python error",
 )
 
+# Tracks repos that have already been built this process so the second
+# parametrized test reuses the .so without git-cleaning and rebuilding.
+_built_repos: set[str] = set()
+
+# Shell command to build the in-tree ops inside the container.
+_BUILD_CMD = "\n".join(
+    (
+        "set -e",
+        "git config --global --add safe.directory {repo}",
+        "cd {repo}",
+        "git clean -fdx",
+        "python setup.py build_ext --inplace",
+        "python -c \"import torch, torchvision; torch.ops.torchvision.nms; print('torchvision_nms_ok')\""
+        " | grep -q torchvision_nms_ok",
+    )
+)
+
 
 def _extract_junit(text: str) -> str:
     """Return the JUnit XML report bracketed by the sentinels in *text*, or ``""``."""
@@ -53,18 +74,48 @@ def _extract_junit(text: str) -> str:
 @pytest.mark.runtime.medium
 @pytest.mark.parametrize("test_file", TEST_FILES, ids=lambda f: os.path.basename(f)[len("test_") : -len(".py")])
 def test_torchvision_p1_ut_suite(target_executor, torchvision_repo, test_file):
-    """Run one cuda-tagged UT suite against the pre-built torchvision ops; assert it passes.
+    """Build (once) and run one cuda-tagged UT suite; assert it passes.
 
-    The ops are built once per session by the ``torchvision_repo`` fixture.  Each
-    parametrized call runs only the pytest collection and execution step, then
-    parses the JUnit report so the assertion names any failing GPU case.
+    Resolves the torchvision commit from the container's related_commits manifest
+    (or env-var overrides), builds the in-tree ops on the first call, then runs the
+    cuda-tagged pytest cases and parses the JUnit report per case.
     """
+    # Resolve url/commit inside the container (target_executor runs in container).
+    # torchvision_repo already cloned on the host; we only need the commit to
+    # confirm the checkout is correct — resolve_url_commit handles env-var bypass.
+    if torchvision_repo not in _built_repos:
+        _, commit = resolve_url_commit(target_executor)
+        # Ensure the checkout is pinned to the resolved commit.
+        pin_cmd = "\n".join(
+            (
+                "set -e",
+                f"git config --global --add safe.directory {torchvision_repo}",
+                f"cd {torchvision_repo}",
+                f"git fetch origin {commit} --depth=1 2>/dev/null || true",
+                f"git checkout {commit}",
+            )
+        )
+        pin_result = target_executor.run(pin_cmd, timeout=_RESOLVE_TIMEOUT)
+        if pin_result.exit_code != 0:
+            pytest.fail(
+                f"Failed to pin torchvision checkout to commit {commit}:\n"
+                f"stdout: {pin_result.stdout[-2000:]}\nstderr: {pin_result.stderr[-2000:]}"
+            )
+
+        build_result = target_executor.run(
+            _BUILD_CMD.format(repo=torchvision_repo),
+            timeout=_RESOLVE_TIMEOUT * 10,
+        )
+        if build_result.exit_code != 0:
+            pytest.fail(
+                f"torchvision ops build failed (exit={build_result.exit_code}):\n"
+                f"stdout: {build_result.stdout[-3000:]}\nstderr: {build_result.stderr[-3000:]}"
+            )
+        _built_repos.add(torchvision_repo)
+
     suite = os.path.basename(test_file)[len("test_") : -len(".py")]
     junit = f"junit_{suite}.xml"
 
-    # The ops are already built by the session-scoped torchvision_repo fixture.
-    # Each parametrized test case only runs pytest; no rebuild or git-clean here,
-    # which prevents the second test from wiping the .so the first test built.
     cmd = "\n".join(
         (
             f"cd {torchvision_repo}",
@@ -103,11 +154,10 @@ def test_torchvision_p1_ut_suite(target_executor, torchvision_repo, test_file):
         f"stdout tail: {result.stdout[-4000:]}\nstderr tail: {result.stderr[-4000:]}"
     )
 
-    # No parsed results means the ops build, nms import gate, or runner never
-    # produced a report (failed to start).
+    # No parsed results means the ops build or runner failed to produce a report.
     assert summary.total > 0, (
         f"TorchVision UT suite produced no test results for {test_file} (exit={result.exit_code}); "
-        f"the ops build, nms import check, or runner likely failed to start:\n"
+        f"the ops build or runner likely failed to start:\n"
         f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-4000:]}"
     )
 
