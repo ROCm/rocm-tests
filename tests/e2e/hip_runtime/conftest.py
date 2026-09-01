@@ -9,7 +9,7 @@ only the required target rather than compiling unrelated HIP runtime binaries:
 - ``_hip_host_cmake_build_dir``   — builds ``hip_invalid_codeobject_load_test``
   (pure HIP driver API, no GPU kernels; does not require ``--gpu-arch``).
 - ``_hip_stream_cmake_build_dir`` — builds ``multi_stream_serialization``
-  (HIP kernel code; r:qequires ``--gpu-arch`` so ``-DGPU_ARCH`` can be forwarded).
+  (HIP kernel code; requires ``--gpu-arch`` so ``-DGPU_ARCH`` can be forwarded).
 - ``_split_barrier_stress_build_dir`` — builds ``split_barrier_stress``
   (standalone cooperative-groups stress sample; requires ``--gpu-arch``).
 
