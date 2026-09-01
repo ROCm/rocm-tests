@@ -45,53 +45,49 @@ _CRASH_MARKERS = (
 # parametrized test reuses the .so without git-cleaning and rebuilding.
 _built_repos: set[str] = set()
 
-# Shell command that runs inside the container to:
-#   1. Read the torchvision commit from the image's related_commits manifest.
-#   2. Check out that exact commit in the bind-mounted clone.
-#   3. Build the in-tree ops.
-# The manifest lives at /workspace/pytorch/related_commits inside the image.
-# git clean removes stale hipify/build artifacts from a prior run on the same tree.
-_SETUP_AND_BUILD_CMD = r"""
-set -e
-repo={repo}
-git config --global --add safe.directory "$repo"
-cd "$repo"
 
-# Locate the related_commits manifest inside the container.
-for c in /workspace/pytorch/related_commits \
-          "$PYTORCH_DIR/related_commits" \
-          /opt/pytorch/related_commits \
-          /related_commits; do
-  [ -f "$c" ] && { manifest="$c"; break; }
-done
-if [ -z "$manifest" ]; then
-  tdir=$(python -c 'import os,torch;print(os.path.dirname(os.path.dirname(torch.__file__)))' 2>/dev/null)
-  [ -f "$tdir/related_commits" ] && manifest="$tdir/related_commits"
-fi
-if [ -z "$manifest" ]; then
-  manifest=$(find / -maxdepth 6 -name related_commits -type f 2>/dev/null | head -1)
-fi
-
-# Extract the torchvision commit from the manifest (field 5, pipe-delimited).
-if [ -n "$manifest" ] && [ -f "$manifest" ]; then
-  osid=$(. /etc/os-release 2>/dev/null; echo "$ID")
-  line=$(grep -i torchvision "$manifest" | grep -i "$osid" | head -1)
-  [ -z "$line" ] && line=$(grep -i torchvision "$manifest" | head -1)
-  commit=$(echo "$line" | cut -d '|' -f 5 | tr -d '[:space:]')
-fi
-
-# Checkout the resolved commit; fall back to current HEAD if not found.
-if [ -n "$commit" ]; then
-  git fetch origin "$commit" --depth=1 2>/dev/null || true
-  git checkout "$commit"
-fi
-
-# Build the in-tree ops.
-git clean -fdx
-python setup.py build_ext --inplace
-python -c "import torch, torchvision; torch.ops.torchvision.nms; print('torchvision_nms_ok')" \
-  | grep -q torchvision_nms_ok
-"""
+def _setup_and_build_cmd(repo: str) -> str:
+    """Return the shell script that pins the commit and builds torchvision ops inside the container."""
+    return "\n".join(
+        (
+            "set -e",
+            f"git config --global --add safe.directory {repo!r}",
+            f"cd {repo!r}",
+            # Locate the related_commits manifest (checked in priority order).
+            "manifest=''",
+            "for c in /workspace/pytorch/related_commits"
+            ' "$PYTORCH_DIR/related_commits"'
+            " /opt/pytorch/related_commits"
+            " /related_commits; do",
+            '  [ -f "$c" ] && manifest="$c" && break',
+            "done",
+            'if [ -z "$manifest" ]; then',
+            "  tdir=$(python -c 'import os,torch;print(os.path.dirname(os.path.dirname(torch.__file__)))' 2>/dev/null)",
+            '  [ -f "$tdir/related_commits" ] && manifest="$tdir/related_commits"',
+            "fi",
+            'if [ -z "$manifest" ]; then',
+            "  manifest=$(find / -maxdepth 6 -name related_commits -type f 2>/dev/null | head -1)",
+            "fi",
+            # Extract the torchvision commit from the manifest (field 5, pipe-delimited).
+            "commit=''",
+            'if [ -n "$manifest" ] && [ -f "$manifest" ]; then',
+            '  osid=$(. /etc/os-release 2>/dev/null; echo "$ID")',
+            '  line=$(grep -i torchvision "$manifest" | grep -i "$osid" | head -1)',
+            '  [ -z "$line" ] && line=$(grep -i torchvision "$manifest" | head -1)',
+            "  commit=$(echo \"$line\" | cut -d '|' -f 5 | tr -d '[:space:]')",
+            "fi",
+            # Checkout the resolved commit; fall back to current HEAD if not found.
+            'if [ -n "$commit" ]; then',
+            '  git fetch origin "$commit" --depth=1 2>/dev/null || true',
+            '  git checkout "$commit"',
+            "fi",
+            # Build the in-tree ops.
+            "git clean -fdx",
+            "python setup.py build_ext --inplace",
+            "python -c \"import torch, torchvision; torch.ops.torchvision.nms; print('torchvision_nms_ok')\""
+            " | grep -q torchvision_nms_ok",
+        )
+    )
 
 
 def _extract_junit(text: str) -> str:
@@ -120,7 +116,7 @@ def test_torchvision_p1_ut_suite(target_executor, torchvision_repo, test_file):
     # setup.py, which would wipe the .so the first test already built.
     if torchvision_repo not in _built_repos:
         build_result = target_executor.run(
-            _SETUP_AND_BUILD_CMD.format(repo=torchvision_repo),
+            _setup_and_build_cmd(torchvision_repo),
             timeout=_RESOLVE_TIMEOUT * 10,
         )
         if build_result.exit_code != 0:
