@@ -12,14 +12,14 @@ import os
 
 import pytest
 
-from tests.e2e.ml_frameworks.torchvision._result_parser import parse_junit_xml
-from tests.e2e.ml_frameworks.torchvision.conftest import (
+from tests.e2e.ml_frameworks.torchvision._constants import (
     CONTAINER_MOUNT_FLAGS,
     GPU_COUNT_ARG,
     PYTEST_SELECTOR,
     RUN_TIMEOUT,
     TEST_FILES,
 )
+from tests.e2e.ml_frameworks.torchvision._result_parser import parse_junit_xml
 
 logger = logging.getLogger(__name__)
 

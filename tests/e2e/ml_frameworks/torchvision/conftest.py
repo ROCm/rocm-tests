@@ -1,7 +1,7 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""TorchVision area config and fixtures.
+"""TorchVision area fixtures.
 
 The ``torchvision_repo`` fixture reads the repo URL + commit from the PyTorch
 image's ``related_commits`` manifest, clones that commit, and exposes the checkout
@@ -11,38 +11,16 @@ inside the container via a bind mount.
 from __future__ import annotations
 
 import pathlib
-import shlex
 
 import pytest
 
-from framework.common.workspace_layout import REMOTE_WORKSPACE_DIR
-
-# Host output/ tree bind-mounted into the container at a fixed absolute target.
-# Not $HOME: the host shell would expand it to the host user's home when building
-# the docker command, which need not match the container's home.
-_OUTPUT_HOST = pathlib.Path("output").resolve()
-_CONTAINER_WORKSPACE = f"/mnt/{REMOTE_WORKSPACE_DIR}"
-CONTAINER_MOUNT_FLAGS = f"-v {shlex.quote(str(_OUTPUT_HOST))}:{_CONTAINER_WORKSPACE}"
-
-# GPU UT suite files, restricted to cuda-tagged cases; each runs as its own test.
-TEST_FILES = (
-    "test/test_functional_tensor.py",
-    "test/test_transforms_tensor.py",
-)
-PYTEST_SELECTOR = "cuda"
-
-# All GPUs on the node (hw.multi_gpu); target_executor owns the allocation.
-GPU_COUNT_ARG = "all"
-
-# Whole-suite wall-clock cap (seconds): first-run ops build + one UT run.
-RUN_TIMEOUT = 14400.0
+from tests.e2e.ml_frameworks.torchvision._constants import _CONTAINER_WORKSPACE
 
 # Seconds for the (trivial) in-container related_commits lookup.
 _RESOLVE_TIMEOUT = 120.0
 
 # Read the torchvision repo URL (field 6) and commit (field 5) from the PyTorch
-# image's related_commits manifest, matched to this OS. Locates the manifest in the
-# PyTorch dir (well-known spots + torch install), then a bounded find fallback.
+# image's related_commits manifest, matched to this OS.
 _RELATED_COMMITS_LOOKUP = r"""
 tdir=$(python -c 'import os,torch;print(os.path.dirname(os.path.dirname(torch.__file__)))' 2>/dev/null)
 for c in "$PYTORCH_DIR/related_commits" /opt/pytorch/related_commits "$tdir/related_commits" /related_commits; do
