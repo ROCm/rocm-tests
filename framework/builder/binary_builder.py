@@ -542,8 +542,6 @@ def cmake_build(  # noqa: C901
     sync_dirs: list[str] | None = None,
     parallel_jobs: int | None = None,
     target: str | None = None,
-    tolerate_build_failure: bool = False,
-    build_artifact: str | None = None,
 ) -> pathlib.Path:
     """Configure and build a cmake project against a TheRock / ROCm install.
 
@@ -565,13 +563,6 @@ def cmake_build(  # noqa: C901
                            local CPU count (or remote ``nproc``).
         target:            CMake build target passed as ``--target <target>``; ``None`` builds
                            the default ``ALL`` target.
-        tolerate_build_failure: When ``True``, build with make keep-going (``-k``) and treat a
-                           non-zero build exit as success **provided** *build_artifact* was still
-                           produced. Individual targets that cannot compile (e.g. a sample that
-                           needs a ROCm component absent from the install) are left unbuilt for the
-                           caller to report as unavailable, instead of aborting the whole suite.
-        build_artifact:    Sentinel binary (relative to *build_dir*) used to confirm the build
-                           mostly succeeded when *tolerate_build_failure* is set.
 
     Returns:
         ``pathlib.Path`` pointing to the cmake build directory.
@@ -623,11 +614,6 @@ def cmake_build(  # noqa: C901
     build_cmd = ["cmake", "--build", str(build_path), "--parallel", str(jobs)]
     if target is not None:
         build_cmd += ["--target", target]
-    # Keep-going so one sample that needs an absent ROCm component doesn't abort the
-    # whole build; the caller verifies the sentinel artifact and reports the gaps.
-    # "-k" is the GNU make keep-going flag (the default generator on Linux).
-    if tolerate_build_failure:
-        build_cmd += ["--", "-k"]
 
     if remote_executor is not None:
         for d in sync_dirs or []:
@@ -657,23 +643,10 @@ def cmake_build(  # noqa: C901
                 )
         bld = remote_executor.run(shlex.join(build_cmd), timeout=7200.0, stream=True)
         if not bld.ok:
-            if (
-                tolerate_build_failure
-                and build_artifact is not None
-                and build_artifact_exists(build_path, build_artifact, remote_executor)
-            ):
-                logger.warning(
-                    "%s: build reported failures but sentinel %s present — tolerating partial build "
-                    "(unbuildable samples will be reported as unavailable):\n%s",
-                    _label,
-                    build_artifact,
-                    (bld.stdout + bld.stderr)[-2000:],
-                )
-            else:
-                raise RuntimeError(
-                    f"{_label} cmake build failed on remote host (exit={bld.exit_code}):\n"
-                    f"stdout: {bld.stdout}\nstderr: {bld.stderr}"
-                )
+            raise RuntimeError(
+                f"{_label} cmake build failed on remote host (exit={bld.exit_code}):\n"
+                f"stdout: {bld.stdout}\nstderr: {bld.stderr}"
+            )
     else:
         build_path.mkdir(parents=True, exist_ok=True)
         cmake_env = {**os.environ, "ROCM_PATH": rocm_path}
@@ -684,18 +657,7 @@ def cmake_build(  # noqa: C901
             r = subprocess.run(configure_cmd, capture_output=True, text=True, env=cmake_env)
         assert r.returncode == 0, f"{_label} cmake configure failed:\n{r.stdout}\n{r.stderr}"
         r = subprocess.run(build_cmd, capture_output=True, text=True, env=cmake_env, timeout=7200.0)
-        if r.returncode != 0 and (
-            tolerate_build_failure and build_artifact is not None and build_artifact_exists(build_path, build_artifact)
-        ):
-            logger.warning(
-                "%s: build reported failures but sentinel %s present — tolerating partial build "
-                "(unbuildable samples will be reported as unavailable):\n%s",
-                _label,
-                build_artifact,
-                (r.stdout + r.stderr)[-2000:],
-            )
-        else:
-            assert r.returncode == 0, f"{_label} cmake build failed:\n{r.stdout}\n{r.stderr}"
+        assert r.returncode == 0, f"{_label} cmake build failed:\n{r.stdout}\n{r.stderr}"
 
     return build_path
 
@@ -889,7 +851,7 @@ def provision_openmpi_runtime(
         f" && ./configure --prefix={shlex.quote(str(install_dir))} --with-hwloc=internal --disable-mpi-fortran"
         f" && make -j{os.cpu_count() or 4} && make install"
     )
-    proc = subprocess.run(  # nosec B602 — all path components are shlex.quote'd above
+    proc = subprocess.run(
         build_cmd,
         shell=True,
         capture_output=True,
@@ -986,16 +948,6 @@ def clone_repo(  # noqa: C901
                     )
         else:
             logger.info("clone_repo (remote): %s already exists — skipping clone", abs_dest)
-            if sparse_subtree:
-                # Re-assert the sparse spec on a reused checkout: one cached from an
-                # earlier run with a narrower subtree would otherwise stay missing the
-                # files we now need (e.g. a sibling include/ tree). Idempotent when the
-                # spec already matches.
-                sc = remote_executor.run(f"git -C {abs_dest} sparse-checkout set {sparse_subtree}", timeout=timeout)
-                if not sc.ok:
-                    raise RuntimeError(
-                        f"git sparse-checkout re-assert failed on remote (exit={sc.exit_code}): {sc.stderr[:1000]}"
-                    )
 
         if ref:
             co = remote_executor.run(f"git -C {abs_dest} checkout {ref}", timeout=timeout)
@@ -1048,18 +1000,6 @@ def clone_repo(  # noqa: C901
             ), f"git sparse-checkout set failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
     else:
         logger.info("clone_repo (local): %s already exists — skipping clone", repo_dir)
-        if sparse_subtree:
-            # Re-assert the sparse spec on a reused checkout (see remote branch): a
-            # checkout cached from an earlier run with a narrower subtree would
-            # otherwise stay missing files we now need. Idempotent when unchanged.
-            proc = subprocess.run(
-                ["git", "-C", str(repo_dir), "sparse-checkout", "set", sparse_subtree],
-                capture_output=True,
-                text=True,
-            )
-            assert (
-                proc.returncode == 0
-            ), f"git sparse-checkout re-assert failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
 
     if ref:
         proc = subprocess.run(

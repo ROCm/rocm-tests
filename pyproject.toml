@@ -168,10 +168,8 @@ no_implicit_optional = true
 show_error_codes    = true
 
 [[tool.mypy.overrides]]
-module = ["allure", "allure.*", "certifi", "clickhouse_connect", "clickhouse_connect.*",
-          "paramiko", "paramiko.*", "pexpect", "pexpect.*",
-          "yaml", "tomli", "tomllib", "xdist", "xdist.*",
-          "filelock", "filelock.*"]
+module = ["allure", "allure.*", "paramiko", "paramiko.*",
+          "pexpect", "pexpect.*", "yaml", "tomli", "tomllib", "xdist", "xdist.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
@@ -193,7 +191,6 @@ disable = [
     "R0801",  # duplicate-code — Linux/Windows adapter symmetry
     "W0212",  # protected-access — tests validly inspect private state
     "W0511",  # fixme/todo — tracked in issues
-    "E0401",  # import-error — optional third-party packages (clickhouse_connect, allure, paramiko) not installed in lint env
     "E1101",  # generated-members — allure, paramiko lack stubs
 ]
 
@@ -216,10 +213,7 @@ min-similarity-lines = 8
 [tool.bandit]
 targets = ["framework"]
 skips   = [
-    "B101",  # assert — acceptable in internal framework helpers
-    "B105",  # hardcoded_password_string — false positive on dict keys like "PASS"/"FAIL"
-    "B110",  # try_except_pass — intentional best-effort cleanup in lock/teardown paths
     "B404",  # import subprocess — required for GPU command execution
     "B603",  # subprocess_without_shell_equals_true — list-form Popen calls are safe
-    "B607",  # start_process_with_partial_path — system tools (modprobe, lsmod, amd-smi) by design
+    "B101",  # assert — acceptable in internal framework helpers
 ]

@@ -270,7 +270,6 @@ def cmake_build_dir(
         artifact: str | None = None,
         compiler_mode: str = "auto",
         target: str | None = None,
-        tolerate_build_failure: bool = False,
     ) -> str:
         """Configure/build a CMake project and return the node-local build dir."""
         _label = label or subdir
@@ -345,8 +344,6 @@ def cmake_build_dir(
             remote_executor=cmake_executor,
             sync_dirs=effective_sync_dirs if cmake_executor is not None else sync_dirs,
             target=target,
-            tolerate_build_failure=tolerate_build_failure,
-            build_artifact=artifact,
         )
 
         if artifact is not None:

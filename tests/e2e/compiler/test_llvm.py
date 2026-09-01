@@ -26,7 +26,6 @@ Explicit marker (not in profile):
 import pytest
 
 
-@pytest.mark.gpu_vram(40)
 @pytest.mark.runtime.medium
 def test_llvm_mem_intrinsic_stress(
     target_executor,

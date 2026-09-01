@@ -67,8 +67,7 @@ def dim(t):
 # ---------------------------------------------------------------------------
 
 _DEFAULT_HEALTH_WARN_MB = 100
-_MEMORY_MOVER_HEALTH_WARN_MB = 2048
-_IPC_XFER_HEALTH_WARN_MB = 512
+_MEMORY_MOVER_HEALTH_WARN_MB = 1024
 
 
 def read_sysinfo(results_dir):
@@ -694,12 +693,8 @@ def print_report(top_dir, dirs_to_analyze, all_results):  # noqa: C901 — vendo
             name = m["name"]
             r = m["result"]
             slow = r["slow_queries"]
-            # Allow up to 2 isolated slow queries as OS scheduling noise; only
-            # fail when 3 or more slow queries are observed in the same session.
-            if slow >= 3:
+            if slow > 0:
                 overall_pass = False
-                tag = yellow("[WARN]")
-            elif slow > 0:
                 tag = yellow("[WARN]")
             else:
                 tag = green("[OK]  ")
@@ -938,9 +933,6 @@ def _health_thresholds_for_role(role):
     """Return analyzer thresholds for a role's health CSV."""
     if role and role.startswith("memory_mover"):
         return _MEMORY_MOVER_HEALTH_WARN_MB, _MEMORY_MOVER_HEALTH_WARN_MB
-    if role and role == "ipc_xfer":
-        # Cross-GPU peer copy allocates GPU-resident staging buffers; 512 MB tolerance.
-        return _DEFAULT_HEALTH_WARN_MB, _IPC_XFER_HEALTH_WARN_MB
     return _DEFAULT_HEALTH_WARN_MB, _DEFAULT_HEALTH_WARN_MB
 
 
