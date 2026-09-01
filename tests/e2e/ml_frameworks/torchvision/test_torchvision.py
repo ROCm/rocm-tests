@@ -101,21 +101,27 @@ def test_torchvision_p1_ut_suite(target_executor, torchvision_repo, test_file):
         crash_markers or "none",
     )
 
-    # No parsed results means the ops build, nms import gate, or runner never produced
-    # a report (failed to start or crashed).
+    # Crash markers take priority: if the process was killed by a signal, report
+    # the crash explicitly rather than the secondary "no results" symptom.
+    assert not crash_markers, (
+        f"TorchVision UT runner crashed for {test_file} "
+        f"(exit={result.exit_code}, crash_markers={crash_markers}):\n"
+        f"stdout tail: {result.stdout[-4000:]}\nstderr tail: {result.stderr[-4000:]}"
+    )
+
+    # No parsed results means the ops build, nms import gate, or runner never
+    # produced a report (failed to start).
     assert summary.total > 0, (
         f"TorchVision UT suite produced no test results for {test_file} (exit={result.exit_code}); "
-        f"the ops build, nms import check, or runner likely failed to start or crashed:\n"
+        f"the ops build, nms import check, or runner likely failed to start:\n"
         f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-4000:]}"
     )
 
-    # Clean run: no failed/errored cases, zero exit, no crash. exit_code and crash
-    # markers are backstops so a fault that aborts pytest mid-run is never a pass.
-    completed_cleanly = summary.is_clean and result.exit_code == 0 and not crash_markers
+    # Clean run: no failed/errored cases and zero exit.
+    completed_cleanly = summary.is_clean and result.exit_code == 0
     assert completed_cleanly, (
         f"TorchVision UT suite did not complete cleanly for {test_file} "
-        f"(exit={result.exit_code}, crash_markers={crash_markers or 'none'}, "
-        f"failed={summary.failed}, errored={summary.errored}, "
+        f"(exit={result.exit_code}, failed={summary.failed}, errored={summary.errored}, "
         f"passed={summary.passed}, skipped={summary.skipped}):\n"
         f"failed: {summary.failed_names[:50]}\n"
         f"errored: {summary.errored_names[:50]}\n"
