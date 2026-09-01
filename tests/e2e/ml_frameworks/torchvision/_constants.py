@@ -27,3 +27,6 @@ GPU_COUNT_ARG = "all"
 
 # Whole-suite wall-clock cap (seconds): first-run ops build + one UT run.
 RUN_TIMEOUT = 14400.0
+
+# Seconds for the in-container related_commits lookup and ops build baseline.
+_RESOLVE_TIMEOUT = 120.0

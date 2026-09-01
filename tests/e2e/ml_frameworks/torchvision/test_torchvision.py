@@ -3,8 +3,8 @@
 
 """TorchVision P1 image-transform correctness UT suite.
 
-Builds the torchvision ops in-tree and runs the cuda-tagged tensor UT suites in a
-container, parsing the JUnit report so the assertion names any failing GPU case.
+Runs the cuda-tagged tensor UT suites in a container against torchvision ops built
+once per session; the JUnit report is parsed so the assertion names any failing case.
 """
 
 import logging
@@ -53,27 +53,21 @@ def _extract_junit(text: str) -> str:
 @pytest.mark.runtime.medium
 @pytest.mark.parametrize("test_file", TEST_FILES, ids=lambda f: os.path.basename(f)[len("test_") : -len(".py")])
 def test_torchvision_p1_ut_suite(target_executor, torchvision_repo, test_file):
-    """Build the torchvision ops and run one cuda-tagged UT suite; assert it passes.
+    """Run one cuda-tagged UT suite against the pre-built torchvision ops; assert it passes.
 
-    Builds the in-tree ops on first run, gates on a ``torchvision::nms`` import, then
-    runs the cuda-tagged pytest cases and parses the JUnit report per case.
+    The ops are built once per session by the ``torchvision_repo`` fixture.  Each
+    parametrized call runs only the pytest collection and execution step, then
+    parses the JUnit report so the assertion names any failing GPU case.
     """
     suite = os.path.basename(test_file)[len("test_") : -len(".py")]
     junit = f"junit_{suite}.xml"
-    nms_check = "import torch, torchvision; torch.ops.torchvision.nms; print('torchvision_nms_ok')"
 
-    # git clean drops stale hipify/build artifacts so the ops rebuild from the current
-    # checkout; safe.directory lets git run as root on the host-cloned tree. set -e gates
-    # the build, set +e keeps pytest's exit code while still emitting the JUnit report.
+    # The ops are already built by the session-scoped torchvision_repo fixture.
+    # Each parametrized test case only runs pytest; no rebuild or git-clean here,
+    # which prevents the second test from wiping the .so the first test built.
     cmd = "\n".join(
         (
-            "set -e",
             f"cd {torchvision_repo}",
-            f"git config --global --add safe.directory {torchvision_repo}",
-            "git clean -fdx",
-            "python setup.py build_ext --inplace",
-            f'python -c "{nms_check}" | grep -q torchvision_nms_ok',
-            "set +e",
             f"python -m pytest {test_file} -v -k {PYTEST_SELECTOR} --junitxml={junit} -p no:cacheprovider",
             "rc=$?",
             f"echo {_JUNIT_START}",

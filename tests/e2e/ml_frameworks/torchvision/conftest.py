@@ -4,8 +4,8 @@
 """TorchVision area fixtures.
 
 The ``torchvision_repo`` fixture reads the repo URL + commit from the PyTorch
-image's ``related_commits`` manifest, clones that commit, and exposes the checkout
-inside the container via a bind mount.
+image's ``related_commits`` manifest, clones that commit, builds the ops once,
+and exposes the checkout inside the container via a bind mount.
 """
 
 from __future__ import annotations
@@ -14,10 +14,7 @@ import pathlib
 
 import pytest
 
-from tests.e2e.ml_frameworks.torchvision._constants import _CONTAINER_WORKSPACE
-
-# Seconds for the (trivial) in-container related_commits lookup.
-_RESOLVE_TIMEOUT = 120.0
+from tests.e2e.ml_frameworks.torchvision._constants import _CONTAINER_WORKSPACE, _RESOLVE_TIMEOUT
 
 # Read the torchvision repo URL (field 6) and commit (field 5) from the PyTorch
 # image's related_commits manifest, matched to this OS.
@@ -35,6 +32,19 @@ line=$(grep -i torchvision "$f" | grep -i "$osid" | head -1)
 echo "__TV_URL__:$(echo "$line" | cut -d '|' -f 6 | tr -d '[:space:]')"
 echo "__TV_COMMIT__:$(echo "$line" | cut -d '|' -f 5 | tr -d '[:space:]')"
 """
+
+# Build the in-tree ops once; subsequent test parametrizations reuse the .so.
+_BUILD_CMD = "\n".join(
+    (
+        "set -e",
+        "git config --global --add safe.directory {repo}",
+        "cd {repo}",
+        "git clean -fdx",
+        "python setup.py build_ext --inplace",
+        "python -c \"import torch, torchvision; torch.ops.torchvision.nms; print('torchvision_nms_ok')\""
+        " | grep -q torchvision_nms_ok",
+    )
+)
 
 
 def _resolve_url_commit(target_executor) -> tuple[str, str]:
@@ -56,15 +66,31 @@ def _resolve_url_commit(target_executor) -> tuple[str, str]:
     return url, commit
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def torchvision_repo(external_build, compiler_build_dir: str, target_executor) -> str:
-    """Clone torchvision (commit from the container manifest) and return its container path.
+    """Clone and build torchvision once per session; return its container path.
 
-    Reads the commit from the container's related_commits, clones on the host into the
-    bind-mounted output tree, and returns the checkout path inside the container.
+    Reads the commit from the container's related_commits, clones on the host
+    into the bind-mounted output tree, builds the in-tree ops, and returns the
+    checkout path inside the container.  Session scope prevents each parametrized
+    test from rebuilding (and git-cleaning) the shared checkout.
     """
     url, commit = _resolve_url_commit(target_executor)
     dest = pathlib.Path(compiler_build_dir) / "vision"
     repo = external_build.clone_repo(url, dest, ref=commit)
     external_build.assert_license_present(repo)  # provenance guard
-    return f"{_CONTAINER_WORKSPACE}/external/{pathlib.Path(repo).name}"
+
+    container_repo = f"{_CONTAINER_WORKSPACE}/external/{pathlib.Path(repo).name}"
+
+    # Build the ops inside the container exactly once.
+    build_result = target_executor.run(
+        _BUILD_CMD.format(repo=container_repo),
+        timeout=_RESOLVE_TIMEOUT * 10,
+    )
+    if build_result.exit_code != 0:
+        pytest.fail(
+            f"torchvision ops build failed (exit={build_result.exit_code}):\n"
+            f"stdout: {build_result.stdout[-3000:]}\nstderr: {build_result.stderr[-3000:]}"
+        )
+
+    return container_repo
