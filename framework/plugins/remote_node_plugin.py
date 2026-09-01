@@ -951,6 +951,49 @@ def _teardown_monitoring(ctx, multi_slots_list, health_monitors, pre_health_maps
                     logger.info("[health-delta] %s", hm.delta_line(pre, post))
 
 
+def _container_marker_opts(request, config) -> dict | None:
+    """Return container run options from the marker and/or --container-mode, else None.
+
+    ``@pytest.mark.container`` kwargs win; ``--container-mode`` supplies a default so
+    every GPU test runs containerized. ``image``/``runtime`` fall back to the CLI opts.
+    """
+    marker = request.node.get_closest_marker("container")
+    container_mode = config.getoption("--container-mode", default=False)
+    if marker is None and not container_mode:
+        return None
+    opts = dict(marker.kwargs) if marker is not None else {}
+    opts.setdefault("image", config.getoption("--container-image", default="rocm/pytorch:latest"))
+    opts.setdefault("runtime", config.getoption("--container-runtime", default="docker"))
+    return opts
+
+
+def _start_container_wrappers(executors, gpu_index_lists, opts, pull_timeout=1800.0):
+    """Wrap each acquired node executor in a started persistent ``ContainerExecutor``.
+
+    ``gpu_index_lists[i]`` are the GPU ordinals acquired for ``executors[i]``; they are
+    injected as ``ROCR_VISIBLE_DEVICES`` inside that container. The node executor is used
+    as the container's host runner, so the container runs on the acquired node (local or
+    SSH). ``pull_timeout`` bounds the (possibly slow) image pull. Returns the started
+    wrappers, in the same order as *executors*.
+    """
+    from framework.executors.container_executor import ContainerExecutor  # pylint: disable=import-outside-toplevel
+
+    wrappers = []
+    for node_exec, indices in zip(executors, gpu_index_lists, strict=True):
+        wrapper = ContainerExecutor(
+            image=opts["image"],
+            runtime=opts.get("runtime", "docker"),
+            gpu_indices=list(indices),
+            ipc=opts.get("ipc", ""),
+            privileged=bool(opts.get("privileged", False)),
+            extra_run_flags=opts.get("extra_run_flags", ""),
+            host_executor=node_exec,
+        )
+        wrapper.start(pull_timeout=pull_timeout)
+        wrappers.append(wrapper)
+    return wrappers
+
+
 def _acquire_and_yield(
     *,
     multi_list: list[MultiGpuSlots],
@@ -959,6 +1002,7 @@ def _acquire_and_yield(
     config,
     node_pool: NodePool,
     is_multi_node: bool,
+    container_opts: dict | None = None,
 ):
     """Shared generator: set up monitoring, yield NodeExecutorGroup, tear down.
 
@@ -997,11 +1041,24 @@ def _acquire_and_yield(
     executors = [
         m.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log) for m in multi_list
     ]
+    # @pytest.mark.container (single-node only): run every command inside a persistent
+    # container on the acquired node, with the acquired GPU indices injected.
+    container_wrappers = []
+    if container_opts and not is_multi_node:
+        container_wrappers = _start_container_wrappers(
+            executors,
+            [m.gpu_indices for m in multi_list],
+            container_opts,
+            pull_timeout=float(framework_config.therock.build_timeout_secs),
+        )
+    group_executors = container_wrappers or executors
     _t = _time.monotonic()
     try:
-        yield NodeExecutorGroup(executors)
+        yield NodeExecutorGroup(group_executors)
     finally:
         elapsed = _time.monotonic() - _t
+        for _wrapper in container_wrappers:
+            _wrapper.stop()
         _teardown_monitoring(ctx, multi_list, health_monitors, pre_health_maps, bg_monitors, elapsed)
         for _exec in executors:
             if getattr(_exec, "test_logger", None) is not None:
@@ -1332,8 +1389,9 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
         yield NodeExecutorGroup([DryRunExecutor()])
         return
 
-    # --container-mode: container-backed executor, no NodePool slot
-    if config.getoption("--container-mode", default=False):
+    # --container-mode without a NodePool: legacy bare one-shot container fallback.
+    # With a NodePool it flows through the normal acquisition path below instead.
+    if config.getoption("--container-mode", default=False) and node_pool is None:
         from framework.executors.container_executor import ContainerExecutor
 
         image = config.getoption("--container-image", default="rocm/pytorch:latest")
@@ -1354,6 +1412,10 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
     session_log = ctx["session_log"]
     rock_dir = ctx["rock_dir"]
     gpu_count_marker = ctx["gpu_count_marker"]
+
+    # @pytest.mark.container: when present, single-node paths run every command inside a
+    # persistent container on the acquired node (see _start_container_wrappers).
+    container_opts = _container_marker_opts(request, config)
 
     # -------------------------------------------------------------------------
     # gpu_indices path: acquire exactly the listed GPU indices
@@ -1399,6 +1461,7 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
             config=config,
             node_pool=node_pool,
             is_multi_node=False,
+            container_opts=container_opts,
         )
         return
 
@@ -1434,6 +1497,7 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
             config=config,
             node_pool=node_pool,
             is_multi_node=True,
+            container_opts=container_opts,
         )
         return
 
@@ -1454,6 +1518,7 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
             config=config,
             node_pool=node_pool,
             is_multi_node=False,
+            container_opts=container_opts,
         )
         return
 
@@ -1472,11 +1537,24 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
         ctx, framework_config, [slot_as_multi], is_multi_node_shape=False
     )
     _single_exec = slot.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log)
+    # @pytest.mark.container: run every command inside a persistent container on this
+    # node, with the acquired GPU index injected as ROCR_VISIBLE_DEVICES.
+    _container_wrappers = []
+    if container_opts:
+        _container_wrappers = _start_container_wrappers(
+            [_single_exec],
+            [[slot.gpu_info.index]],
+            container_opts,
+            pull_timeout=float(framework_config.therock.build_timeout_secs),
+        )
+    _group_execs = _container_wrappers or [_single_exec]
     _t = _time.monotonic()
     try:
-        yield NodeExecutorGroup([_single_exec])
+        yield NodeExecutorGroup(_group_execs)
     finally:
         elapsed = _time.monotonic() - _t
+        for _wrapper in _container_wrappers:
+            _wrapper.stop()
         _teardown_monitoring(ctx, [slot_as_multi], health_monitors, pre_health_maps, bg_monitors, elapsed)
         if getattr(_single_exec, "test_logger", None) is not None:
             _single_exec.test_logger.close()
@@ -1549,6 +1627,7 @@ def multi_gpu_fixture(request, framework_config, node_pool):
         config=config,
         node_pool=node_pool,
         is_multi_node=False,
+        container_opts=_container_marker_opts(request, config),
     )
 
 
@@ -1627,4 +1706,5 @@ def multi_node_fixture(request, framework_config, node_pool):
         config=config,
         node_pool=node_pool,
         is_multi_node=True,
+        container_opts=_container_marker_opts(request, config),
     )
