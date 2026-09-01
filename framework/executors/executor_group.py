@@ -38,7 +38,7 @@ from collections.abc import Iterator
 
 from framework.common.helpers import ExecutionResult
 from framework.executors.abstract_executor import AbstractExecutor
-from framework.executors.background_process import BackgroundProcess
+from framework.executors.background_process import AbstractBackgroundProcess
 
 
 class NodeExecutorGroup:
@@ -129,7 +129,7 @@ class NodeExecutorGroup:
     # Executor delegation — forwards to the first executor
     # ------------------------------------------------------------------
 
-    def run(self, command: str, timeout: float | None = None) -> ExecutionResult:
+    def run(self, command: str, timeout: float | None = None, *, stream: bool = False) -> ExecutionResult:
         """Execute *command* via the first executor in the group.
 
         Correct for single-GPU and multi-GPU-same-node modes where the group
@@ -139,18 +139,22 @@ class NodeExecutorGroup:
         Args:
             command: Shell command string to execute.
             timeout: Maximum seconds to wait (forwarded to the inner executor).
+            stream:  When True, request live output/progress from the inner
+                     executor when supported.
 
         Returns:
             ``ExecutionResult`` from the first executor.
         """
-        return self._executors[0].run(command, timeout=timeout)
+        return self._executors[0].run(command, timeout=timeout, stream=stream)
 
     def start_background(
         self,
         command: str,
         timeout: float | None = None,
         log_path: str | None = None,
-    ) -> BackgroundProcess:
+        console_label: str | None = None,
+        stream: bool = False,
+    ) -> AbstractBackgroundProcess:
         """Start *command* in the background via the first executor.
 
         See ``AbstractExecutor.start_background()`` for full semantics.
@@ -159,8 +163,12 @@ class NodeExecutorGroup:
             command:  Shell command to launch.
             timeout:  Stop-grace-period (forwarded to the inner executor).
             log_path: If given, subprocess output is appended to this file.
+            console_label: Human-readable label for live output attribution.
+            stream:   SSH only — emit live output to the ``rocm.test`` logger.
 
         Returns:
             ``BackgroundProcess`` handle.
         """
-        return self._executors[0].start_background(command, timeout=timeout, log_path=log_path)
+        return self._executors[0].start_background(
+            command, timeout=timeout, log_path=log_path, console_label=console_label, stream=stream
+        )

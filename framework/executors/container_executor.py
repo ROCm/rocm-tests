@@ -197,7 +197,7 @@ class ContainerExecutor(AbstractExecutor):
     # AbstractExecutor contract — one-shot container execution
     # ------------------------------------------------------------------
 
-    def run(self, command: str, timeout: float | None = None) -> ExecutionResult:
+    def run(self, command: str, timeout: float | None = None, *, stream: bool = False) -> ExecutionResult:
         """Run *command* in a one-shot container with AMD GPU device passthrough.
 
         Equivalent to::
@@ -217,6 +217,8 @@ class ContainerExecutor(AbstractExecutor):
             command: Shell command string to execute inside the container.
             timeout: Maximum seconds before the container is force-killed
                      (default 300 s).
+            stream:  When True, request live stdout streaming from the host
+                     executor for this container command.
 
         Returns:
             ExecutionResult with exit_code, stdout, stderr, and wall-clock
@@ -224,7 +226,7 @@ class ContainerExecutor(AbstractExecutor):
         """
         cli = self._assemble_run_command(command)
         logger.debug("ContainerExecutor.run: %s", cli)
-        return self._host.run(cli, timeout=timeout or 300.0)
+        return self._host.run(cli, timeout=timeout or 300.0, stream=stream)
 
     # ------------------------------------------------------------------
     # Exec into a running container

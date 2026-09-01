@@ -70,6 +70,8 @@ _COMMON_INCLUDE = "tests/common/include"
 # HIP-Examples is cloned at runtime; keep the ref overridable for reproducibility.
 _HIP_EXAMPLES_URL = "https://github.com/ROCm/HIP-Examples.git"
 _HIP_EXAMPLES_REF = os.environ.get("ROCM_TEST_HIP_EXAMPLES_REF", "master")
+_ROCM_EXAMPLES_URL = "https://github.com/ROCm/rocm-examples.git"
+_ROCM_EXAMPLES_REF = os.environ.get("ROCM_TEST_ROCM_EXAMPLES_REF", "amd-mainline")
 
 
 # ---------------------------------------------------------------------------
@@ -208,3 +210,35 @@ def matrixmultiplication_binary(compile_binary, hip_examples_repo) -> str:
         output_name="MatrixMultiplication",
         subdir=_SUBDIR,
     )
+
+
+@pytest.fixture(scope="session")
+def rocm_examples_repo(external_build, compiler_build_dir: str):
+    """Clone ROCm/rocm-examples once per session and return the checkout path."""
+    dest = pathlib.Path(compiler_build_dir) / _SUBDIR / "rocm-examples"
+    repo = external_build.clone_repo(_ROCM_EXAMPLES_URL, dest, ref=_ROCM_EXAMPLES_REF)
+    external_build.assert_license_present(repo)
+    return repo
+
+
+@pytest.fixture(scope="session")
+def hip_basic_spirv_build(cmake_build_dir, rock_dir: str, rocm_examples_repo, built_binary):
+    """Return a factory that builds one ROCm/rocm-examples HIP-Basic sample for SPIR-V."""
+
+    def _build(sample_relpath: str, exec_name: str) -> str:
+        sample_src = rocm_examples_repo / "HIP-Basic" / sample_relpath
+        build_dir = cmake_build_dir(
+            src=str(sample_src),
+            subdir="compiler/hip_basic_spirv/" + sample_relpath,
+            gpu_arch=None,
+            extra_cmake_args=[
+                "-DCMAKE_HIP_ARCHITECTURES=amdgcnspirv",
+                f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}",
+            ],
+            compiler_mode="optional_cxx_hip",
+            artifact=exec_name,
+            label="hip_basic_spirv/" + sample_relpath,
+        )
+        return built_binary(os.path.join(build_dir, exec_name), exec_name)
+
+    return _build

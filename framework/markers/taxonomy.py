@@ -135,9 +135,42 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # QUDA lattice-QCD HPC suite: third-party CMake build + MPI ctest run.
+    # Nightly by default; hw.multi_gpu is the default, but the test overrides hw.*
+    # to hw.gpu when QUDA_NUM_GPUS=1 (single-GPU mode).
+    "tests/e2e/hpc/quda": [
+        "hw.multi_gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/rocprim": [
         "hw.gpu",
         "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # CRIU checkpoint/restore suite: GPU workloads checkpointed and restored with CRIU +
+    # amdgpu_plugin. Weekly cadence (happy path is a soak run); runtime.* is per test function.
+    "tests/e2e/recovery/criu": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/rocm_examples": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/hip_directed": [
+        "hw.gpu",
+        "layer.runtime",
         "ci.nightly",
         "e2e.stack",
         "os.linux",

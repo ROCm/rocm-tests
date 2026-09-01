@@ -74,7 +74,9 @@ def pytest_configure(config: pytest.Config) -> None:
             or os.environ.get("ROCM_TEST_THEROCK_ROCK_DIR")
         )
         cfg = load_config(config_path=config.getoption("--rocm-config", default=None))
-        config._gpu_detector = GpuDetector(rock_dir=rock_dir, artifact_dir=cfg.framework.artifact_dir)  # type: ignore[attr-defined]
+        config._gpu_detector = GpuDetector(  # type: ignore[attr-defined]
+            rock_dir=rock_dir, artifact_dir=cfg.framework.artifact_dir
+        )
         logger.info(
             "GPU mode: real hardware detection (rock_dir=%s)",
             rock_dir or "not set",
