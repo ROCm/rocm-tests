@@ -30,27 +30,17 @@ int g_skipped = 0;
     } while (0)
 
 struct KernelSymbol {
-    // Two mangled-name candidates per kernel: index 0 = standard build
-    // (ncclDevKernelArgsStorage<4096>), index 1 = WarpSpeed/gfx950 build
-    // (ncclDevKernelArgsStorage<5120>).  The presence check accepts either.
-    const char* mangled[2];
+    const char* mangled;
     const char* display;
     int unrollFactor;
 };
 
-// The kernel function names are identical across RCCL versions, but the
-// argument storage size changed between standard (4096 B) and WarpSpeed/gfx950
-// (5120 B) builds, which alters the Itanium C++ ABI mangled names.
-// Both variants are listed so the test accepts either librccl.so build.
 constexpr KernelSymbol kKernels[] = {
-    {{"_Z23ncclDevKernel_Generic_124ncclDevKernelArgsStorageILm4096EE",
-      "_Z23ncclDevKernel_Generic_124ncclDevKernelArgsStorageILm5120EE"},
+    {"_Z23ncclDevKernel_Generic_124ncclDevKernelArgsStorageILm4096EE",
      "ncclDevKernel_Generic_1", 1},
-    {{"_Z23ncclDevKernel_Generic_224ncclDevKernelArgsStorageILm4096EE",
-      "_Z23ncclDevKernel_Generic_224ncclDevKernelArgsStorageILm5120EE"},
+    {"_Z23ncclDevKernel_Generic_224ncclDevKernelArgsStorageILm4096EE",
      "ncclDevKernel_Generic_2", 2},
-    {{"_Z23ncclDevKernel_Generic_424ncclDevKernelArgsStorageILm4096EE",
-      "_Z23ncclDevKernel_Generic_424ncclDevKernelArgsStorageILm5120EE"},
+    {"_Z23ncclDevKernel_Generic_424ncclDevKernelArgsStorageILm4096EE",
      "ncclDevKernel_Generic_4", 4},
 };
 constexpr size_t kNumKernels = sizeof(kKernels) / sizeof(kKernels[0]);
@@ -170,22 +160,13 @@ void test_KernelSymbolPresence() {
 
     bool allFound = true;
     for (size_t i = 0; i < kNumKernels; ++i) {
-        void* sym = nullptr;
-        const char* foundMangled = nullptr;
-        for (const char* candidate : kKernels[i].mangled) {
-            sym = dlsym(handle, candidate);
-            if (sym) {
-                foundMangled = candidate;
-                break;
-            }
-        }
+        void* sym = dlsym(handle, kKernels[i].mangled);
         if (sym) {
-            printf("  OK   %-35s  UNROLL=%d  (%s)\n",
-                   kKernels[i].display, kKernels[i].unrollFactor, foundMangled);
+            printf("  OK   %-35s  UNROLL=%d\n",
+                   kKernels[i].display, kKernels[i].unrollFactor);
         } else {
-            fprintf(stderr, "  MISS %-35s  UNROLL=%d  NOT FOUND (tried %zu candidate(s))\n",
-                    kKernels[i].display, kKernels[i].unrollFactor,
-                    sizeof(kKernels[i].mangled) / sizeof(kKernels[i].mangled[0]));
+            fprintf(stderr, "  MISS %-35s  UNROLL=%d  NOT FOUND\n",
+                    kKernels[i].display, kKernels[i].unrollFactor);
             allFound = false;
         }
     }
@@ -265,9 +246,8 @@ void test_UnrollOverride() {
         return;
     }
 
-    // RCCL supports RCCL_UNROLL_FACTOR 0-5 mapping to unroll factors 1, 2, 4, 8, 16, 32.
     struct { int envVal; int expectedUnroll; } cases[] = {
-        {0, 1}, {1, 2}, {2, 4}, {3, 8}, {4, 16}, {5, 32},
+        {0, 1}, {1, 2}, {2, 4},
     };
 
     bool allPassed = true;
@@ -325,9 +305,7 @@ void test_InvalidUnrollRejected() {
         return;
     }
 
-    // RCCL supports RCCL_UNROLL_FACTOR 0-5 (unroll factors 1, 2, 4, 8, 16, 32).
-    // Only out-of-range values (< 0 or > 5) should be rejected.
-    int badValues[] = {6, 7, 99};
+    int badValues[] = {3, 4, 5, 99};
     bool allRejected = true;
 
     for (int val : badValues) {
@@ -372,12 +350,11 @@ void test_CollectiveCorrectnessAllUnrolls() {
         return;
     }
 
-    // Test all 6 valid RCCL_UNROLL_FACTOR values (0-5 → unroll 1, 2, 4, 8, 16, 32).
-    int overrides[] = {0, 1, 2, 3, 4, 5};
-    int unrollLabels[] = {1, 2, 4, 8, 16, 32};
+    int overrides[] = {0, 1, 2}; // unroll 1, 2, 4
+    int unrollLabels[] = {1, 2, 4};
     bool allPassed = true;
 
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 3; ++i) {
         std::string cmd = "env RCCL_UNROLL_FACTOR=" + std::to_string(overrides[i]) +
                           " " + shellQuote(perfBin) + " -b 8 -e 4M -g 1";
         std::string output;

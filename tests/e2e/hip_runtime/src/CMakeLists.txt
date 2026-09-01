@@ -29,15 +29,11 @@ endif()
 # fixtures to configure and build each subset independently.
 option(BUILD_HOST_ONLY_TESTS  "Build host-only (driver-API) tests"  ON)
 option(BUILD_HIP_KERNEL_TESTS "Build HIP-kernel (offload) tests"    ON)
-# Opt-in kernel binaries built by their own dedicated fixtures (default OFF so
-# the existing subset fixtures above are unaffected).
-option(BUILD_DEVICE_ALLOC_TEST   "Build device_side_alloc"      OFF)
-option(BUILD_MULTI_INSTANCE_TEST "Build hip_multi_instance_app" OFF)
 
 # The HIP language is only needed when building kernel tests.
 # Declaring it unconditionally causes cmake to require HIP_ARCHITECTURES even
 # for the host-only target, which fails when GPU_ARCH is not supplied.
-if(BUILD_HIP_KERNEL_TESTS OR BUILD_DEVICE_ALLOC_TEST OR BUILD_MULTI_INSTANCE_TEST)
+if(BUILD_HIP_KERNEL_TESTS)
   if(NOT GPU_ARCH)
     message(FATAL_ERROR "GPU_ARCH is not set. Pass -DGPU_ARCH=<arch> (e.g. gfx942) to cmake.")
   endif()
@@ -61,18 +57,4 @@ if(BUILD_HIP_KERNEL_TESTS)
   add_executable(multi_stream_serialization multi_stream_serialization.cpp)
   target_compile_options(multi_stream_serialization PRIVATE -O3 "--offload-arch=${GPU_ARCH}")
   target_link_libraries(multi_stream_serialization PRIVATE hip::host)
-endif()
-
-if(BUILD_DEVICE_ALLOC_TEST)
-  set_source_files_properties(device_side_alloc.cpp PROPERTIES LANGUAGE HIP)
-  add_executable(device_side_alloc device_side_alloc.cpp)
-  target_compile_options(device_side_alloc PRIVATE -O2 "--offload-arch=${GPU_ARCH}")
-  target_link_libraries(device_side_alloc PRIVATE hip::host)
-endif()
-
-if(BUILD_MULTI_INSTANCE_TEST)
-  set_source_files_properties(hip_multi_instance_app.cpp PROPERTIES LANGUAGE HIP)
-  add_executable(hip_multi_instance_app hip_multi_instance_app.cpp)
-  target_compile_options(hip_multi_instance_app PRIVATE -O2 "--offload-arch=${GPU_ARCH}")
-  target_link_libraries(hip_multi_instance_app PRIVATE hip::host)
 endif()

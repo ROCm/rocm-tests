@@ -533,27 +533,17 @@ bool unbalanced_workload_with_rocsolver(int N = 1024, int num_runs = 100) {
   std::cout << "Total Time (Kernel + LU):" << std::endl;
   bool test_passed = false;
 
-  // TEST CRITERIA: Split barrier should be no more than 0.5% slower than grid.sync().
-  // A strict equality check is too sensitive to measurement noise (clock jitter,
-  // DRAM refresh, hot-cache bias from sequential benchmark ordering). 0.5% tolerance
-  // absorbs noise while still catching functional regressions.
-  constexpr double SPLIT_BARRIER_REGRESSION_TOLERANCE_PCT = 0.5;
-  if (total_diff <= SPLIT_BARRIER_REGRESSION_TOLERANCE_PCT) {
-    if (split_total <= old_total) {
-      std::cout << "  Split barrier API is faster overall by "
-                << std::abs(total_diff) << "%" << std::endl;
-      std::cout << "   Total time saved: " << (old_total - split_total) << " μs"
-                << std::endl;
-    } else {
-      std::cout << "  Split barrier API within tolerance ("
-                << total_diff << "% slower, limit "
-                << SPLIT_BARRIER_REGRESSION_TOLERANCE_PCT << "%)" << std::endl;
-    }
+  // TEST CRITERIA: Split barrier should be faster or equal (shows benefit of overlap)
+  // Expected: 4-8% improvement because light threads do useful work during barrier wait
+  if (split_total <= old_total) {
+    std::cout << "  Split barrier API is faster overall by "
+              << std::abs(total_diff) << "%" << std::endl;
+    std::cout << "   Total time saved: " << (old_total - split_total) << " μs"
+              << std::endl;
     test_passed = true;
   } else {
     std::cout << "   Grid.sync() is faster overall by " << std::abs(total_diff)
-              << "% — exceeds " << SPLIT_BARRIER_REGRESSION_TOLERANCE_PCT
-              << "% tolerance" << std::endl;
+              << "%" << std::endl;
   }
 
   std::cout << std::endl;

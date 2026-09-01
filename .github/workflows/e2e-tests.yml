@@ -141,18 +141,18 @@ jobs:
           echo "target_available: ${TARGET_AVAILABLE}"
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         id: setup-python
         with:
           python-version: 3.12
 
       - name: Checkout rocm-tests
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
 
       - name: Checkout TheRock
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: "ROCm/TheRock"
           ref: main
@@ -177,9 +177,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd TheRock
-          python3 -m pip install --root-user-action=ignore --no-cache-dir -r requirements-test.txt
+          python3 -m pip install --root-user-action=ignore -r requirements-test.txt
 
-          COMMON_FLAGS="--artifact-group ${ARTIFACT_GROUP} --amdgpu-targets ${GPU_ARCH} --tests --blas --fft --hipdnn --miopen --miopenprovider --rocdecode --rocjpeg --rocprofiler-compute --rocprofiler-sdk --rocprofiler-systems --prim --rand --rocwmma --hipblasltprovider --libhipcxx --rccl --output-dir ../therock_build"
+          COMMON_FLAGS="--artifact-group ${ARTIFACT_GROUP} --amdgpu-targets ${GPU_ARCH} --tests --blas --prim --rand --rocwmma --hipblasltprovider --libhipcxx --rccl --output-dir ../therock_build"
 
           if [ "${SOURCE_REPO}" = "ROCm/rockrel" ]; then
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
@@ -208,12 +208,7 @@ jobs:
               --output-dir ../therock_build \
               --flatten \
               '_dev' \
-              'hipfile_lib' \
-              'hipfile_run' \
-              'hiptensor_lib' \
-              'rocalution_lib' \
-              'hipify_run' \
-              'core-hip_run'
+              'hipify_run'
           fi
 
       - name: Install uv
@@ -255,15 +250,12 @@ jobs:
             tests/e2e/rccl/ \
             tests/e2e/rocm_libs/ \
             tests/e2e/rocprim/ \
-            tests/e2e/rocm_examples/ \
-            tests/e2e/hip_directed/ \
             --rock-dir=therock_build \
             --gpu-arch=${GPU_ARCH} \
             --html=nightly_report.html --self-contained-html \
             --md-report --md-report-verbose=1 --md-report-color=never \
             --md-report-flavor gfm --md-report-output=md_summary.md --md-report-tee \
             --md-report-show-duration --tb=short \
-            --json-report --json-report-file=test_report.json \
             -v \
             -m "${TESTS_FILTERS}" \
             "${KEYWORD_ARGS[@]}"
@@ -394,7 +386,7 @@ jobs:
       - name: Upload test artifacts
         if: always()
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nightly-artifacts-${{ inputs.name }}-${{ github.run_id }}
           path: |
@@ -407,19 +399,10 @@ jobs:
 
       - name: Upload test counts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-counts-${{ inputs.name }}
           path: test-counts/counts.json
-          retention-days: 1
-          if-no-files-found: ignore
-
-      - name: Upload json test report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: test-report-${{ inputs.name }}
-          path: test_report.json
           retention-days: 1
           if-no-files-found: ignore
 

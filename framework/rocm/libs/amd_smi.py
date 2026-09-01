@@ -4,23 +4,9 @@
 """
 amd_smi.py -- AMD GPU metrics via amd-smi JSON output.
 
-Minimum supported version: ROCm 7.1.0 / amd-smi 26+.
-
 AmdSmiMetrics: parses temperature, VRAM, utilization, ECC, and clock metrics.
-Executor-agnostic: works with LocalExecutor, SshExecutor, and ContainerExecutor
-via the same CLI invocation — no separate code path for local vs remote.
-
-ROCm 7.1.0+ JSON schema (amd-smi 26+):
-  amd-smi static  → {"gpu_data": [{...}, ...]}
-  amd-smi metric  → {"gpu_data": [{...}, ...]}
-
-  VRAM total:    gpu_data[N].vram.size           → {"value": N, "unit": "MB"}
-  VRAM usage:    gpu_data[N].vram.{vram_total, vram_used, vram_free}
-  Architecture:  gpu_data[N].asic.target_graphics_version  → "gfx942"
-  Temperature:   gpu_data[N].temperature.hotspot_temperature → {"value": N, "unit": "C"}
-  Utilization:   gpu_data[N].activity.gfx_activity          → {"value": N, "unit": "%"}
-  ECC:           gpu_data[N].ecc.total_correctable_count     → int
-  Clock state:   gpu_data[N].clock.performance_level         → str
+Handles schema variants across ROCm versions — see _get() for key-path fallbacks.
+Executor-agnostic: works with LocalExecutor, SshExecutor, and ContainerExecutor.
 """
 
 from __future__ import annotations
@@ -98,33 +84,17 @@ class GpuVramInfo:
 
 
 # ---------------------------------------------------------------------------
-# Schema helpers (ROCm 7.1.0+ / amd-smi 26+)
+# Shared unit-conversion helper
 # ---------------------------------------------------------------------------
-
-
-def _unwrap_entries(data: Any) -> list[dict]:
-    """Extract the device list from the ``gpu_data`` wrapper (amd-smi 26+ / ROCm 7.1.0+).
-
-    Both ``amd-smi static`` and ``amd-smi metric`` return
-    ``{"gpu_data": [{...}, ...]}`` in ROCm 7.1.0+.
-
-    Args:
-        data: Parsed top-level JSON value (dict or list).
-
-    Returns:
-        List of per-device entry dicts.  Empty list on unexpected structure.
-    """
-    if isinstance(data, dict):
-        return list(data.get("gpu_data", []))
-    # Guard against unexpected bare-list responses.
-    return list(data) if isinstance(data, list) else []
 
 
 def _to_mb(node: Any) -> int:
     """Convert a VRAM value from amd-smi JSON to integer MB.
 
-    ROCm 7.1.0+ always returns ``{"value": N, "unit": "MB"}`` dicts for VRAM
-    fields.  A plain int is accepted as a fallback (value already in MB).
+    Handles three schema variants across ROCm versions:
+    - ``{"value": N, "unit": "MB"}`` dict  (ROCm 6.x nested)
+    - plain int already in MB              (ROCm 5.x flat)
+    - plain int in bytes (> 1 GiB)        (convert ÷ 1 MiB)
 
     Args:
         node: Raw value from the amd-smi JSON tree.
@@ -134,30 +104,49 @@ def _to_mb(node: Any) -> int:
     """
     if isinstance(node, dict):
         return int(node.get("value", 0))
-    if isinstance(node, (int, float)):
-        return int(node)
+    if isinstance(node, int):
+        return node // (1024 * 1024) if node > 1024 * 1024 else node
     return 0
 
 
-def _to_scalar(node: Any) -> int | None:
-    """Extract a scalar integer from a ``{"value": N}`` dict or a plain int.
+# ---------------------------------------------------------------------------
+# Core cascade helper
+# ---------------------------------------------------------------------------
 
-    Used for temperature and other metric fields that ROCm 7.1.0+ returns as
-    ``{"value": N, "unit": "..."}`` objects.
+
+def _get(data: dict, *paths: tuple, default: Any = None) -> Any:
+    """Try each key-path in order; return the first non-None result or *default*.
+
+    Insulates callers from JSON schema differences across ROCm versions.  Each
+    *path* is a tuple of keys to traverse.  The first path that resolves to a
+    non-None value wins.
 
     Args:
-        node: Raw value from the amd-smi JSON tree.
+        data:    Top-level dict from parsed JSON output.
+        *paths:  Key-path tuples to attempt in priority order.
+        default: Value returned when all paths fail (default: None).
 
     Returns:
-        Integer value, or None if *node* is None or unrecognised.
+        First non-None value found by traversing any path, or *default*.
+
+    Example::
+
+        temp = _get(entry,
+            ("temperature", "hotspot_temperature"),   # ROCm 6.x
+            ("thermal", "gfx", "value"),              # ROCm 5.x
+            ("temperature", "edge_temperature"),       # fallback
+        )
     """
-    if node is None:
-        return None
-    if isinstance(node, dict):
-        return int(node.get("value", 0))
-    if isinstance(node, (int, float)):
-        return int(node)
-    return None
+    for path in paths:
+        node = data
+        try:
+            for key in path:
+                node = node[key]
+            if node is not None:
+                return node
+        except (KeyError, TypeError, IndexError):
+            continue
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +201,8 @@ def require_amd_smi_version(executor: AbstractExecutor, major: int, minor: int =
 def list_devices(executor: AbstractExecutor) -> list[GpuDeviceInfo]:
     """Return device descriptors for all AMD GPUs visible to the executor.
 
-    Parses ``amd-smi static --json`` using the ROCm 7.1.0+ schema.
-    Works identically for local and remote executors.
+    Handles ``amd-smi static --json`` schema differences across ROCm versions
+    using the ``_get()`` cascade helper.
 
     Args:
         executor: Any executor with a ``.run(command)`` method.
@@ -231,18 +220,39 @@ def list_devices(executor: AbstractExecutor) -> list[GpuDeviceInfo]:
         logger.warning("amd-smi static failed (exit %d): %s", result.exit_code, result.stderr)
         return []
     try:
-        entries = _unwrap_entries(json.loads(result.stdout))
+        raw: list[dict] = json.loads(result.stdout)
         devices = []
-        for i, dev in enumerate(entries):
-            asic = dev.get("asic", {})
+        for i, dev in enumerate(raw):
+            # VRAM total: ROCm 6.x nested dict vs 5.x flat MB int
+            vram_raw = _get(
+                dev,
+                ("vram", "total"),  # 6.x nested
+                ("vram_total_mb",),  # 5.x flat
+                ("vram_info", "vram_total_mb"),  # alternative
+            )
+            vram_total = _to_mb(vram_raw)
+
+            # BDF: top-level in 6.x, nested under "gpu" in 5.x
+            bdf = _get(
+                dev,
+                ("bdf",),
+                ("gpu", "bdf"),
+                default="",
+            )
+
             devices.append(
                 GpuDeviceInfo(
                     index=i,
-                    arch=asic.get("target_graphics_version", "unknown"),
-                    vram_total=_to_mb(dev.get("vram", {}).get("size", 0)),
-                    bdf=dev.get("bdf", ""),
-                    driver_ver=dev.get("driver", {}).get("driver_version", "unknown"),
-                    asic_serial=asic.get("asic_serial", "unknown"),
+                    arch=_get(
+                        dev,
+                        ("asic", "target_graphics_version"),
+                        ("asic", "arch"),
+                        default="unknown",
+                    ),
+                    vram_total=int(vram_total),
+                    bdf=str(bdf),
+                    driver_ver=_get(dev, ("driver", "driver_version"), default="unknown"),
+                    asic_serial=_get(dev, ("asic", "asic_serial"), default="unknown"),
                 )
             )
         return devices
@@ -258,6 +268,10 @@ def list_devices(executor: AbstractExecutor) -> list[GpuDeviceInfo]:
 
 def query_gpu_temp(executor: AbstractExecutor, gpu_index: int = 0) -> int | None:
     """Return the hot-spot temperature in Celsius for *gpu_index*.
+
+    Handles ``temperature.hotspot_temperature`` (ROCm 6.x),
+    ``thermal.gfx.value`` (ROCm 5.x), and ``temperature.edge_temperature``
+    (fallback) schema variants.
 
     Args:
         executor:  Any executor with a ``.run()`` method.
@@ -279,10 +293,22 @@ def query_vram_usage(executor: AbstractExecutor, gpu_index: int = 0) -> GpuVramI
     Returns:
         GpuVramInfo with total/used/free in MB, or None if unavailable.
     """
-    entry = _run_metric_json(executor, gpu_index)
-    if entry is None:
+    result = executor.run(f"amd-smi metric --gpu {gpu_index} --json")
+    if not result.ok:
         return None
-    return _parse_vram(entry, gpu_index)
+    try:
+        data = json.loads(result.stdout)
+        entry = data[0] if isinstance(data, list) else data
+        vram = entry.get("vram", {})
+        return GpuVramInfo(
+            index=gpu_index,
+            total_mb=_to_mb(_get(vram, ("vram_total",), ("total",), default=0)),
+            used_mb=_to_mb(_get(vram, ("vram_used",), ("used",), default=0)),
+            free_mb=_to_mb(_get(vram, ("vram_free",), ("free",), default=0)),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError, IndexError) as exc:
+        logger.warning("Failed to parse VRAM info for GPU %d: %s", gpu_index, exc)
+        return None
 
 
 def query_ecc_errors(executor: AbstractExecutor, gpu_index: int = 0) -> int | None:
@@ -295,14 +321,26 @@ def query_ecc_errors(executor: AbstractExecutor, gpu_index: int = 0) -> int | No
     Returns:
         Total correctable ECC error count, or None if unavailable.
     """
-    entry = _run_metric_json(executor, gpu_index)
-    if entry is None:
+    result = executor.run(f"amd-smi metric --gpu {gpu_index} --json")
+    if not result.ok:
         return None
-    return _parse_ecc(entry)
+    try:
+        data = json.loads(result.stdout)
+        entry = data[0] if isinstance(data, list) else data
+        ecc = entry.get("ecc", {})
+        return _get(  # type: ignore[no-any-return]
+            ecc,
+            ("total_correctable_count",),
+            ("correctable_count",),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError, IndexError):
+        return None
 
 
 def query_gpu_utilization(executor: AbstractExecutor, gpu_index: int = 0) -> int | None:
     """Return the GFX compute utilization percentage for *gpu_index*.
+
+    Handles schema differences across ROCm versions using the ``_get()`` cascade.
 
     Args:
         executor:  Any executor with a ``.run()`` method.
@@ -311,10 +349,28 @@ def query_gpu_utilization(executor: AbstractExecutor, gpu_index: int = 0) -> int
     Returns:
         Integer percentage (0-100), or None if unavailable.
     """
-    entry = _run_metric_json(executor, gpu_index)
-    if entry is None:
+    result = executor.run(f"amd-smi metric --gpu {gpu_index} --json")
+    if not result.ok:
         return None
-    return _parse_util(entry)
+    try:
+        data = json.loads(result.stdout)
+        entry = data[0] if isinstance(data, list) else data
+        raw = _get(
+            entry,
+            ("activity", "gfx_activity"),  # ROCm 6.x
+            ("usage", "gfx_usage"),  # ROCm 5.x alt
+            ("gfx_activity",),  # flat fallback
+            default=None,
+        )
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            raw = raw.get("value", raw)
+        val = int(str(raw).rstrip("%").strip())
+        return max(0, min(100, val))
+    except (json.JSONDecodeError, KeyError, TypeError, IndexError, ValueError) as exc:
+        logger.debug("Failed to parse utilization for GPU %d: %s", gpu_index, exc)
+        return None
 
 
 def query_clock_state(executor: AbstractExecutor, gpu_index: int = 0) -> str | None:
@@ -327,10 +383,19 @@ def query_clock_state(executor: AbstractExecutor, gpu_index: int = 0) -> str | N
     Returns:
         Performance level string (e.g. ``"auto"``, ``"high"``), or None.
     """
-    entry = _run_metric_json(executor, gpu_index)
-    if entry is None:
+    result = executor.run(f"amd-smi metric --gpu {gpu_index} --json")
+    if not result.ok:
         return None
-    return _parse_clock(entry)
+    try:
+        data = json.loads(result.stdout)
+        entry = data[0] if isinstance(data, list) else data
+        return _get(  # type: ignore[no-any-return]
+            entry,
+            ("clock", "performance_level"),
+            ("clocks", "performance_level"),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError, IndexError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -349,29 +414,34 @@ def _run_metric_json(executor: AbstractExecutor, gpu_index: int) -> dict | None:
         gpu_index: AMD GPU ordinal to query.
 
     Returns:
-        Parsed first entry dict from the ``gpu_data`` array, or None on any failure.
+        Parsed first entry dict from the JSON array, or None on any failure.
     """
     result = executor.run(f"amd-smi metric --gpu {gpu_index} --json")
     if not result.ok:
         return None
     try:
-        entries = _unwrap_entries(json.loads(result.stdout))
-        return entries[0] if entries else None
+        data = json.loads(result.stdout)
+        return data[0] if isinstance(data, list) else data  # type: ignore[no-any-return]
     except (json.JSONDecodeError, TypeError):
         return None
 
 
 def _parse_temp(entry: dict) -> int | None:
     """Extract the hot-spot temperature (Celsius) from a pre-parsed metric entry dict."""
-    return _to_scalar(entry.get("temperature", {}).get("hotspot_temperature"))
+    return _get(  # type: ignore[no-any-return]
+        entry,
+        ("temperature", "hotspot_temperature"),  # ROCm 6.x
+        ("thermal", "gfx", "value"),  # ROCm 5.x
+        ("temperature", "edge_temperature"),  # fallback
+    )
 
 
 def _parse_vram(entry: dict, gpu_index: int) -> GpuVramInfo | None:
     """Extract VRAM usage from a pre-parsed metric entry dict."""
     vram = entry.get("vram", {})
-    total = _to_mb(vram.get("vram_total", 0))
-    used = _to_mb(vram.get("vram_used", 0))
-    free = _to_mb(vram.get("vram_free", 0))
+    total = _to_mb(_get(vram, ("vram_total",), ("total",), default=0))
+    used = _to_mb(_get(vram, ("vram_used",), ("used",), default=0))
+    free = _to_mb(_get(vram, ("vram_free",), ("free",), default=0))
     if total == 0 and used == 0:
         return None
     return GpuVramInfo(index=gpu_index, total_mb=total, used_mb=used, free_mb=free)
@@ -379,23 +449,41 @@ def _parse_vram(entry: dict, gpu_index: int) -> GpuVramInfo | None:
 
 def _parse_util(entry: dict) -> int | None:
     """Extract GFX compute utilization (0-100 %) from a pre-parsed metric entry dict."""
-    raw = entry.get("activity", {}).get("gfx_activity")
-    val = _to_scalar(raw)
-    if val is None:
+    raw = _get(
+        entry,
+        ("activity", "gfx_activity"),  # ROCm 6.x
+        ("usage", "gfx_usage"),  # ROCm 5.x alt
+        ("gfx_activity",),  # flat fallback
+        default=None,
+    )
+    if raw is None:
         return None
-    return max(0, min(100, val))
+    if isinstance(raw, dict):
+        raw = raw.get("value", raw)
+    try:
+        val = int(str(raw).rstrip("%").strip())
+        return max(0, min(100, val))
+    except (ValueError, TypeError):
+        return None
 
 
 def _parse_ecc(entry: dict) -> int | None:
     """Extract total correctable ECC error count from a pre-parsed metric entry dict."""
-    val = entry.get("ecc", {}).get("total_correctable_count")
-    return int(val) if val is not None else None
+    ecc = entry.get("ecc", {})
+    return _get(  # type: ignore[no-any-return]
+        ecc,
+        ("total_correctable_count",),
+        ("correctable_count",),
+    )
 
 
 def _parse_clock(entry: dict) -> str | None:
     """Extract the GPU performance level (clock state) from a pre-parsed metric entry dict."""
-    val = entry.get("clock", {}).get("performance_level")
-    return str(val) if val is not None else None
+    return _get(  # type: ignore[no-any-return]
+        entry,
+        ("clock", "performance_level"),
+        ("clocks", "performance_level"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +494,8 @@ def _parse_clock(entry: dict) -> str | None:
 def _query_thermal(executor: AbstractExecutor, gpu_index: int) -> GpuThermalInfo:
     """Parse thermal data from ``amd-smi metric --gpu N --json``.
 
+    Handles multi-schema temperature keys across ROCm versions.
+
     Args:
         executor:  Any executor with a ``.run()`` method.
         gpu_index: AMD GPU ordinal.
@@ -413,19 +503,37 @@ def _query_thermal(executor: AbstractExecutor, gpu_index: int) -> GpuThermalInfo
     Returns:
         GpuThermalInfo — fields are None when parsing fails.
     """
-    entry = _run_metric_json(executor, gpu_index)
-    if entry is None:
+    result = executor.run(f"amd-smi metric --gpu {gpu_index} --json")
+    if not result.ok:
         return GpuThermalInfo(index=gpu_index)
     try:
-        temp = entry.get("temperature", {})
-        fan_raw = temp.get("fan_speed_rpm") or entry.get("fan", {}).get("speed_rpm")
-        fan = _to_scalar(fan_raw)
+        data = json.loads(result.stdout)
+        entry = data[0] if isinstance(data, list) else data
+
+        # Temperature hot-spot: ROCm 6.x nested vs 5.x thermal.gfx.value
+        hotspot = _get(
+            entry,
+            ("temperature", "hotspot_temperature"),  # ROCm 6.x
+            ("thermal", "gfx", "value"),  # ROCm 5.x
+            ("temperature", "edge_temperature"),  # fallback
+        )
+        edge = _get(
+            entry,
+            ("temperature", "edge_temperature"),
+            ("temperature", "hotspot_temperature"),
+        )
+        fan = _get(
+            entry,
+            ("temperature", "fan_speed_rpm"),
+            ("fan", "speed_rpm"),
+            default=-1,
+        )
         return GpuThermalInfo(
             index=gpu_index,
-            temp_edge=_to_scalar(temp.get("edge_temperature")),
-            temp_hotspot=_to_scalar(temp.get("hotspot_temperature")),
+            temp_edge=edge,
+            temp_hotspot=hotspot,
             fan_rpm=fan if fan is not None else -1,
         )
-    except (KeyError, TypeError) as exc:
+    except (json.JSONDecodeError, KeyError, TypeError, IndexError) as exc:
         logger.warning("Failed to parse thermal info for GPU %d: %s", gpu_index, exc)
         return GpuThermalInfo(index=gpu_index)

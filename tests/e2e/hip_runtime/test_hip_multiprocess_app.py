@@ -105,7 +105,7 @@ _CONTENTION_PROFILER_DEFAULTS = {
     "ROCM_TEST_ROCK_MPS_ANOMALY_PCT": "5.0",
     "ROCM_TEST_ROCK_MPS_SEVERE_PCT": "0.1",
 }
-_MEMORY_MOVER_RSS_WARN_MB = "2048"
+_MEMORY_MOVER_RSS_WARN_MB = "1024"
 
 # Phase-2 contention roles for the full suite (profiler is launched in Phase 1).
 # memory_mover runs producer + consumer (cross-process IPC shared memory);

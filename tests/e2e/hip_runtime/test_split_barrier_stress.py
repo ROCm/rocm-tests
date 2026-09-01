@@ -12,7 +12,6 @@ import pytest
 
 
 @pytest.mark.runtime.medium
-@pytest.mark.gpu_vram(40)
 def test_split_barrier_stress(
     target_executor,
     ld_path: dict,
