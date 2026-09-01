@@ -129,7 +129,7 @@ class NodeExecutorGroup:
     # Executor delegation — forwards to the first executor
     # ------------------------------------------------------------------
 
-    def run(self, command: str, timeout: float | None = None) -> ExecutionResult:
+    def run(self, command: str, timeout: float | None = None, *, stream: bool = False) -> ExecutionResult:
         """Execute *command* via the first executor in the group.
 
         Correct for single-GPU and multi-GPU-same-node modes where the group
@@ -139,11 +139,13 @@ class NodeExecutorGroup:
         Args:
             command: Shell command string to execute.
             timeout: Maximum seconds to wait (forwarded to the inner executor).
+            stream:  When True, request live output/progress from the inner
+                     executor when supported.
 
         Returns:
             ``ExecutionResult`` from the first executor.
         """
-        return self._executors[0].run(command, timeout=timeout)
+        return self._executors[0].run(command, timeout=timeout, stream=stream)
 
     def start_background(
         self,
