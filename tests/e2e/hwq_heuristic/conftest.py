@@ -14,6 +14,9 @@ Build output layout::
     output/test-binaries/hwq_heuristic/hwq_heuristic_test/build/hwq_heuristic_test
     output/test-binaries/hwq_heuristic/hwq_null_stream_protection_regr/build/hwq_null_stream_protection_regr
     output/test-binaries/hwq_heuristic/hwq_compute_copy_overlap_test/build/hwq_compute_copy_overlap_test
+    output/test-binaries/hwq_heuristic/hwq_robustness/build/hwq_robustness
+    output/test-binaries/hwq_heuristic/hwq_single_stream_no_regr/build/hwq_single_stream_no_regr
+    output/test-binaries/hwq_heuristic/hwq_per_device_independence_test/build/hwq_per_device_independence_test
 
 GPU architecture is forwarded from ``--gpu-arch`` when provided; the
 CMakeLists.txt raises FATAL_ERROR when GPU_ARCH is absent.
