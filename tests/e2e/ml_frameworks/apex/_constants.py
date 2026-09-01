@@ -32,7 +32,7 @@ RUN_SCRIPT = "run_rocm.sh"
 RUN_TIMEOUT = float(os.environ.get("APEX_RUN_TIMEOUT", "14400"))
 
 # Upstream ROCm Apex source tree (PyTorch fused-kernel extension).
-APEX_URL = os.environ.get("APEX_URL", "https://github.com/ROCmSoftwarePlatform/apex")
+APEX_URL = os.environ.get("APEX_URL", "https://github.com/ROCm/apex")
 
 # Apex commit checked out by the apex_repo fixture; empty = default branch.
 APEX_COMMIT = os.environ.get("APEX_COMMIT", "").strip()

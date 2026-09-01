@@ -61,7 +61,7 @@ def _print_summary(summary, exit_code, crash_markers):
 
 @pytest.mark.container(ipc="host", extra_run_flags=CONTAINER_MOUNT_FLAGS)
 @pytest.mark.gpu_count(GPU_COUNT_ARG)
-@pytest.mark.runtime.soak
+@pytest.mark.runtime.medium
 def test_apex_l0_suite(target_executor, apex_repo):
     """Run the Apex L0 suite in the container and assert it completes cleanly.
 
