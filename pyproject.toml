@@ -87,6 +87,7 @@ markers = [
     "gpu_count(n): minimum GPU count per node (e.g. @pytest.mark.gpu_count(2))",
     # Container routing
     "container_image(image): Docker/Podman image for container_executor fixture",
+    "container(ipc, extra_run_flags): Per-test container options (e.g. @pytest.mark.container(ipc='host', extra_run_flags='...'))",
     # Per-test retry (handled by retry_plugin, not a dimension)
     "retry(count): number of attempts before marking a test as failed (e.g. @pytest.mark.retry(count=3))",
 ]
