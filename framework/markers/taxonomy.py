@@ -40,6 +40,7 @@ PARAMETRIC_MARKERS: dict[str, str] = {
     "gpu_count": "Minimum GPU count per node (@pytest.mark.gpu_count(4))",
     "container_image": "Override container image (@pytest.mark.container_image('rocm/pytorch:6.3'))",
     "gpu_indices": "Exact GPU indices to acquire, bypassing NUMA selection (@pytest.mark.gpu_indices([0, 2]))",
+    "container": "Container run options for executor (@pytest.mark.container(ipc='host', privileged=True))",
 }
 
 # Duration guidance (informational — not enforced programmatically)
