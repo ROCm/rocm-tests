@@ -12,12 +12,34 @@ only the required target rather than compiling unrelated HIP runtime binaries:
   (HIP kernel code; requires ``--gpu-arch`` so ``-DGPU_ARCH`` can be forwarded).
 - ``_split_barrier_stress_build_dir`` — builds ``split_barrier_stress``
   (standalone cooperative-groups stress sample; requires ``--gpu-arch``).
+- ``_ipc_module_load_build_dir``  — builds ``ipc_alltoall_module_load``,
+  ``ipc_dup_import_module_load``, and ``noop.hsaco`` (HIP IPC regression tests;
+  requires ``--gpu-arch``).
+- ``_device_alloc_build_dir``     — builds ``device_side_alloc`` (in-kernel
+  ``malloc``/``free`` from device code; requires ``--gpu-arch``).
+- ``_multi_instance_build_dir``   — builds ``hip_multi_instance_app`` (self-
+  verifying vector-add run as concurrent processes to exercise
+  ``HIP_VISIBLE_DEVICES`` placement; requires ``--gpu-arch``).
+- ``golden_workload_binary``  — builds ``golden_workload`` (SAXPY loop for
+  partition isolation; requires ``--gpu-arch`` for HIP kernel offload).
+- ``buggy_workload_binary``   — builds ``buggy_workload`` (fault-injection
+  binary for partition isolation; requires ``--gpu-arch``).
+- ``hip_device_count_binary`` — builds ``hip_device_count`` (driver-API only;
+  prints ``hipGetDeviceCount()`` to stdout; does not require ``--gpu-arch``).
 
 Build output layout::
 
     output/test-binaries/hip_runtime/host_build/hip_invalid_codeobject_load_test
     output/test-binaries/hip_runtime/stream_build/multi_stream_serialization
     output/test-binaries/hip_runtime/split_barrier_stress/split_barrier_stress
+    output/test-binaries/hip_runtime/ipc_module_load/ipc_alltoall_module_load
+    output/test-binaries/hip_runtime/ipc_module_load/ipc_dup_import_module_load
+    output/test-binaries/hip_runtime/ipc_module_load/noop.hsaco
+    output/test-binaries/hip_runtime/device_alloc_build/device_side_alloc
+    output/test-binaries/hip_runtime/multi_instance_build/hip_multi_instance_app
+    output/test-binaries/hip_runtime/partition_isolation/golden_workload
+    output/test-binaries/hip_runtime/partition_isolation/buggy_workload
+    output/test-binaries/hip_runtime/partition_isolation/hip_device_count
     output/test-binaries/hip_runtime/mps/rock_mps_test
 """
 
@@ -32,7 +54,10 @@ import pytest
 logger = logging.getLogger(__name__)
 _SRC_DIR = "tests/e2e/hip_runtime/src"
 _SPLIT_BARRIER_SRC_DIR = "tests/e2e/hip_runtime/src/split_barrier_stress"
+_IPC_MODULE_LOAD_SRC_DIR = "tests/e2e/hip_runtime/src/ipc_module_load"
 _ROCK_MPS_SRC_DIR = "tests/e2e/hip_runtime/src/mps"
+_PARTITION_ISO_SRC_DIR = "tests/e2e/hip_runtime/src/partition_isolation"
+_PARTITION_ISO_SUBDIR = "hip_runtime/partition_isolation"
 
 # HIP samples upstream suite (ROCm/hip-tests "samples/" subtree).
 # Samples are the same sources published in ROCm/hip-tests.
@@ -142,6 +167,93 @@ def split_barrier_stress_binary(_split_barrier_stress_build_dir: str, built_bina
     return built_binary(os.path.join(_split_barrier_stress_build_dir, "split_barrier_stress"), "split_barrier_stress")
 
 
+@pytest.fixture(scope="session")
+def _ipc_module_load_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build IPC module-load regression binaries and noop.hsaco (requires ``--gpu-arch``)."""
+    require_gpu_arch_for("hip_runtime/ipc_module_load")
+    return cmake_build_dir(
+        src=_IPC_MODULE_LOAD_SRC_DIR,
+        subdir="hip_runtime/ipc_module_load",
+        gpu_arch=gpu_arch,
+        compiler_mode="optional_cxx_hip",
+        label="hip_runtime/ipc_module_load",
+        sync_dirs=[_IPC_MODULE_LOAD_SRC_DIR],
+        artifact="ipc_alltoall_module_load",
+    )
+
+
+@pytest.fixture(scope="session")
+def ipc_alltoall_module_load_binary(_ipc_module_load_build_dir: str, built_binary) -> str:
+    """Compiled ``ipc_alltoall_module_load`` binary path."""
+    return built_binary(
+        os.path.join(_ipc_module_load_build_dir, "ipc_alltoall_module_load"),
+        "ipc_alltoall_module_load",
+    )
+
+
+@pytest.fixture(scope="session")
+def ipc_dup_import_module_load_binary(_ipc_module_load_build_dir: str, built_binary) -> str:
+    """Compiled ``ipc_dup_import_module_load`` binary path."""
+    return built_binary(
+        os.path.join(_ipc_module_load_build_dir, "ipc_dup_import_module_load"),
+        "ipc_dup_import_module_load",
+    )
+
+
+@pytest.fixture(scope="session")
+def _device_alloc_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build ``device_side_alloc`` (HIP in-kernel allocation; pass ``--gpu-arch``)."""
+    require_gpu_arch_for("hip_runtime/device_side_alloc")
+    return cmake_build_dir(
+        src=_SRC_DIR,
+        subdir="hip_runtime/device_alloc_build",
+        gpu_arch=gpu_arch,
+        extra_cmake_args=[
+            "-DBUILD_HOST_ONLY_TESTS=OFF",
+            "-DBUILD_HIP_KERNEL_TESTS=OFF",
+            "-DBUILD_DEVICE_ALLOC_TEST=ON",
+        ],
+        compiler_mode="optional_cxx_hip",
+        label="hip_runtime/device_side_alloc",
+        sync_dirs=[_SRC_DIR],
+        artifact="device_side_alloc",
+        target="device_side_alloc",
+    )
+
+
+@pytest.fixture(scope="session")
+def device_side_alloc_binary(_device_alloc_build_dir: str, built_binary) -> str:
+    """Compiled ``device_side_alloc`` binary path."""
+    return built_binary(os.path.join(_device_alloc_build_dir, "device_side_alloc"), "device_side_alloc")
+
+
+@pytest.fixture(scope="session")
+def _multi_instance_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build ``hip_multi_instance_app`` (HIP kernel workload; pass ``--gpu-arch``)."""
+    require_gpu_arch_for("hip_runtime/multi_instance")
+    return cmake_build_dir(
+        src=_SRC_DIR,
+        subdir="hip_runtime/multi_instance_build",
+        gpu_arch=gpu_arch,
+        extra_cmake_args=[
+            "-DBUILD_HOST_ONLY_TESTS=OFF",
+            "-DBUILD_HIP_KERNEL_TESTS=OFF",
+            "-DBUILD_MULTI_INSTANCE_TEST=ON",
+        ],
+        compiler_mode="optional_cxx_hip",
+        label="hip_runtime/multi_instance",
+        sync_dirs=[_SRC_DIR],
+        artifact="hip_multi_instance_app",
+        target="hip_multi_instance_app",
+    )
+
+
+@pytest.fixture(scope="session")
+def hip_multi_instance_app_binary(_multi_instance_build_dir: str, built_binary) -> str:
+    """Compiled ``hip_multi_instance_app`` binary path."""
+    return built_binary(os.path.join(_multi_instance_build_dir, "hip_multi_instance_app"), "hip_multi_instance_app")
+
+
 # HIP samples are cloned from ROCm/hip-tests rather than vendored.
 # The legacy suite built each installed sample in its own CMake directory with
 # CMAKE_PREFIX_PATH pointing at ROCm. Inject the HIP compiler as well so CMake
@@ -203,3 +315,43 @@ def hip_sample_spirv_build(cmake_build_dir, hip_samples_repo: str, built_binary)
         return built_binary(os.path.join(build_dir, exec_name), exec_name)
 
     return _build
+
+
+@pytest.fixture(scope="session")
+def golden_workload_binary(compile_binary, require_gpu_arch_for) -> str:
+    """Compile ``golden_workload`` for partition isolation testing."""
+    require_gpu_arch_for("hip_runtime/partition_isolation/golden_workload")
+    return compile_binary(
+        src=f"{_PARTITION_ISO_SRC_DIR}/golden_workload.cpp",
+        output_name="golden_workload",
+        std="c++17",
+        opt="-O0",
+        extra_flags=["-g"],
+        subdir=_PARTITION_ISO_SUBDIR,
+    )
+
+
+@pytest.fixture(scope="session")
+def buggy_workload_binary(compile_binary, require_gpu_arch_for) -> str:
+    """Compile ``buggy_workload`` for partition isolation testing."""
+    require_gpu_arch_for("hip_runtime/partition_isolation/buggy_workload")
+    return compile_binary(
+        src=f"{_PARTITION_ISO_SRC_DIR}/buggy_workload.cpp",
+        output_name="buggy_workload",
+        std="c++17",
+        opt="-O0",
+        extra_flags=["-g"],
+        subdir=_PARTITION_ISO_SUBDIR,
+    )
+
+
+@pytest.fixture(scope="session")
+def hip_device_count_binary(compile_binary) -> str:
+    """Compile ``hip_device_count`` (driver API only; no ``--gpu-arch`` required)."""
+    return compile_binary(
+        src=f"{_PARTITION_ISO_SRC_DIR}/hip_device_count.cpp",
+        output_name="hip_device_count",
+        std="c++17",
+        opt="-O0",
+        subdir=_PARTITION_ISO_SUBDIR,
+    )
