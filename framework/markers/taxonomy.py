@@ -22,7 +22,7 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     # CI gate membership (REQUIRED)
     "ci": {"pr", "nightly", "weekly"},
     # ROCm stack layer under test (REQUIRED)
-    "layer": {"runtime", "math_lib"},
+    "layer": {"driver", "runtime", "math_lib"},
     # Expected duration (optional but strongly recommended)
     "runtime": {"fast", "medium", "soak"},
     # Target platform (optional)
@@ -120,6 +120,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # KFD (Kernel Fusion Driver) — lowest layer of the ROCm stack, exercised via
+    # the libhsakmt kfdtest GTest suite. layer.driver because KFD is the kernel
+    # driver / thunk layer under the HIP runtime.
+    "tests/e2e/kfd": [
+        "hw.gpu",
+        "layer.driver",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # RCCL collective / error-handling ports (Tier 4). rccl_error_handling is
     # single-GPU and overrides hw.multi_gpu -> hw.gpu at the function level.
     "tests/e2e/rccl": [
@@ -153,10 +163,25 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
-    # UCX HPC communication library: configure/make build + filtered *rocm* gtest suite.
-    "tests/e2e/hpc/ucx": [
+    # CRIU checkpoint/restore suite: GPU workloads checkpointed and restored with CRIU +
+    # amdgpu_plugin. Weekly cadence (happy path is a soak run); runtime.* is per test function.
+    "tests/e2e/recovery/criu": [
         "hw.gpu",
-        "layer.math_lib",
+        "layer.runtime",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/rocm_examples": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/hip_directed": [
+        "hw.gpu",
+        "layer.runtime",
         "ci.nightly",
         "e2e.stack",
         "os.linux",
