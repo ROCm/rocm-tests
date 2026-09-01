@@ -23,7 +23,6 @@ from tests.e2e.ml_frameworks.torchvision._constants import (
     TEST_FILES,
 )
 from tests.e2e.ml_frameworks.torchvision._result_parser import parse_junit_xml
-from tests.e2e.ml_frameworks.torchvision.conftest import resolve_url_commit
 
 logger = logging.getLogger(__name__)
 
@@ -46,18 +45,53 @@ _CRASH_MARKERS = (
 # parametrized test reuses the .so without git-cleaning and rebuilding.
 _built_repos: set[str] = set()
 
-# Shell command to build the in-tree ops inside the container.
-_BUILD_CMD = "\n".join(
-    (
-        "set -e",
-        "git config --global --add safe.directory {repo}",
-        "cd {repo}",
-        "git clean -fdx",
-        "python setup.py build_ext --inplace",
-        "python -c \"import torch, torchvision; torch.ops.torchvision.nms; print('torchvision_nms_ok')\""
-        " | grep -q torchvision_nms_ok",
-    )
-)
+# Shell command that runs inside the container to:
+#   1. Read the torchvision commit from the image's related_commits manifest.
+#   2. Check out that exact commit in the bind-mounted clone.
+#   3. Build the in-tree ops.
+# The manifest lives at /workspace/pytorch/related_commits inside the image.
+# git clean removes stale hipify/build artifacts from a prior run on the same tree.
+_SETUP_AND_BUILD_CMD = r"""
+set -e
+repo={repo}
+git config --global --add safe.directory "$repo"
+cd "$repo"
+
+# Locate the related_commits manifest inside the container.
+for c in /workspace/pytorch/related_commits \
+          "$PYTORCH_DIR/related_commits" \
+          /opt/pytorch/related_commits \
+          /related_commits; do
+  [ -f "$c" ] && { manifest="$c"; break; }
+done
+if [ -z "$manifest" ]; then
+  tdir=$(python -c 'import os,torch;print(os.path.dirname(os.path.dirname(torch.__file__)))' 2>/dev/null)
+  [ -f "$tdir/related_commits" ] && manifest="$tdir/related_commits"
+fi
+if [ -z "$manifest" ]; then
+  manifest=$(find / -maxdepth 6 -name related_commits -type f 2>/dev/null | head -1)
+fi
+
+# Extract the torchvision commit from the manifest (field 5, pipe-delimited).
+if [ -n "$manifest" ] && [ -f "$manifest" ]; then
+  osid=$(. /etc/os-release 2>/dev/null; echo "$ID")
+  line=$(grep -i torchvision "$manifest" | grep -i "$osid" | head -1)
+  [ -z "$line" ] && line=$(grep -i torchvision "$manifest" | head -1)
+  commit=$(echo "$line" | cut -d '|' -f 5 | tr -d '[:space:]')
+fi
+
+# Checkout the resolved commit; fall back to current HEAD if not found.
+if [ -n "$commit" ]; then
+  git fetch origin "$commit" --depth=1 2>/dev/null || true
+  git checkout "$commit"
+fi
+
+# Build the in-tree ops.
+git clean -fdx
+python setup.py build_ext --inplace
+python -c "import torch, torchvision; torch.ops.torchvision.nms; print('torchvision_nms_ok')" \
+  | grep -q torchvision_nms_ok
+"""
 
 
 def _extract_junit(text: str) -> str:
@@ -76,34 +110,17 @@ def _extract_junit(text: str) -> str:
 def test_torchvision_p1_ut_suite(target_executor, torchvision_repo, test_file):
     """Build (once) and run one cuda-tagged UT suite; assert it passes.
 
-    Resolves the torchvision commit from the container's related_commits manifest
-    (or env-var overrides), builds the in-tree ops on the first call, then runs the
-    cuda-tagged pytest cases and parses the JUnit report per case.
+    On the first call, reads the torchvision commit from the container's
+    related_commits manifest, checks it out in the bind-mounted clone, and builds
+    the in-tree ops.  Subsequent parametrized calls skip the build and reuse the
+    .so.  The JUnit report is parsed so the assertion names any failing GPU case.
     """
-    # Resolve url/commit inside the container (target_executor runs in container).
-    # torchvision_repo already cloned on the host; we only need the commit to
-    # confirm the checkout is correct — resolve_url_commit handles env-var bypass.
+    # Build inside the container on the first parametrized call only.
+    # _built_repos prevents the second test from re-running git-clean and
+    # setup.py, which would wipe the .so the first test already built.
     if torchvision_repo not in _built_repos:
-        _, commit = resolve_url_commit(target_executor)
-        # Ensure the checkout is pinned to the resolved commit.
-        pin_cmd = "\n".join(
-            (
-                "set -e",
-                f"git config --global --add safe.directory {torchvision_repo}",
-                f"cd {torchvision_repo}",
-                f"git fetch origin {commit} --depth=1 2>/dev/null || true",
-                f"git checkout {commit}",
-            )
-        )
-        pin_result = target_executor.run(pin_cmd, timeout=_RESOLVE_TIMEOUT)
-        if pin_result.exit_code != 0:
-            pytest.fail(
-                f"Failed to pin torchvision checkout to commit {commit}:\n"
-                f"stdout: {pin_result.stdout[-2000:]}\nstderr: {pin_result.stderr[-2000:]}"
-            )
-
         build_result = target_executor.run(
-            _BUILD_CMD.format(repo=torchvision_repo),
+            _SETUP_AND_BUILD_CMD.format(repo=torchvision_repo),
             timeout=_RESOLVE_TIMEOUT * 10,
         )
         if build_result.exit_code != 0:
