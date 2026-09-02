@@ -22,7 +22,7 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     # CI gate membership (REQUIRED)
     "ci": {"pr", "nightly", "weekly"},
     # ROCm stack layer under test (REQUIRED)
-    "layer": {"runtime", "math_lib"},
+    "layer": {"driver", "runtime", "math_lib"},
     # Expected duration (optional but strongly recommended)
     "runtime": {"fast", "medium", "soak"},
     # Target platform (optional)
@@ -40,7 +40,7 @@ PARAMETRIC_MARKERS: dict[str, str] = {
     "gpu_count": "Minimum GPU count per node (@pytest.mark.gpu_count(4))",
     "container_image": "Override container image (@pytest.mark.container_image('rocm/pytorch:6.3'))",
     "gpu_indices": "Exact GPU indices to acquire, bypassing NUMA selection (@pytest.mark.gpu_indices([0, 2]))",
-    "container": "Container run options for executor (@pytest.mark.container(ipc='host', privileged=True))",
+    "container": "Per-test container options (@pytest.mark.container(ipc='host', extra_run_flags='...'))",
 }
 
 # Duration guidance (informational — not enforced programmatically)
@@ -120,6 +120,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # KFD (Kernel Fusion Driver) — lowest layer of the ROCm stack, exercised via
+    # the libhsakmt kfdtest GTest suite. layer.driver because KFD is the kernel
+    # driver / thunk layer under the HIP runtime.
+    "tests/e2e/kfd": [
+        "hw.gpu",
+        "layer.driver",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # RCCL collective / error-handling ports (Tier 4). rccl_error_handling is
     # single-GPU and overrides hw.multi_gpu -> hw.gpu at the function level.
     "tests/e2e/rccl": [
@@ -162,6 +172,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # TorchVision P1 image-transform correctness UT suite (ML frameworks):
+    # builds the torchvision ops in-tree and runs the cuda-tagged functional /
+    # transforms tensor UTs, validating the transform-op compute against CPU/PIL.
+    "tests/e2e/ml_frameworks/torchvision": [
+        "hw.multi_gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/rocm_examples": [
         "hw.gpu",
         "layer.runtime",
@@ -172,6 +192,23 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/hip_directed": [
         "hw.gpu",
         "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # Apex fused-kernel L0 unit-test suite (ML frameworks): builds the Apex HIP
+    # extensions and runs the L0 unittest suite in a container via target_executor.
+    "tests/e2e/ml_frameworks/apex": [
+        "hw.multi_gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # UCX HPC communication library: configure/make build + filtered *rocm* gtest suite.
+    "tests/e2e/hpc/ucx": [
+        "hw.gpu",
+        "layer.math_lib",
         "ci.nightly",
         "e2e.stack",
         "os.linux",
