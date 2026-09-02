@@ -71,15 +71,14 @@ def allure_reporter(request):
 
 
 @pytest.fixture
-def artifacts_fixture(request, _framework_config):
+def artifacts_fixture(request):
     """Capture GPU state and attach it to Allure on test failure.
 
     Yields control to the test. On teardown, if the test failed, captures
     GPU diagnostic output via amd-smi and attaches it to the Allure report.
 
     Args:
-        request:          pytest request object (provides test outcome).
-        framework_config: Session config for artifact directory path.
+        request: pytest request object (provides test outcome).
 
     Yields:
         None
