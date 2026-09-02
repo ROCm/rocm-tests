@@ -189,9 +189,9 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
-    # Read-only amd-smi power metric checks (UBB_POWER, node THRESHOLD).
-    # No destructive operations; nightly cadence. runtime.* declared per function.
-    "tests/e2e/amd_smi/system_tools": [
+    # amd-smi power metric checks (UBB_POWER field and node THRESHOLD).
+    # Read-only; no destructive operations; nightly cadence. runtime.* declared per function.
+    "tests/e2e/system_tools/amd_smi": [
         "hw.gpu",
         "layer.runtime",
         "ci.nightly",

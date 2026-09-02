@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: MIT
 
 """
-test_ubb_power.py -- UBB power metric validation via amd-smi.
+test_ubb_power.py -- amd-smi power metric validation.
 
-Validates UBB_POWER reporting at idle (per GPU), under CoralGemm load (load > idle),
-and node-level THRESHOLD via amd-smi node -p.
+Validates amd-smi UBB_POWER field reporting at idle (per GPU), under CoralGemm load
+(load > idle), and node-level THRESHOLD via amd-smi node -p.
 """
 
 from __future__ import annotations
@@ -19,7 +19,8 @@ import pytest
 
 logger = logging.getLogger("rocm.test")
 
-# GPU architectures known to populate UBB_POWER and THRESHOLD fields.
+# GPU architectures known to report the UBB_POWER and THRESHOLD fields via amd-smi.
+# gfx942 (MI300X) is explicitly included alongside gfx950.
 _UBB_SUPPORTED_ARCHS: frozenset[str] = frozenset({"gfx950", "gfx942"})
 
 # CoralGemm workload args matching the original test invocation.
@@ -32,13 +33,13 @@ _CORAL_GEMM_ARGS = "R_64F R_64F R_64F R_64F OP_N OP_T 8640 8640 8640 8640 8640 8
 
 
 def _skip_unsupported_arch(gpu_arch: str | None) -> None:
-    """Skip gracefully when the GPU architecture does not support UBB fields."""
+    """Skip when the GPU architecture is not known to report amd-smi power fields."""
     if gpu_arch is not None and gpu_arch not in _UBB_SUPPORTED_ARCHS:
-        pytest.skip(f"UBB power fields not supported on {gpu_arch} (supported: {sorted(_UBB_SUPPORTED_ARCHS)})")
+        pytest.skip(f"amd-smi power fields not supported on {gpu_arch} (supported: {sorted(_UBB_SUPPORTED_ARCHS)})")
 
 
 def _parse_ubb_power(output: str) -> float | None:
-    """Return the first numeric UBB_POWER watt value from output, or None if absent/N/A."""
+    """Return the first numeric value for the UBB_POWER field from amd-smi output, or None if absent/N/A."""
     match = re.search(r"UBB_POWER:\s*([\d.]+)\s*W", output)
     return float(match.group(1)) if match else None
 
@@ -60,9 +61,10 @@ def _gpu_ids(executor, amd_smi: str) -> list[str]:
 
 
 def _gpu_id_for_oam0(executor, amd_smi: str) -> str:
-    """Return the GPU ID whose OAM_ID is 0; skips if none found.
+    """Return the GPU ID whose OAM_ID is 0, as reported by 'amd-smi list -e'.
 
-    UBB/node power is tied to OAM_ID 0 — querying the wrong GPU ID returns N/A.
+    Node-level power fields (UBB_POWER, THRESHOLD) are only populated for the GPU
+    with OAM_ID 0; querying other GPU IDs returns N/A.
     """
     result = executor.run(f"{amd_smi} list -e")
     assert result.ok, f"amd-smi list -e failed:\n{result.stderr[:500]}"
@@ -76,7 +78,7 @@ def _gpu_id_for_oam0(executor, amd_smi: str) -> str:
             logger.info("_gpu_id_for_oam0: GPU %s has OAM_ID 0", current_gpu)
             return current_gpu
 
-    pytest.skip("No GPU with OAM_ID 0 found via 'amd-smi list -e' — UBB power not available on this node")
+    pytest.fail("No GPU with OAM_ID 0 found via 'amd-smi list -e' — OAM_ID 0 is required for UBB power reporting")
 
 
 # ---------------------------------------------------------------------------
@@ -86,10 +88,10 @@ def _gpu_id_for_oam0(executor, amd_smi: str) -> str:
 
 @pytest.mark.runtime.fast
 def test_ubb_power_default(target_executor, ubb_env, gpu_arch: str | None) -> None:
-    """Verify UBB_POWER is reported for the GPU with OAM_ID 0 at idle.
+    """Verify amd-smi reports a numeric UBB_POWER value at idle for the GPU with OAM_ID 0.
 
-    UBB power is tied to OAM_ID 0; querying other GPUs returns N/A.
-    Fails if UBB_POWER field is absent or N/A for that GPU.
+    Only the GPU with OAM_ID 0 populates node-level power fields; querying other GPUs returns N/A.
+    Fails if the UBB_POWER field is absent or N/A in the output.
     """
     _skip_unsupported_arch(gpu_arch)
 
@@ -114,9 +116,9 @@ def test_ubb_power_workload(
     rock_dir: str,
     gpu_arch: str | None,
 ) -> None:
-    """Verify UBB_POWER under CoralGemm load exceeds idle baseline for the OAM_ID 0 GPU.
+    """Verify amd-smi UBB_POWER under CoralGemm load exceeds the idle baseline.
 
-    Resolves the correct GPU via OAM_ID 0, captures idle UBB_POWER, launches CoralGemm,
+    Resolves the GPU with OAM_ID 0, captures idle UBB_POWER, launches CoralGemm,
     then polls five times asserting load > idle on every reading.
     """
     _skip_unsupported_arch(gpu_arch)
@@ -196,9 +198,9 @@ def test_ubb_power_workload(
 
 @pytest.mark.runtime.fast
 def test_ubb_threshold(target_executor, ubb_env, gpu_arch: str | None) -> None:
-    """Verify node-level UBB power THRESHOLD is reported by amd-smi node -p.
+    """Verify amd-smi node -p reports a positive numeric THRESHOLD value.
 
-    Asserts THRESHOLD field is present and holds a positive numeric watt value.
+    Asserts the THRESHOLD field is present and holds a positive watt value.
     """
     _skip_unsupported_arch(gpu_arch)
 
