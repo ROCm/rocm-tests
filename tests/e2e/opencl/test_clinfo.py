@@ -77,8 +77,8 @@ def test_clinfo(target_executor, rock_dir: str, ld_path: dict):
     # rock_dir copy and fall back to a PATH-resolved clinfo, preserving stderr.
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld} sh -c '"
-        f'ocl_lib=$(ls {rock_dir}/lib/libamdocl64.so 2>/dev/null || '
-        f'find {rock_dir} -name libamdocl64.so 2>/dev/null | head -1); '
+        f"ocl_lib=$(ls {rock_dir}/lib/libamdocl64.so 2>/dev/null || "
+        f"find {rock_dir} -name libamdocl64.so 2>/dev/null | head -1); "
         f'[ -n "$ocl_lib" ] && export OCL_ICD_FILENAMES="$ocl_lib"; '
         f"[ -x {rock_dir}/bin/clinfo ] && exec {rock_dir}/bin/clinfo || exec clinfo'"
     )
