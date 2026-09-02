@@ -166,14 +166,16 @@ jobs:
           # ── Check 2: internal branch (non-fork PR) ────────────────────────────
           # GitHub only allows actors with push access to push branches to the
           # base repo.  A non-fork PR is therefore proof of write access.
-          # SECURITY (F4): also require association in _WRITE_ACCESS as defense-in-depth
-          # to cover the edge case where an org admin opens a PR on behalf of an
-          # external contributor from an internal branch (is_fork=false but the
-          # PR author has no independent write access of their own).
-          # Any internal-branch actor whose association is outside _WRITE_ACCESS
-          # (e.g., a bot with association="NONE") is denied GPU tests; maintainers
-          # can use workflow_dispatch (Check 1 above) to run tests on their behalf.
-          if is_fork == "false" and association in _WRITE_ACCESS:
+          # GitHub's author_association reflects the actor's relationship to the
+          # repo directly (OWNER/MEMBER/COLLABORATOR for org members or direct
+          # invites), but team membership alone (e.g. rocm-tests-write) does NOT
+          # upgrade association — it stays CONTRIBUTOR even though the actor has
+          # full push access.  For non-fork PRs, GitHub's own branch-protection
+          # already enforces push access, so the association check is redundant
+          # and incorrectly blocks team members.
+          # Exception: deny association="NONE" to block bots and GitHub Actions
+          # service accounts that have no meaningful user identity.
+          if is_fork == "false" and association != "NONE":
               finish(True, f"internal branch — push access confirmed (association={association})")
 
           # ── Check 3: fork PR from a write-access actor ────────────────────────
