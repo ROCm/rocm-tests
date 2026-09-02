@@ -16,6 +16,7 @@ Runs ``rocminfo`` on an AMD GPU node and validates the reported agent topology:
 hw.gpu, ci.nightly, layer.runtime, runtime.fast and os.linux are declared explicitly.
 """
 
+from pathlib import PurePosixPath
 import re
 from pathlib import PurePosixPath
 
