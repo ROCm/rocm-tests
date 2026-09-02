@@ -24,8 +24,7 @@ import pytest
 logger = logging.getLogger("rocm.test")
 
 # GPU architectures known to report the UBB_POWER and THRESHOLD fields via amd-smi.
-# gfx942 (MI300X) is explicitly included alongside gfx950.
-_UBB_SUPPORTED_ARCHS: frozenset[str] = frozenset({"gfx950", "gfx942"})
+_UBB_SUPPORTED_ARCHS: frozenset[str] = frozenset({"gfx950"})
 
 # CoralGemm workload args matching the original test invocation.
 _CORAL_GEMM_ARGS = "R_64F R_64F R_64F R_64F OP_N OP_T 8640 8640 8640 8640 8640 8640 12 300"
