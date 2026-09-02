@@ -168,6 +168,7 @@ jobs:
           sparse-checkout: .github/scripts/**
           sparse-checkout-cone-mode: false
           persist-credentials: false
+          path: _ci_scripts
 
       - name: Check runner queue wait time
         id: queue_guard
@@ -181,7 +182,7 @@ jobs:
           WORKFLOW_QUEUED_AT: ${{ github.run_started_at }}
           RUNNER_NAME: ${{ inputs.runs_on }}
           MAX_QUEUE_WAIT_SECS: '900'   # 15 min safety-net window
-        run: python3 .github/scripts/queue_guard.py
+        run: python3 _ci_scripts/.github/scripts/queue_guard.py
 
       - name: Report skipped platform
         if: ${{ steps.queue_guard.outputs.proceed == 'false' }}
