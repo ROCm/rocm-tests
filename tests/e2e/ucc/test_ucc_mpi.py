@@ -201,9 +201,9 @@ def test_ucc_mpi_collectives(target_executor, ucc_stack, requested_gpu_count: in
     ]
     assert not other_failures, "unrequested collectives reported failures:\n  " + "\n  ".join(other_failures)
 
-    assert result.exit_code == 0, (
-        f"ucc_test_mpi reported {report.passed}/{report.total} passed but exited {result.exit_code}:\n{tail}"
-    )
+    assert (
+        result.exit_code == 0
+    ), f"ucc_test_mpi reported {report.passed}/{report.total} passed but exited {result.exit_code}:\n{tail}"
 
     logger.info(
         "UCC MPI: %d/%d tests passed (%d skipped) across %s",
