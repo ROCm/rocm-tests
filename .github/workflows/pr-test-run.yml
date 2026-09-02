@@ -4,7 +4,7 @@
 # pr-test-run workflow — advisory PR test execution on GPU runners.
 #
 # Automatically detects which tests are impacted by the PR's changed files and
-# runs only those tests.  Results are advisory (continue-on-error: true) — they
+# runs only those tests.  Results are advisory (fail-fast: false) — they
 # do not block merging.  No ClickHouse upload.
 #
 # PR GPU runners are declared in testplan.ini (linux-gfx950-MI355, linux-gfx1151).
@@ -359,8 +359,13 @@ jobs:
   # ── Step 3: run impacted tests on fixed GPU runners ─────────────────────────
   #
   # Matrix is consumed via fromJSON() from setup_matrix.  Each leg calls the
-  # shared e2e-tests.yml reusable workflow.  Advisory: continue-on-error is set
-  # at the matrix level so a failure on one platform does not cancel the other.
+  # shared e2e-tests.yml reusable workflow.  Advisory: fail-fast: false ensures
+  # a failure on one platform does not cancel the other.
+  #
+  # NOTE: continue-on-error is NOT supported on reusable workflow call jobs
+  # (jobs that use `uses:`).  GitHub Actions rejects such workflows with:
+  #   "Unexpected value 'uses'" / "Required property is missing: runs-on"
+  # Use fail-fast: false instead for advisory matrix behavior.
 
   pr_tests:
     name: "pr-test: ${{ matrix.platform.name }}"
@@ -369,10 +374,8 @@ jobs:
       needs.check_authorization.outputs.authorized == 'true' &&
       needs.detect_changes.outputs.has_tests == 'true'
     strategy:
-      fail-fast: false
+      fail-fast: false  # Advisory: one platform failure does not cancel the other.
       matrix: ${{ fromJSON(needs.setup_matrix.outputs.matrix) }}
-    # Advisory: a test failure is reported but does not block merging.
-    continue-on-error: true
     uses: ./.github/workflows/e2e-tests.yml
     with:
       name:               ${{ matrix.platform.name }}
