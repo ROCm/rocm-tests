@@ -18,7 +18,6 @@ hw.gpu, ci.nightly, layer.runtime, runtime.fast and os.linux are declared explic
 
 from pathlib import PurePosixPath
 import re
-from pathlib import PurePosixPath
 
 import pytest
 
