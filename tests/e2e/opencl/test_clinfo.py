@@ -59,10 +59,6 @@ def _device_count(stdout: str) -> int | None:
     return None
 
 
-@pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
-@pytest.mark.layer.runtime
-@pytest.mark.os.linux
 @pytest.mark.runtime.fast
 def test_clinfo(target_executor, rock_dir: str, ld_path: dict):
     """Run clinfo and validate its reported OpenCL GPU devices."""
