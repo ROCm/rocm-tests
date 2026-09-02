@@ -88,6 +88,8 @@ markers = [
     # Container routing
     "container_image(image): Docker/Podman image for container_executor fixture",
     "container(ipc, extra_run_flags): Per-test container options (e.g. @pytest.mark.container(ipc='host', extra_run_flags='...'))",
+    # xdist scheduling
+    "xdist_group(name): Assign test to a named xdist worker group for serialization",
     # Per-test retry (handled by retry_plugin, not a dimension)
     "retry(count): number of attempts before marking a test as failed (e.g. @pytest.mark.retry(count=3))",
 ]
