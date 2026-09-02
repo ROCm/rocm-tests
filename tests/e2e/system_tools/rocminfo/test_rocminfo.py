@@ -72,7 +72,7 @@ def _evaluate(agents: list[dict], l2_sizes: list[str], sys_gpu_count: int | None
     gpu_marketing_names = [a["marketing"] for a in gpu_agents]
     gpu_id = [a["name"] for a in gpu_agents if a["name"] and a["name"].startswith("gfx")]
 
-    # Check 1: Device type is GPU for vendor AMD (all agents must be GPU and non-None)
+    # Check 1: Verify all agents have a Device Type field; expect all are GPU for AMD vendor
     check_device_type = bool(gpu_type) and len(gpu_type) == n_agents and None not in gpu_type
 
     # Check 2: Name starts from gfx — gpu_id count must match system GPU count (not just gpu_agents count)
@@ -109,14 +109,8 @@ def test_rocminfo(target_executor, rock_dir):  # pylint: disable=too-many-locals
     executed = bool(result.ok and result.stdout)
     assert executed, f"rocminfo did not execute {diag}"
 
-    # Get system GPU count from ROCR_VISIBLE_DEVICES for cross-validation
-    cmd = (
-        'python3 -c "import os; '
-        "visible = os.environ.get('ROCR_VISIBLE_DEVICES', ''); "
-        "print(len(visible.split(',')) if visible else 1)\""
-    )
-    gpu_count_result = target_executor.run(cmd)
-    sys_gpu_count = int(gpu_count_result.stdout.strip()) if gpu_count_result.ok else None
+    # Get system GPU count from target_executor for cross-validation
+    sys_gpu_count = target_executor.visible_gpu_count
 
     agents, l2_sizes = _parse_agents(result.stdout)
     checks, gpu_type = _evaluate(agents, l2_sizes, sys_gpu_count)
