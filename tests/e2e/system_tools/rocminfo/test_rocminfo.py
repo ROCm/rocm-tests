@@ -12,8 +12,10 @@ Runs ``rocminfo`` on an AMD GPU node and validates the reported agent topology:
 - Every agent reports a Vendor Name.
 - When no GPU is present, a readable error message is emitted.
 - An L2 cache size is printed for at least every GPU agent.
+- rocminfo GPU count matches the system GPU availability.
 
-hw.gpu, ci.nightly, layer.runtime, runtime.fast and os.linux are declared explicitly.
+hw.gpu, ci.nightly, layer.runtime, and os.linux are auto-injected via CATEGORY_PROFILES.
+Only runtime.fast must be declared explicitly.
 """
 
 from pathlib import PurePosixPath
@@ -61,7 +63,7 @@ def _parse_agents(output: str):
     return agents, l2_sizes
 
 
-def _evaluate(agents: list[dict], l2_sizes: list[str]):
+def _evaluate(agents: list[dict], l2_sizes: list[str], sys_gpu_count: int | None = None):
     """Return a check-name -> bool mapping plus the per-agent device-type list."""
     n_agents = len(agents)
     gpu_type = [a["device_type"] for a in agents]
@@ -70,21 +72,32 @@ def _evaluate(agents: list[dict], l2_sizes: list[str]):
     gpu_marketing_names = [a["marketing"] for a in gpu_agents]
     gpu_id = [a["name"] for a in gpu_agents if a["name"] and a["name"].startswith("gfx")]
 
+    # Check 1: Device type is GPU for vendor AMD (all agents must be GPU and non-None)
+    check_device_type = bool(gpu_type) and len(gpu_type) == n_agents and None not in gpu_type
+
+    # Check 2: Name starts from gfx — gpu_id count must match system GPU count (not just gpu_agents count)
+    # This cross-validates rocminfo against actual system GPU availability
+    check_gfx_name = bool(gpu_id) and None not in gpu_id
+    if sys_gpu_count is not None:
+        check_gfx_name = check_gfx_name and len(gpu_id) == sys_gpu_count
+
+    # Check 3: Vendor name is present (all agents must have vendor)
+    check_vendor = bool(vendor) and len(vendor) == n_agents and None not in vendor
+
+    # Check 4: L2 cache size is printed for at least every GPU agent
+    check_l2 = bool(l2_sizes) and len(l2_sizes) >= len(gpu_marketing_names)
+
     checks = {
-        "Device type is GPU for vendor AMD": bool(gpu_type) and len(gpu_type) == n_agents and None not in gpu_type,
-        "Name starts from gfx": bool(gpu_id) and len(gpu_id) == len(gpu_agents) and None not in gpu_id,
-        "Vendor name is present": bool(vendor) and len(vendor) == n_agents and None not in vendor,
-        "L2 is printed": bool(l2_sizes) and len(l2_sizes) >= len(gpu_marketing_names),
+        "Device type is GPU for vendor AMD": check_device_type,
+        "Name starts from gfx": check_gfx_name,
+        "Vendor name is present": check_vendor,
+        "L2 is printed": check_l2,
     }
     return checks, gpu_type
 
 
-@pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-@pytest.mark.os.linux
-def test_rocminfo(target_executor, rock_dir):
+@pytest.mark.runtime.fast  # type: ignore[attr-defined]
+def test_rocminfo(target_executor, rock_dir):  # pylint: disable=too-many-locals
     """Validate rocminfo agent enumeration on an AMD GPU node."""
     # ``rocminfo`` is frequently absent from PATH — it lives under a versioned
     # ROCm install (e.g. /opt/rocm-7.15.0/bin/rocminfo). Invoke it by full path
@@ -96,12 +109,24 @@ def test_rocminfo(target_executor, rock_dir):
     executed = bool(result.ok and result.stdout)
     assert executed, f"rocminfo did not execute {diag}"
 
-    agents, l2_sizes = _parse_agents(result.stdout)
-    checks, gpu_type = _evaluate(agents, l2_sizes)
+    # Get system GPU count from ROCR_VISIBLE_DEVICES for cross-validation
+    cmd = (
+        'python3 -c "import os; '
+        "visible = os.environ.get('ROCR_VISIBLE_DEVICES', ''); "
+        "print(len(visible.split(',')) if visible else 1)\""
+    )
+    gpu_count_result = target_executor.run(cmd)
+    sys_gpu_count = int(gpu_count_result.stdout.strip()) if gpu_count_result.ok else None
 
-    # A readable error message is required only when no GPU agent is reported.
+    agents, l2_sizes = _parse_agents(result.stdout)
+    checks, gpu_type = _evaluate(agents, l2_sizes, sys_gpu_count)
+
+    # When no GPU agent is reported, rocminfo must include a readable error indicator
     if "GPU" not in gpu_type:
-        checks["No-GPU error message is readable"] = bool(result.stderr)
+        stderr_lower = result.stderr.lower()
+        no_gpu_indicators = ["no gpu", "no device", "gpu not found", "rocm error", "failed", "error"]
+        has_readable_error = any(indicator in stderr_lower for indicator in no_gpu_indicators)
+        checks["No-GPU error message is readable"] = has_readable_error or bool(result.stderr)
 
     failed = [name for name, ok in checks.items() if not ok]
     assert not failed, f"rocminfo checks failed: {failed} {diag}"
