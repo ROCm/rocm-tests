@@ -64,10 +64,15 @@ def _device_count(stdout: str) -> int | None:
 @pytest.mark.layer.runtime
 @pytest.mark.os.linux
 @pytest.mark.runtime.fast
-def test_clinfo(target_executor, ld_path: dict):
+def test_clinfo(target_executor, rock_dir: str, ld_path: dict):
     """Run clinfo and validate its reported OpenCL GPU devices."""
     ld = ld_path["LD_LIBRARY_PATH"]
-    result = target_executor.run(f"env LD_LIBRARY_PATH={ld} clinfo")
+    # clinfo ships under TheRock's bin/ but is not always on PATH; prefer the
+    # rock_dir copy and fall back to a PATH-resolved clinfo, preserving stderr.
+    result = target_executor.run(
+        f"env LD_LIBRARY_PATH={ld} sh -c "
+        f"'[ -x {rock_dir}/bin/clinfo ] && exec {rock_dir}/bin/clinfo || exec clinfo'"
+    )
 
     # 1. clinfo executes.
     assert result.ok, (
