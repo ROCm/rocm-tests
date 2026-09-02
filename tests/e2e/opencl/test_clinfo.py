@@ -67,11 +67,20 @@ def _device_count(stdout: str) -> int | None:
 def test_clinfo(target_executor, rock_dir: str, ld_path: dict):
     """Run clinfo and validate its reported OpenCL GPU devices."""
     ld = ld_path["LD_LIBRARY_PATH"]
+    # A relocatable TheRock install does not register its OpenCL vendor in the
+    # system /etc/OpenCL/vendors/, so the generic ICD loader finds no platforms
+    # and clinfo fails with clGetPlatformIDs(-1001) / CL_PLATFORM_NOT_FOUND_KHR.
+    # Discover TheRock's vendor library on the node and point the loader at it
+    # via OCL_ICD_FILENAMES (honored by both ocl-icd and the Khronos loader).
+    #
     # clinfo ships under TheRock's bin/ but is not always on PATH; prefer the
     # rock_dir copy and fall back to a PATH-resolved clinfo, preserving stderr.
     result = target_executor.run(
-        f"env LD_LIBRARY_PATH={ld} sh -c "
-        f"'[ -x {rock_dir}/bin/clinfo ] && exec {rock_dir}/bin/clinfo || exec clinfo'"
+        f"env LD_LIBRARY_PATH={ld} sh -c '"
+        f'ocl_lib=$(ls {rock_dir}/lib/libamdocl64.so 2>/dev/null || '
+        f'find {rock_dir} -name libamdocl64.so 2>/dev/null | head -1); '
+        f'[ -n "$ocl_lib" ] && export OCL_ICD_FILENAMES="$ocl_lib"; '
+        f"[ -x {rock_dir}/bin/clinfo ] && exec {rock_dir}/bin/clinfo || exec clinfo'"
     )
 
     # 1. clinfo executes.
