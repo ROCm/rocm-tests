@@ -17,6 +17,7 @@ hw.gpu, ci.nightly, layer.runtime, runtime.fast and os.linux are declared explic
 """
 
 import re
+from pathlib import PurePosixPath
 
 import pytest
 
@@ -83,9 +84,14 @@ def _evaluate(agents: list[dict], l2_sizes: list[str]):
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 @pytest.mark.os.linux
-def test_rocminfo(target_executor):
+def test_rocminfo(target_executor, rock_dir):
     """Validate rocminfo agent enumeration on an AMD GPU node."""
-    result = target_executor.run("rocminfo")
+    # ``rocminfo`` is frequently absent from PATH — it lives under a versioned
+    # ROCm install (e.g. /opt/rocm-7.15.0/bin/rocminfo). Invoke it by full path
+    # off the resolved TheRock/ROCm bin dir.
+    therock_bin_dir = PurePosixPath(rock_dir) / "bin"
+    rocminfo = PurePosixPath(therock_bin_dir) / "rocminfo"
+    result = target_executor.run(str(rocminfo))
     diag = f"(exit={result.exit_code})\nstdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     executed = bool(result.ok and result.stdout)
     assert executed, f"rocminfo did not execute {diag}"
