@@ -132,56 +132,26 @@ jobs:
         shell: bash
 
     steps:
+      - name: Checkout CI scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/**
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Check runner queue wait time
         id: queue_guard
         env:
           # Secondary safety net: check_runners in e2e-nightly.yml already vetted
           # runner availability before this job was dispatched. This step catches the
           # rare edge case where a runner went offline between the pre-check and job
-          # pickup. Uses github.event.created_at (workflow trigger time) as the
+          # pickup. Uses github.run_started_at (workflow trigger time) as the
           # reference — the window here is intentionally generous (15 min) so that
           # legitimate slow-start runners are not falsely skipped.
           WORKFLOW_QUEUED_AT: ${{ github.run_started_at }}
           RUNNER_NAME: ${{ inputs.runs_on }}
           MAX_QUEUE_WAIT_SECS: '900'   # 15 min safety-net window
-        shell: python3 {0}
-        run: |
-          import os
-          from datetime import datetime, timezone
-
-          queued_at = os.environ.get("WORKFLOW_QUEUED_AT", "").strip()
-          runner    = os.environ.get("RUNNER_NAME", "")
-          max_wait  = int(os.environ.get("MAX_QUEUE_WAIT_SECS", "900"))
-          gh_output = os.environ.get("GITHUB_OUTPUT", "")
-
-          def _set_outputs(**pairs):
-              if gh_output:
-                  with open(gh_output, "a") as f:
-                      for key, value in pairs.items():
-                          f.write(f"{key}={value}\n")
-
-          if not queued_at:
-              print(f"Runner queue guard: WORKFLOW_QUEUED_AT not set — skipping wait check for {runner!r}")
-              _set_outputs(proceed="true")
-          else:
-              triggered = datetime.fromisoformat(queued_at.replace("Z", "+00:00"))
-              now       = datetime.now(timezone.utc)
-              waited    = (now - triggered).total_seconds()
-              print(f"Runner queue guard: runner={runner!r} waited={waited:.0f}s limit={max_wait}s", flush=True)
-
-              if waited > max_wait:
-                  print(
-                      f"::warning::Runner {runner!r} not acquired within {max_wait // 60}min"
-                      f" (waited {waited:.0f}s) — platform skipped",
-                      flush=True,
-                  )
-                  _set_outputs(
-                      proceed="false",
-                      skip_reason=f"runner not acquired within {max_wait // 60}min (waited {waited:.0f}s)",
-                  )
-              else:
-                  print(f"Runner acquired within limit ({waited:.0f}s ≤ {max_wait}s) — proceeding", flush=True)
-                  _set_outputs(proceed="true")
+        run: python3 .github/scripts/queue_guard.py
 
       - name: Report skipped platform
         if: ${{ steps.queue_guard.outputs.proceed == 'false' }}

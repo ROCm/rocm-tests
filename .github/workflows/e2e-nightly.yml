@@ -102,47 +102,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_REPO: ${{ inputs.source_repo || 'ROCm/rockrel' }}
           ARTIFACT_SOURCE: ${{ inputs.artifact_source || 'multi_arch_release.yml' }}
-        shell: python
-        run: |
-          import json, os, sys
-          from urllib.error import HTTPError, URLError
-          from urllib.request import urlopen, Request
-
-          repo   = os.environ["SOURCE_REPO"]
-          source = os.environ["ARTIFACT_SOURCE"].strip()
-
-          if source.isdigit():
-            run_id = source
-            print(f'artifact_source is a run id - pinning {repo} run {run_id}')
-          else:
-            url = (
-              f'https://api.github.com/repos/{repo}/actions/workflows/'
-              f'{source}/runs?status=success&event=schedule&branch=main&per_page=1'
-            )
-            req = Request(url, headers={
-              'Authorization': f'Bearer {os.environ["GITHUB_TOKEN"]}',
-              'Accept': 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-            })
-            try:
-              with urlopen(req) as resp:
-                data = json.loads(resp.read())
-            except HTTPError as exc:
-              sys.exit(
-                f'GitHub API returned {exc.code} for {url}\n'
-                f"artifact_source must be a workflow filename in {repo} (e.g. "
-                f'"multi_arch_release.yml") or an all-numeric run id.'
-              )
-            except URLError as exc:
-              sys.exit(f'Could not reach the GitHub API for {url}: {exc.reason}')
-            runs = data.get('workflow_runs') or []
-            if not runs:
-              sys.exit(f'No successful scheduled run on main for {repo}/{source}')
-            run_id = runs[0]['id']
-            print(f'Latest successful run of {repo}/{source}: {run_id}')
-
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-            f.write(f'run_id={run_id}\n')
+        run: python3 .github/scripts/resolve_rockrel_run_id.py
 
       - name: Build test matrix from Test Configuration
         id: testplan
@@ -180,6 +140,13 @@ jobs:
           private-key: ${{ secrets.RUNNER_HEALTH_PRIVATE_KEY }}
           owner: ROCm
 
+      - name: Checkout rocm-tests
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/**
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Poll runner availability (persistent runners only)
         id: poll
         env:
@@ -187,164 +154,7 @@ jobs:
           TARGETS_JSON: ${{ needs.setup_matrix.outputs.targets }}
           MAX_WAIT_SECS: '120'
           POLL_INTERVAL_SECS: '15'
-        shell: python3 {0}
-        run: |
-          import json, os, sys, time
-          from urllib.request import urlopen, Request
-          from urllib.error import HTTPError, URLError
-
-          token    = os.environ["GITHUB_TOKEN"]
-          repo     = os.environ["GITHUB_REPOSITORY"]            # "owner/repo"
-          org      = repo.split("/")[0]
-          targets  = json.loads(os.environ["TARGETS_JSON"])
-          max_wait = int(os.environ.get("MAX_WAIT_SECS",      "120"))
-          interval = int(os.environ.get("POLL_INTERVAL_SECS", "15"))
-
-          def is_arc(label: str) -> bool:
-              """ARC (Actions Runner Controller) runners are ephemeral Kubernetes pods.
-              They register only when a job is dispatched and deregister on completion,
-              so they are never visible in the runner API when idle. Detect them by the
-              'ossci' substring present in all ARC scale-set labels in this repo.
-              queue_guard in e2e-tests.yml handles the post-dispatch timeout for these.
-              """
-              return "ossci" in label.lower()
-
-          def get_registered_labels(wanted: set[str]) -> set[str]:
-              """Return the subset of *wanted* label names that have at least one
-              registered runner (online or in_use). Stops paginating an endpoint as
-              soon as all wanted labels are found — avoids fetching the full fleet
-              when only a handful of persistent runners need checking.
-              Tries repo-level then org-level endpoints.
-              """
-              found = set()
-              endpoints = [
-                  f"https://api.github.com/repos/{repo}/actions/runners",
-                  f"https://api.github.com/orgs/{org}/actions/runners",
-              ]
-              for base_url in endpoints:
-                  if found >= wanted:
-                      break           # all labels already located — skip remaining endpoint
-                  page = 1
-                  while True:
-                      url = f"{base_url}?per_page=100&page={page}"
-                      req = Request(url, headers={
-                          "Authorization":        f"Bearer {token}",
-                          "Accept":               "application/vnd.github+json",
-                          "X-GitHub-Api-Version": "2022-11-28",
-                      })
-                      try:
-                          with urlopen(req, timeout=15) as resp:
-                              data = json.loads(resp.read())
-                      except HTTPError as exc:
-                          level = "repo" if "repos" in base_url else "org"
-                          print(f"  [{level}] runners API: HTTP {exc.code} — skipping")
-                          break
-                      except URLError as exc:
-                          print(f"  runners API network error ({exc.reason}) — skipping")
-                          break
-
-                      runners = data.get("runners", [])
-                      if not runners:
-                          break
-                      for r in runners:
-                          if r.get("status") in ("online", "in_use"):
-                              for lbl in r.get("labels", []):
-                                  if lbl["name"] in wanted:
-                                      found.add(lbl["name"])
-                      if len(runners) < 100 or found >= wanted:
-                          break
-                      page += 1
-              return found
-
-          # ── Classify targets ──────────────────────────────────────────────
-          # target_available=false  → final skip (testplan.ini decision)
-          # ARC runner (ossci label) → trust target_available=true; queue_guard handles post-dispatch
-          # persistent runner        → poll the runner API for online/in_use status
-          resolved   = {}   # platform name → True (run) | False (skip)
-          to_poll    = []   # persistent runners needing a live API check
-
-          for t in targets:
-              label = t.get("runs_on", "")
-              if t.get("target_available", "true").strip().lower() == "false":
-                  resolved[t["name"]] = False
-                  print(f"  {t['name']}: testplan.ini target_available=false — skip")
-              elif is_arc(label):
-                  resolved[t["name"]] = True
-                  print(f"  {t['name']} ({label}): ARC ephemeral runner — bypassing poll, queue_guard handles dispatch timeout")
-              elif not label:
-                  resolved[t["name"]] = True
-                  print(f"  {t['name']}: no runs_on label configured — passing through")
-              else:
-                  to_poll.append(t)
-
-          # ── Poll persistent runners until resolved or deadline reached ────
-          if not to_poll:
-              print("\nNo persistent runners to poll — done.")
-          else:
-              wanted   = {t["runs_on"] for t in to_poll}   # labels we actually care about
-              deadline = time.monotonic() + max_wait
-              attempt  = 0
-              print(f"\nPolling {len(to_poll)} persistent runner(s) "
-                    f"(budget: {max_wait}s, interval: {interval}s) …\n")
-
-              while to_poll:
-                  attempt += 1
-                  registered = get_registered_labels(wanted)
-                  print(f"[poll #{attempt}]")
-
-                  still_pending = []
-                  for t in to_poll:
-                      label = t["runs_on"]
-                      if label in registered:
-                          resolved[t["name"]] = True
-                          wanted.discard(label)
-                          print(f"  ✓ {t['name']} ({label}): online")
-                      else:
-                          print(f"  … {t['name']} ({label}): not yet registered")
-                          still_pending.append(t)
-                  to_poll = still_pending
-
-                  if not to_poll:
-                      print("\nAll persistent runners resolved — proceeding immediately.")
-                      break
-
-                  remaining = deadline - time.monotonic()
-                  if remaining <= 0:
-                      for t in to_poll:
-                          resolved[t["name"]] = False
-                          print(f"  ✗ {t['name']} ({t['runs_on']}): "
-                                f"not registered after {max_wait}s — will skip")
-                      to_poll = []
-                      break
-
-                  sleep_secs = min(interval, remaining)
-                  names_left = [t["name"] for t in to_poll]
-                  print(f"  Still pending: {names_left} — "
-                        f"next check in {sleep_secs:.0f}s ({remaining:.0f}s budget remaining)\n")
-                  time.sleep(sleep_secs)
-
-          # ── Build updated targets matrix and skipped list ─────────────────
-          updated_targets = []
-          skipped_names   = []
-
-          for t in targets:
-              # Platforms not seen by the API check keep their testplan.ini value
-              avail   = resolved.get(t["name"], True)
-              updated = {**t, "target_available": str(avail).lower()}
-              updated_targets.append(updated)
-              if not avail:
-                  skipped_names.append(t["name"])
-
-          print("\n── Runner availability summary ──")
-          for t in updated_targets:
-              status = "✓ will run" if t["target_available"] == "true" else "✗ skipped"
-              print(f"  {t['name']}: {status}")
-
-          gh_output = os.environ.get("GITHUB_OUTPUT", "")
-          if gh_output:
-              with open(gh_output, "a") as fh:
-                  fh.write(f"targets={json.dumps(updated_targets)}\n")
-                  fh.write(f"skipped_targets={json.dumps(skipped_names)}\n")
+        run: python3 .github/scripts/check_runners.py
 
   e2e_nightly:
     name: "${{ matrix.target.name }}"
