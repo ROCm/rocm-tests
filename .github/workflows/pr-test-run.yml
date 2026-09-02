@@ -1,0 +1,395 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# pr-test-run workflow — advisory PR test execution on GPU runners.
+#
+# Automatically detects which tests are impacted by the PR's changed files and
+# runs only those tests.  Results are advisory (fail-fast: false) — they
+# do not block merging.  No ClickHouse upload.
+#
+# PR GPU runners are declared in testplan.ini (linux-gfx950-MI355, linux-gfx1151).
+#
+# Authorization policy (enforced by check_authorization job):
+#   GPU tests only run for actors who have write access to this repository,
+#   which is the equivalent of being a member of the ROCm/rocm-tests-write
+#   team.  No PAT or external secret is required — all signals come from the
+#   event payload that GitHub provides to every pull_request trigger.
+#
+#   An actor is trusted when ANY of the following is true (checked in order):
+#     1. workflow_dispatch — only repo collaborators can trigger this event on
+#        private runners; authorized by definition.
+#     2. PR is from an internal branch (head.repo.fork == false) — only actors
+#        with push access to the repo can create branches here.
+#     3. PR is from a fork AND author_association is OWNER, MEMBER, or
+#        COLLABORATOR — the actor is a ROCm org member or an explicitly invited
+#        collaborator (both imply rocm-tests-write eligibility).
+#
+#   All other cases (fork PR from CONTRIBUTOR / FIRST_TIME_CONTRIBUTOR / NONE)
+#   are denied — downstream jobs are skipped, not failed.
+#
+# Layer structure:
+#   [check_authorization]  (ubuntu-latest, no GPU) — gate for all downstream jobs
+#        └── [detect_changes]     (ubuntu-latest, no GPU)
+#                └── [setup_matrix]   (ubuntu-latest, no GPU) — builds JSON matrix from vars context
+#                        └── [pr_tests — gfx950-MI355]    (GPU runner, conditional on has_tests)
+#                        └── [pr_tests — gfx1151]         (GPU runner, conditional on has_tests)
+#
+# Trigger:
+#   pull_request — opened, synchronize, reopened
+#   workflow_dispatch — manual kick with optional runner override
+
+name: PR Test Run (Advisory)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+  workflow_dispatch:
+    inputs:
+      runner_override:
+        description: 'Override the default runners (comma-separated, e.g. "linux-mi355-1gpu-ossci-rocm")'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # ── Step 0: verify the actor has write access (rocm-tests-write eligible) ─────
+  #
+  # Runs before any checkout or GPU allocation.  No secrets required — all
+  # signals come from the event payload.  Produces a single boolean output
+  # `authorized`.  Downstream jobs gate on it so that unauthorized PRs appear
+  # as grey/skipped in the GitHub UI, never as failures.
+
+  check_authorization:
+    name: Check PR author authorization
+    runs-on: ubuntu-latest
+    outputs:
+      authorized: ${{ steps.authz.outputs.authorized }}
+      reason:     ${{ steps.authz.outputs.reason }}
+
+    steps:
+      - name: Verify actor has rocm-tests-write access
+        id: authz
+        env:
+          ACTOR:         ${{ github.actor }}
+          EVENT_NAME:    ${{ github.event_name }}
+          # True when the PR head branch lives in a fork of this repo.
+          # False when it lives in a branch of this repo itself.
+          # Only actors with push access can push to non-fork branches.
+          IS_FORK:       ${{ github.event.pull_request.head.repo.fork }}
+          # GitHub-computed relationship of the PR author to this repository:
+          #   OWNER       — the repository owner account
+          #   MEMBER      — member of the ROCm org (includes rocm-tests-write)
+          #   COLLABORATOR — explicitly invited with push access
+          #   CONTRIBUTOR / FIRST_TIME_CONTRIBUTOR / FIRST_TIMER / NONE — external
+          # Empty string when event is workflow_dispatch (no PR context).
+          ASSOCIATION:   ${{ github.event.pull_request.author_association }}
+        shell: python
+        run: |
+          import os, sys
+
+          actor      = os.environ["ACTOR"]
+          event_name = os.environ["EVENT_NAME"]
+          is_fork    = os.environ.get("IS_FORK", "false").lower()
+          association = os.environ.get("ASSOCIATION", "")
+          out_file   = os.environ["GITHUB_OUTPUT"]
+          summary    = os.environ["GITHUB_STEP_SUMMARY"]
+
+          # Associations that imply write access to this repo.
+          # MEMBER      → ROCm org member → automatically in rocm-tests-write
+          # COLLABORATOR → directly invited with push access
+          # OWNER       → repo owner
+          _WRITE_ACCESS = {"OWNER", "MEMBER", "COLLABORATOR"}
+
+          # Known GitHub author_association values — used to validate before
+          # writing to GITHUB_OUTPUT and step summary (F5: injection hardening).
+          _ALL_KNOWN_ASSOCIATIONS = _WRITE_ACCESS | {
+              "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", "",
+          }
+
+          def _sanitize(value: str) -> str:
+              """Strip newlines and carriage returns to prevent GITHUB_OUTPUT injection.
+
+              A newline in a 'key=value' line written to $GITHUB_OUTPUT would corrupt
+              the file format and could inject additional output variables.
+              """
+              return value.replace("\r", "").replace("\n", " ").strip()
+
+          def finish(authorized: bool, reason: str) -> None:
+              """Persist job output and write step summary, then exit cleanly."""
+              # SECURITY (F5): sanitize all values written to GITHUB_OUTPUT to
+              # prevent newline injection that could corrupt the output file format.
+              safe_reason = _sanitize(reason)
+              # Validate association against the known enum before embedding in
+              # Markdown to prevent unexpected values from breaking table rendering.
+              safe_association = (
+                  association if association in _ALL_KNOWN_ASSOCIATIONS
+                  else f"UNKNOWN({_sanitize(association)})"
+              )
+              safe_is_fork = "true" if is_fork == "true" else "false"
+
+              with open(out_file, "a") as f:
+                  f.write(f"authorized={'true' if authorized else 'false'}\n")
+                  f.write(f"reason={safe_reason}\n")
+              badge = "✅ Authorized" if authorized else "🚫 Not authorized — GPU tests skipped"
+              with open(summary, "a") as f:
+                  f.write("## PR Authorization Check\n\n")
+                  f.write("| Actor | Association | Fork | Result |\n")
+                  f.write("|---|---|---|---|\n")
+                  f.write(
+                      f"| `{actor}` | {safe_association or '—'} "
+                      f"| {safe_is_fork} | {badge} |\n\n"
+                  )
+                  if not authorized:
+                      f.write(
+                          "> GPU tests are restricted to members of the "
+                          "`ROCm/rocm-tests-write` team (ROCm org members and "
+                          "invited collaborators with push access).\n"
+                          "> Maintainers can trigger tests manually via "
+                          "`workflow_dispatch`.\n\n"
+                      )
+              print(f"[authz] actor={actor} association={association!r} "
+                    f"is_fork={is_fork} → authorized={authorized} ({safe_reason})",
+                    flush=True)
+              sys.exit(0)
+
+          # ── Check 1: workflow_dispatch ────────────────────────────────────────
+          # Triggering workflow_dispatch requires at least write access to the
+          # repo — no further verification needed.
+          if event_name == "workflow_dispatch":
+              finish(True, "workflow_dispatch — actor has repo write access")
+
+          # ── Check 2: internal branch (non-fork PR) ────────────────────────────
+          # GitHub only allows actors with push access to push branches to the
+          # base repo.  A non-fork PR is therefore proof of write access.
+          # GitHub's author_association reflects the actor's relationship to the
+          # repo directly (OWNER/MEMBER/COLLABORATOR for org members or direct
+          # invites), but team membership alone (e.g. rocm-tests-write) does NOT
+          # upgrade association — it stays CONTRIBUTOR even though the actor has
+          # full push access.  For non-fork PRs, GitHub's own branch-protection
+          # already enforces push access, so the association check is redundant
+          # and incorrectly blocks team members.
+          # Exception: deny association="NONE" to block bots and GitHub Actions
+          # service accounts that have no meaningful user identity.
+          if is_fork == "false" and association != "NONE":
+              finish(True, f"internal branch — push access confirmed (association={association})")
+
+          # ── Check 3: fork PR from a write-access actor ────────────────────────
+          # ROCm org members and direct collaborators may still open PRs from
+          # personal forks.  author_association identifies them without any API
+          # call or secret.
+          if association in _WRITE_ACCESS:
+              finish(True, f"fork PR — rocm-tests-write eligible (association={association})")
+
+          # ── All checks failed — external fork from untrusted actor ────────────
+          finish(
+              False,
+              f"fork PR from external actor — association={association!r} "
+              f"is not in {sorted(_WRITE_ACCESS)}",
+          )
+
+  # ── Step 1: detect which tests are impacted ──────────────────────────────────
+  detect_changes:
+    name: Detect impacted tests
+    runs-on: ubuntu-latest
+    needs: check_authorization
+    if: ${{ needs.check_authorization.outputs.authorized == 'true' }}
+    outputs:
+      test_paths: ${{ steps.detect.outputs.test_paths }}
+      has_tests:  ${{ steps.detect.outputs.has_tests }}
+
+    steps:
+      # Shallow clone to access the composite action definition, then re-clone
+      # with the correct depth for the diff.
+      - name: Checkout rocm-tests (shallow, for composite action)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Compute PR fetch depth
+        id: depth
+        uses: ./.github/actions/compute_pr_fetch_depth
+
+      - name: Checkout rocm-tests (full PR depth for diff)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: ${{ steps.depth.outputs.value }}
+          persist-credentials: false
+
+      - name: Get changed files
+        id: changed
+        env:
+          # Passed via env to avoid inline shell interpolation of SHAs.
+          # Both are empty strings on workflow_dispatch (no PR context).
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # On pull_request events, diff from the merge-base of the PR branch
+          # against the base branch.  On workflow_dispatch, diff HEAD~1.
+          if [ -n "${BASE_SHA}" ]; then
+            # Fetch base so the merge-base is reachable.
+            git fetch --depth=1 origin "${BASE_SHA}" 2>/dev/null || true
+            FILES=$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" 2>/dev/null || \
+                    git diff --name-only HEAD~1 2>/dev/null || true)
+          else
+            # workflow_dispatch: diff last commit; guard against single-commit repos.
+            FILES=$(git diff --name-only HEAD~1 2>/dev/null || true)
+          fi
+          echo "Changed files:"
+          echo "${FILES}"
+          # Write the raw file list to a temp file so Python can read it without
+          # any shell variable expansion touching the content.
+          printf '%s' "${FILES}" > /tmp/changed_files_raw.txt
+
+          # SECURITY: Write CHANGED_FILES to $GITHUB_ENV using a Python-generated
+          # UUID delimiter.  A static delimiter (e.g. "DETECT_EOF") could be
+          # embedded in an attacker-controlled filename, breaking out of the
+          # heredoc and injecting arbitrary environment variables.
+          python3 - <<'PYEOF'
+          import os, uuid
+          with open("/tmp/changed_files_raw.txt") as f:
+              files_content = f.read()
+          delimiter = "GHA_DETECT_" + uuid.uuid4().hex.upper()
+          with open(os.environ["GITHUB_ENV"], "a") as fh:
+              fh.write("CHANGED_FILES<<" + delimiter + "\n")
+              for line in files_content.splitlines():
+                  # Defensive: drop any line that contains the delimiter itself.
+                  if delimiter not in line:
+                      fh.write(line + "\n")
+              fh.write(delimiter + "\n")
+          PYEOF
+
+      - name: Detect impacted test paths
+        id: detect
+        env:
+          CHANGED_FILES: ${{ env.CHANGED_FILES }}
+        run: |
+          cd build_tools/github_actions
+          python detect_changed_tests.py
+
+      - name: Summarise detection
+        env:
+          HAS_TESTS:  ${{ steps.detect.outputs.has_tests }}
+          TEST_PATHS: ${{ steps.detect.outputs.test_paths }}
+        run: |
+          echo "## PR Test Detection" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${HAS_TESTS}" = "true" ]; then
+            echo "**Impacted tests found — GPU jobs will run.**" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "${TEST_PATHS}" | tr ' ' '\n' >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**No test files impacted — GPU jobs skipped.**" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ── Step 2: build the runner matrix ─────────────────────────────────────────
+  #
+  # GitHub Actions does not support expressions (${{ vars.* }}) inside a static
+  # matrix definition — they are evaluated at parse time before any context is
+  # available, which causes a "workflow file issue" failure with 0 jobs created.
+  # Instead we build the JSON matrix in a plain shell step (where all contexts
+  # are available) and pass it to pr_tests via fromJSON().
+  #
+  # Runner details (runs_on, artifact_group, gpu_arch, target_available,
+  # extra_docker_args) are read directly from testplan.ini so this workflow
+  # only names which sections to use.  Sections with target_available = false
+  # are silently skipped — no runner is consumed for them.
+
+  setup_matrix:
+    name: Build runner matrix
+    runs-on: ubuntu-latest
+    needs: [check_authorization, detect_changes]
+    if: |
+      needs.check_authorization.outputs.authorized == 'true' &&
+      needs.detect_changes.outputs.has_tests == 'true'
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+
+    steps:
+      - name: Checkout rocm-tests (for testplan.ini)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build platform matrix JSON
+        id: build
+        shell: python
+        run: |
+          import configparser, json, os
+
+          # PR targets: section names from testplan.ini that this workflow runs.
+          # All runner details are read from testplan.ini — edit that file to
+          # change labels, artifact groups, or availability; do not duplicate
+          # values here.
+          PR_TARGETS = [
+              "linux-gfx950-MI355",
+              "linux-gfx1151",
+          ]
+
+          cfg = configparser.ConfigParser()
+          cfg.read("testplan.ini")
+
+          platforms = []
+          for section in PR_TARGETS:
+              if section not in cfg:
+                  raise ValueError(f"[setup_matrix] section '{section}' not found in testplan.ini")
+              s = cfg[section]
+              if s.get("target_available", "false").strip().lower() != "true":
+                  print(f"[setup_matrix] skipping '{section}' (target_available != true)")
+                  continue
+              platforms.append({
+                  "name":              section,
+                  "runs_on":           s["runs_on"].strip(),
+                  "artifact_group":    s["artifact_group"].strip(),
+                  "gpu_arch":          s["gpu_arch"].strip(),
+                  "extra_docker_args": s.get("extra_docker_args", "").strip(),
+              })
+
+          matrix_json = json.dumps({"platform": platforms})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"matrix={matrix_json}\n")
+          print(f"[setup_matrix] matrix={matrix_json}")
+
+  # ── Step 3: run impacted tests on fixed GPU runners ─────────────────────────
+  #
+  # Matrix is consumed via fromJSON() from setup_matrix.  Each leg calls the
+  # shared e2e-tests.yml reusable workflow.  Advisory: fail-fast: false ensures
+  # a failure on one platform does not cancel the other.
+  #
+  # NOTE: continue-on-error is NOT supported on reusable workflow call jobs
+  # (jobs that use `uses:`).  GitHub Actions rejects such workflows with:
+  #   "Unexpected value 'uses'" / "Required property is missing: runs-on"
+  # Use fail-fast: false instead for advisory matrix behavior.
+
+  pr_tests:
+    name: "pr-test: ${{ matrix.platform.name }}"
+    needs: [check_authorization, detect_changes, setup_matrix]
+    if: |
+      needs.check_authorization.outputs.authorized == 'true' &&
+      needs.detect_changes.outputs.has_tests == 'true'
+    strategy:
+      fail-fast: false  # Advisory: one platform failure does not cancel the other.
+      matrix: ${{ fromJSON(needs.setup_matrix.outputs.matrix) }}
+    uses: ./.github/workflows/e2e-tests.yml
+    with:
+      name:               ${{ matrix.platform.name }}
+      runs_on:            ${{ matrix.platform.runs_on }}
+      artifact_group:     ${{ matrix.platform.artifact_group }}
+      gpu_arch:           ${{ matrix.platform.gpu_arch }}
+      # Run all nightly and weekly markers so the full impacted set is covered.
+      tests_filters:      "ci.nightly or ci.weekly"
+      source_repo:        ROCm/rockrel
+      artifact_source:    multi_arch_release.yml
+      include_dev:        true
+      target_available:   "true"
+      test_paths_override: ${{ needs.detect_changes.outputs.test_paths }}
+      extra_docker_args:  ${{ matrix.platform.extra_docker_args }}
+      artifact_prefix:    pr-artifacts

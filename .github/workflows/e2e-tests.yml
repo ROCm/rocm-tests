@@ -1,7 +1,8 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# e2e-tests workflow — reusable per-platform executor called by e2e-nightly.yml.
+# e2e-tests workflow — reusable per-platform executor called by e2e-nightly.yml,
+# ci-weekly.yml, and pr-test-run.yml.
 #
 # Receives all platform parameters as workflow_call inputs. The job-level
 # if: condition uses inputs.target_available so that platforms marked as
@@ -64,6 +65,23 @@ on:
         required: false
         type: string
         default: ''
+      test_paths_override:
+        description: >-
+          Space-separated list of test paths to run instead of the default suite.
+          Used by pr-test-run to run only changed tests (e.g. "tests/e2e/hip_runtime/").
+        required: false
+        type: string
+        default: ''
+      extra_docker_args:
+        description: 'Extra arguments appended to the container options (e.g. --env-file /etc/podinfo/...)'
+        required: false
+        type: string
+        default: ''
+      artifact_prefix:
+        description: 'Artifact name prefix for uploaded reports (nightly-artifacts, weekly-artifacts, pr-artifacts)'
+        required: false
+        type: string
+        default: 'nightly-artifacts'
 
   workflow_call:
     inputs:
@@ -107,6 +125,18 @@ on:
         required: false
         type: string
         default: ''
+      test_paths_override:
+        required: false
+        type: string
+        default: ''
+      extra_docker_args:
+        required: false
+        type: string
+        default: ''
+      artifact_prefix:
+        required: false
+        type: string
+        default: 'nightly-artifacts'
 
 jobs:
   platform:
@@ -126,7 +156,7 @@ jobs:
         --ulimit memlock=-1:-1
         --security-opt seccomp=unconfined
         --user 0:0
-        ${{inputs.extra_docker_args}}
+        ${{ inputs.extra_docker_args }}
     defaults:
       run:
         shell: bash
@@ -191,7 +221,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: "ROCm/TheRock"
-          ref: main
+          ref: main  # TODO(security): pin to a commit SHA, e.g. ref: <sha>  # vX.Y.Z YYYY-MM-DD
           path: TheRock
           persist-credentials: false
 
@@ -216,22 +246,32 @@ jobs:
           cd TheRock
           python3 -m pip install --root-user-action=ignore --no-cache-dir -r requirements-test.txt
 
-          COMMON_FLAGS="--artifact-group ${ARTIFACT_GROUP} --amdgpu-targets ${GPU_ARCH} --tests --blas --fft --hipdnn --miopen --miopenprovider --rocdecode --rocjpeg --rocprofiler-compute --rocprofiler-sdk --rocprofiler-systems --prim --rand --rocwmma --hipblasltprovider --libhipcxx --rccl --output-dir ../therock_build"
+          # Use a bash array for COMMON_FLAGS to prevent word-splitting injection
+          # from ${ARTIFACT_GROUP} or ${GPU_ARCH} containing shell metacharacters.
+          COMMON_FLAGS=(
+            "--artifact-group" "${ARTIFACT_GROUP}"
+            "--amdgpu-targets" "${GPU_ARCH}"
+            "--tests" "--blas" "--fft" "--hipdnn" "--miopen" "--miopenprovider"
+            "--rocdecode" "--rocjpeg" "--rocprofiler-compute" "--rocprofiler-sdk"
+            "--rocprofiler-systems" "--prim" "--rand" "--rocwmma" "--hipblasltprovider"
+            "--libhipcxx" "--rccl"
+            "--output-dir" "../therock_build"
+          )
 
           if [ "${SOURCE_REPO}" = "ROCm/rockrel" ]; then
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
               --run-github-repo "${SOURCE_REPO}" \
               --run-id "${RUN_ID}" \
-              $COMMON_FLAGS
+              "${COMMON_FLAGS[@]}"
           elif [ "${ARTIFACT_SOURCE:-latest-release}" = "latest-release" ]; then
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
               --latest-release \
-              $COMMON_FLAGS
+              "${COMMON_FLAGS[@]}"
           else
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
               --tag "${ARTIFACT_SOURCE}" \
               --run-github-repo "${SOURCE_REPO}" \
-              $COMMON_FLAGS
+              "${COMMON_FLAGS[@]}"
           fi
 
           # Supplement _dev artifacts (headers / CMake / static libs) when requested
@@ -240,8 +280,8 @@ jobs:
             RELEASE_TYPE=nightly python3 build_tools/fetch_artifacts.py \
               --run-id "${RUN_ID}" \
               --run-github-repo "${SOURCE_REPO}" \
-              --artifact-group ${ARTIFACT_GROUP} \
-              --amdgpu-targets ${GPU_ARCH} \
+              --artifact-group "${ARTIFACT_GROUP}" \
+              --amdgpu-targets "${GPU_ARCH}" \
               --output-dir ../therock_build \
               --flatten \
               '_dev' \
@@ -271,7 +311,7 @@ jobs:
           source .venv/bin/activate
           uv pip install -r requirements.txt
 
-      - name: Run nightly tests
+      - name: Run e2e tests
         if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
           COMMIT_ID: ${{ github.sha }}
@@ -281,6 +321,7 @@ jobs:
           GPU_ARCH: ${{ inputs.gpu_arch }}
           TESTS_FILTERS: ${{ inputs.tests_filters }}
           KEYWORD_FILTER: ${{ inputs.keyword_filter }}
+          TEST_PATHS_OVERRIDE: ${{ inputs.test_paths_override }}
         run: |
           source .venv/bin/activate
           export LD_LIBRARY_PATH="$(dirname ${PYTHON_LIB})/../lib:${GITHUB_WORKSPACE}/therock_build/lib:${LD_LIBRARY_PATH}"
@@ -288,17 +329,31 @@ jobs:
           if [ -n "${KEYWORD_FILTER}" ]; then
             KEYWORD_ARGS=(-k "${KEYWORD_FILTER}")
           fi
-          pytest tests/e2e/compiler/ \
-            tests/e2e/hwq_heuristic/ \
-            tests/e2e/hip_runtime/ \
-            tests/e2e/hipblaslt/ \
-            tests/e2e/rccl/ \
-            tests/e2e/rocm_libs/ \
-            tests/e2e/rocprim/ \
-            tests/e2e/rocm_examples/ \
-            tests/e2e/hip_directed/ \
+
+          # Use caller-supplied paths when provided (PR selective runs),
+          # otherwise fall back to the full default test suite.
+          # Use a bash array to prevent word-splitting and glob injection.
+          if [ -n "${TEST_PATHS_OVERRIDE}" ]; then
+            # IFS split on the space-separated list produced by detect_changed_tests.py.
+            # This is safe: detect_changed_tests.py only emits known paths from CATEGORY_PROFILES.
+            IFS=' ' read -ra TEST_PATHS_ARRAY <<< "${TEST_PATHS_OVERRIDE}"
+          else
+            TEST_PATHS_ARRAY=(
+              "tests/e2e/compiler/"
+              "tests/e2e/hwq_heuristic/"
+              "tests/e2e/hip_runtime/"
+              "tests/e2e/hipblaslt/"
+              "tests/e2e/rccl/"
+              "tests/e2e/rocm_libs/"
+              "tests/e2e/rocprim/"
+              "tests/e2e/rocm_examples/"
+              "tests/e2e/hip_directed/"
+            )
+          fi
+
+          pytest "${TEST_PATHS_ARRAY[@]}" \
             --rock-dir=therock_build \
-            --gpu-arch=${GPU_ARCH} \
+            --gpu-arch="${GPU_ARCH}" \
             --html=nightly_report.html --self-contained-html \
             --md-report --md-report-verbose=1 --md-report-color=never \
             --md-report-flavor gfm --md-report-output=md_summary.md --md-report-tee \
@@ -410,7 +465,6 @@ jobs:
           has_skip = r.get("skipped", 0) > 0
 
           lines = []
-          run_id = "${{ github.run_id }}"
           lines.append(f"## Test summary - {platform}")
           lines.append("")
 
@@ -453,7 +507,7 @@ jobs:
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nightly-artifacts-${{ inputs.name }}-${{ github.run_id }}
+          name: ${{ inputs.artifact_prefix }}-${{ inputs.name }}-${{ github.run_id }}
           path: |
             nightly_report.html
             md_summary.md
@@ -489,9 +543,9 @@ jobs:
           url="${ARTIFACT_URL}"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$url" ]; then
-            echo "### ⬇ [Download nightly report — ${PLATFORM_NAME}]($url)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### ⬇ [Download test report — ${PLATFORM_NAME}]($url)" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### ⬇ Download nightly report — ${PLATFORM_NAME}" >> "$GITHUB_STEP_SUMMARY"
+            echo "### ⬇ Download test report — ${PLATFORM_NAME}" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "> Zip archive — extract \`nightly_report.html\` and open locally." >> "$GITHUB_STEP_SUMMARY"

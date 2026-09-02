@@ -57,6 +57,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_configure(config: pytest.Config) -> None:
     """Store the GPU detector on the config object for use by NodePool.
 
+    Also caches the loaded FrameworkConfig on ``config._framework_config`` so
+    the ``framework_config`` fixture (session_plugin) can reuse the same object
+    instead of calling ``load_config()`` a second time with identical arguments.
+
     ``NodePool`` (remote_node_plugin) reads ``config._gpu_detector`` to run
     GPU detection on each fleet node at session start.
     """
@@ -74,6 +78,7 @@ def pytest_configure(config: pytest.Config) -> None:
             or os.environ.get("ROCM_TEST_THEROCK_ROCK_DIR")
         )
         cfg = load_config(config_path=config.getoption("--rocm-config", default=None))
+        config._framework_config = cfg  # type: ignore[attr-defined]  # reused by framework_config fixture
         config._gpu_detector = GpuDetector(  # type: ignore[attr-defined]
             rock_dir=rock_dir, artifact_dir=cfg.framework.artifact_dir
         )
