@@ -64,6 +64,21 @@ def rbt_binary(rock_dir: str, compiler_build_dir: str, external_build, cmake_bui
     with external_build.build_lock("rbt"):
         repo = external_build.clone_repo(_RBT_REPO_URL, dest, ref=_RBT_REPO_REF)
         external_build.assert_license_present(repo)
+
+        # rocm_bandwidth_test vendors fmt as a git submodule; initialize it after clone.
+        if cmake_executor is not None:
+            sub = cmake_executor.run(f"git -C {repo} submodule update --init --recursive")
+            if not sub.ok:
+                pytest.fail(f"git submodule init failed on remote:\n{sub.stderr}")
+        else:
+            sub = subprocess.run(
+                ["git", "-C", str(repo), "submodule", "update", "--init", "--recursive"],
+                capture_output=True,
+                text=True,
+            )
+            if sub.returncode != 0:
+                pytest.fail(f"git submodule init failed:\n{sub.stderr}")
+
         build_dir = cmake_build_dir(
             src=str(repo),
             subdir="system_tools/rocm_bandwidth_test",
