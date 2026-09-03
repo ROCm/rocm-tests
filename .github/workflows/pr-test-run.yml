@@ -55,6 +55,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  actions: read
 
 jobs:
   # ── Step 0: verify the actor has write access (rocm-tests-write eligible) ─────
@@ -311,6 +312,7 @@ jobs:
       needs.detect_changes.outputs.has_tests == 'true'
     outputs:
       matrix: ${{ steps.build.outputs.matrix }}
+      run_id: ${{ steps.get_runid.outputs.run_id }}
 
     steps:
       - name: Checkout rocm-tests (for testplan.ini)
@@ -318,6 +320,47 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Resolve rockrel run_id from workflow name
+        id: get_runid
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: python
+        run: |
+          import json, os, sys
+          from urllib.error import HTTPError, URLError
+          from urllib.request import urlopen, Request
+
+          repo   = "ROCm/rockrel"
+          source = "multi_arch_release.yml"
+
+          url = (
+            f'https://api.github.com/repos/{repo}/actions/workflows/'
+            f'{source}/runs?status=success&event=schedule&branch=main&per_page=1'
+          )
+          req = Request(url, headers={
+            'Authorization': f'Bearer {os.environ["GITHUB_TOKEN"]}',
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          })
+          try:
+            with urlopen(req) as resp:
+              data = json.loads(resp.read())
+          except HTTPError as exc:
+            sys.exit(
+              f'GitHub API returned {exc.code} for {url}\n'
+              f'Could not resolve latest run of {repo}/{source}.'
+            )
+          except URLError as exc:
+            sys.exit(f'Could not reach the GitHub API for {url}: {exc.reason}')
+          runs = data.get('workflow_runs') or []
+          if not runs:
+            sys.exit(f'No successful scheduled run on main for {repo}/{source}')
+          run_id = runs[0]['id']
+          print(f'Latest successful run of {repo}/{source}: {run_id}')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            f.write(f'run_id={run_id}\n')
 
       - name: Build platform matrix JSON
         id: build
@@ -389,6 +432,7 @@ jobs:
       source_repo:        ROCm/rockrel
       artifact_source:    multi_arch_release.yml
       include_dev:        true
+      run_id:             ${{ needs.setup_matrix.outputs.run_id }}
       target_available:   "true"
       test_paths_override: ${{ needs.detect_changes.outputs.test_paths }}
       extra_docker_args:  ${{ matrix.platform.extra_docker_args }}
