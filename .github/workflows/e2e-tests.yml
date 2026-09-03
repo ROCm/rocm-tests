@@ -1,7 +1,8 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# e2e-tests workflow — reusable per-platform executor called by e2e-nightly.yml.
+# e2e-tests workflow — reusable per-platform executor called by e2e-nightly.yml,
+# ci-weekly.yml, and pr-test-run.yml.
 #
 # Receives all platform parameters as workflow_call inputs. The job-level
 # if: condition uses inputs.target_available so that platforms marked as
@@ -64,6 +65,23 @@ on:
         required: false
         type: string
         default: ''
+      test_paths_override:
+        description: >-
+          Space-separated list of test paths to run instead of the default suite.
+          Used by pr-test-run to run only changed tests (e.g. "tests/e2e/hip_runtime/").
+        required: false
+        type: string
+        default: ''
+      extra_docker_args:
+        description: 'Extra arguments appended to the container options (e.g. --env-file /etc/podinfo/...)'
+        required: false
+        type: string
+        default: ''
+      artifact_prefix:
+        description: 'Artifact name prefix for uploaded reports (nightly-artifacts, weekly-artifacts, pr-artifacts)'
+        required: false
+        type: string
+        default: 'nightly-artifacts'
 
   workflow_call:
     inputs:
@@ -107,13 +125,25 @@ on:
         required: false
         type: string
         default: ''
+      test_paths_override:
+        required: false
+        type: string
+        default: ''
+      extra_docker_args:
+        required: false
+        type: string
+        default: ''
+      artifact_prefix:
+        required: false
+        type: string
+        default: 'nightly-artifacts'
 
 jobs:
   platform:
     name: "e2e tests"
     runs-on: ${{ inputs.runs_on }}
     if: ${{ inputs.target_available != 'false' }}
-    timeout-minutes: 210
+    timeout-minutes: 230
     container:
       image: ghcr.io/rocm/no_rocm_image_ubuntu24_04@sha256:4150afe4759d14822f0e3f8930e1124f26e11f68b5c7b91ec9a02b20b1ebbb98
       options: >-
@@ -126,13 +156,47 @@ jobs:
         --ulimit memlock=-1:-1
         --security-opt seccomp=unconfined
         --user 0:0
-        ${{inputs.extra_docker_args}}
+        ${{ inputs.extra_docker_args }}
     defaults:
       run:
         shell: bash
 
     steps:
+      - name: Checkout CI scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/**
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+          path: _ci_scripts
+
+      - name: Check runner queue wait time
+        id: queue_guard
+        env:
+          # Secondary safety net: check_runners in e2e-nightly.yml already vetted
+          # runner availability before this job was dispatched. This step catches the
+          # rare edge case where a runner went offline between the pre-check and job
+          # pickup. Uses github.run_started_at (workflow trigger time) as the
+          # reference — the window here is intentionally generous (15 min) so that
+          # legitimate slow-start runners are not falsely skipped.
+          WORKFLOW_QUEUED_AT: ${{ github.run_started_at }}
+          RUNNER_NAME: ${{ inputs.runs_on }}
+          MAX_QUEUE_WAIT_SECS: '900'   # 15 min safety-net window
+        run: python3 _ci_scripts/.github/scripts/queue_guard.py
+
+      - name: Report skipped platform
+        if: ${{ steps.queue_guard.outputs.proceed == 'false' }}
+        env:
+          PLATFORM_NAME: ${{ inputs.name }}
+          SKIP_REASON:   ${{ steps.queue_guard.outputs.skip_reason }}
+        run: |
+          echo "::warning::Platform ${PLATFORM_NAME} skipped — ${SKIP_REASON}"
+          echo "## ⏭ Platform skipped — ${PLATFORM_NAME}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "> **Reason:** ${SKIP_REASON}" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Resolve platform
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
           PLATFORM_NAME: ${{ inputs.name }}
           TARGET_AVAILABLE: ${{ inputs.target_available }}
@@ -141,21 +205,24 @@ jobs:
           echo "target_available: ${TARGET_AVAILABLE}"
 
       - name: Setup Python
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: setup-python
         with:
           python-version: 3.12
 
       - name: Checkout rocm-tests
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Checkout TheRock
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: "ROCm/TheRock"
-          ref: main
+          ref: main  # TODO(security): pin to a commit SHA, e.g. ref: <sha>  # vX.Y.Z YYYY-MM-DD
           path: TheRock
           persist-credentials: false
 
@@ -167,6 +234,7 @@ jobs:
       #   artifact_source = <workflow.yml>   → run_id resolved by setup_matrix;
       #   When include_dev=true: also fetches _dev archives (headers, cmake, .a)
       - name: Install ROCm artifacts
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
           ARTIFACT_GROUP: ${{ inputs.artifact_group }}
           GPU_ARCH: ${{ inputs.gpu_arch }}
@@ -179,22 +247,32 @@ jobs:
           cd TheRock
           python3 -m pip install --root-user-action=ignore --no-cache-dir -r requirements-test.txt
 
-          COMMON_FLAGS="--artifact-group ${ARTIFACT_GROUP} --amdgpu-targets ${GPU_ARCH} --tests --blas --fft --hipdnn --miopen --miopenprovider --rocdecode --rocjpeg --rocprofiler-compute --rocprofiler-sdk --rocprofiler-systems --prim --rand --rocwmma --hipblasltprovider --libhipcxx --rccl --output-dir ../therock_build"
+          # Use a bash array for COMMON_FLAGS to prevent word-splitting injection
+          # from ${ARTIFACT_GROUP} or ${GPU_ARCH} containing shell metacharacters.
+          COMMON_FLAGS=(
+            "--artifact-group" "${ARTIFACT_GROUP}"
+            "--amdgpu-targets" "${GPU_ARCH}"
+            "--tests" "--blas" "--fft" "--hipdnn" "--miopen" "--miopenprovider"
+            "--rocdecode" "--rocjpeg" "--rocprofiler-compute" "--rocprofiler-sdk"
+            "--rocprofiler-systems" "--prim" "--rand" "--rocwmma" "--hipblasltprovider"
+            "--libhipcxx" "--rccl"
+            "--output-dir" "../therock_build"
+          )
 
           if [ "${SOURCE_REPO}" = "ROCm/rockrel" ]; then
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
               --run-github-repo "${SOURCE_REPO}" \
               --run-id "${RUN_ID}" \
-              $COMMON_FLAGS
+              "${COMMON_FLAGS[@]}"
           elif [ "${ARTIFACT_SOURCE:-latest-release}" = "latest-release" ]; then
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
               --latest-release \
-              $COMMON_FLAGS
+              "${COMMON_FLAGS[@]}"
           else
             RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
               --tag "${ARTIFACT_SOURCE}" \
               --run-github-repo "${SOURCE_REPO}" \
-              $COMMON_FLAGS
+              "${COMMON_FLAGS[@]}"
           fi
 
           # Supplement _dev artifacts (headers / CMake / static libs) when requested
@@ -203,8 +281,8 @@ jobs:
             RELEASE_TYPE=nightly python3 build_tools/fetch_artifacts.py \
               --run-id "${RUN_ID}" \
               --run-github-repo "${SOURCE_REPO}" \
-              --artifact-group ${ARTIFACT_GROUP} \
-              --amdgpu-targets ${GPU_ARCH} \
+              --artifact-group "${ARTIFACT_GROUP}" \
+              --amdgpu-targets "${GPU_ARCH}" \
               --output-dir ../therock_build \
               --flatten \
               '_dev' \
@@ -217,6 +295,7 @@ jobs:
           fi
 
       - name: Install uv
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: astral-sh/setup-uv@bd01e18f51369d5a26f1651c3cb451d3417e3bba # v6.3.1
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -225,6 +304,7 @@ jobs:
           enable-cache: true
 
       - name: Install test dependencies
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends make pciutils
@@ -232,7 +312,8 @@ jobs:
           source .venv/bin/activate
           uv pip install -r requirements.txt
 
-      - name: Run nightly tests
+      - name: Run e2e tests
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
           COMMIT_ID: ${{ github.sha }}
           CURRENT_BRANCH: ${{ github.ref_name }}
@@ -241,6 +322,7 @@ jobs:
           GPU_ARCH: ${{ inputs.gpu_arch }}
           TESTS_FILTERS: ${{ inputs.tests_filters }}
           KEYWORD_FILTER: ${{ inputs.keyword_filter }}
+          TEST_PATHS_OVERRIDE: ${{ inputs.test_paths_override }}
         run: |
           source .venv/bin/activate
           export LD_LIBRARY_PATH="$(dirname ${PYTHON_LIB})/../lib:${GITHUB_WORKSPACE}/therock_build/lib:${LD_LIBRARY_PATH}"
@@ -248,17 +330,31 @@ jobs:
           if [ -n "${KEYWORD_FILTER}" ]; then
             KEYWORD_ARGS=(-k "${KEYWORD_FILTER}")
           fi
-          pytest tests/e2e/compiler/ \
-            tests/e2e/hwq_heuristic/ \
-            tests/e2e/hip_runtime/ \
-            tests/e2e/hipblaslt/ \
-            tests/e2e/rccl/ \
-            tests/e2e/rocm_libs/ \
-            tests/e2e/rocprim/ \
-            tests/e2e/rocm_examples/ \
-            tests/e2e/hip_directed/ \
+
+          # Use caller-supplied paths when provided (PR selective runs),
+          # otherwise fall back to the full default test suite.
+          # Use a bash array to prevent word-splitting and glob injection.
+          if [ -n "${TEST_PATHS_OVERRIDE}" ]; then
+            # IFS split on the space-separated list produced by detect_changed_tests.py.
+            # This is safe: detect_changed_tests.py only emits known paths from CATEGORY_PROFILES.
+            IFS=' ' read -ra TEST_PATHS_ARRAY <<< "${TEST_PATHS_OVERRIDE}"
+          else
+            TEST_PATHS_ARRAY=(
+              "tests/e2e/compiler/"
+              "tests/e2e/hwq_heuristic/"
+              "tests/e2e/hip_runtime/"
+              "tests/e2e/hipblaslt/"
+              "tests/e2e/rccl/"
+              "tests/e2e/rocm_libs/"
+              "tests/e2e/rocprim/"
+              "tests/e2e/rocm_examples/"
+              "tests/e2e/hip_directed/"
+            )
+          fi
+
+          pytest "${TEST_PATHS_ARRAY[@]}" \
             --rock-dir=therock_build \
-            --gpu-arch=${GPU_ARCH} \
+            --gpu-arch="${GPU_ARCH}" \
             --html=nightly_report.html --self-contained-html \
             --md-report --md-report-verbose=1 --md-report-color=never \
             --md-report-flavor gfm --md-report-output=md_summary.md --md-report-tee \
@@ -272,9 +368,26 @@ jobs:
         if: always()
         env:
           PLATFORM_NAME: ${{ inputs.name }}
+          QUEUE_GUARD_PROCEED: ${{ steps.queue_guard.outputs.proceed }}
+          QUEUE_GUARD_SKIP_REASON: ${{ steps.queue_guard.outputs.skip_reason }}
         shell: python
         run: |
           import re, json, os
+
+          # When queue_guard fired, no tests ran — write a runner-timeout sentinel
+          # so the report table shows "⏭ Runner timeout" rather than "❌ Failed (0 tests)".
+          if os.environ.get("QUEUE_GUARD_PROCEED", "true") == "false":
+              counts = {
+                  "platform": os.environ["PLATFORM_NAME"],
+                  "passed": 0, "skipped": 0, "failed": 0, "error": 0, "total": 0,
+                  "runner_timeout": True,
+                  "skip_reason": os.environ.get("QUEUE_GUARD_SKIP_REASON", "runner not acquired in time"),
+              }
+              os.makedirs("test-counts", exist_ok=True)
+              with open("test-counts/counts.json", "w") as f:
+                  json.dump(counts, f)
+              print(f"Queue guard skipped platform — writing timeout sentinel: {counts}")
+              import sys; sys.exit(0)
 
           counts = {
               "platform": os.environ["PLATFORM_NAME"],
@@ -353,7 +466,6 @@ jobs:
           has_skip = r.get("skipped", 0) > 0
 
           lines = []
-          run_id = "${{ github.run_id }}"
           lines.append(f"## Test summary - {platform}")
           lines.append("")
 
@@ -396,7 +508,7 @@ jobs:
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nightly-artifacts-${{ inputs.name }}-${{ github.run_id }}
+          name: ${{ inputs.artifact_prefix }}-${{ inputs.name }}-${{ github.run_id }}
           path: |
             nightly_report.html
             md_summary.md
@@ -432,9 +544,9 @@ jobs:
           url="${ARTIFACT_URL}"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$url" ]; then
-            echo "### ⬇ [Download nightly report — ${PLATFORM_NAME}]($url)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### ⬇ [Download test report — ${PLATFORM_NAME}]($url)" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### ⬇ Download nightly report — ${PLATFORM_NAME}" >> "$GITHUB_STEP_SUMMARY"
+            echo "### ⬇ Download test report — ${PLATFORM_NAME}" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "> Zip archive — extract \`nightly_report.html\` and open locally." >> "$GITHUB_STEP_SUMMARY"

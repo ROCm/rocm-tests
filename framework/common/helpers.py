@@ -7,7 +7,8 @@ helpers.py -- Shared utility functions and data types.
 Provides:
     ExecutionResult       -- Immutable result of running a shell command on a GPU.
     Outcome               -- Enum of all possible test outcomes.
-    executor_log_path     -- Per-test executor log path helper.
+    executor_log_path     -- Per-test executor log path helper (creates + truncates).
+    executor_log_file     -- Per-test executor log path helper (pure, no I/O side-effects).
     gpu_monitor_log_path  -- Per-test GPU monitor log path helper.
 
 These are importable from both framework modules and test files:
@@ -68,7 +69,7 @@ class ExecutionResult:
         return "\n".join(lines)
 
 
-def _executor_log_file(artifact_dir: str, test_name: str, nodeid: str | None = None) -> pathlib.Path:
+def executor_log_file(artifact_dir: str, test_name: str, nodeid: str | None = None) -> pathlib.Path:
     """Return the ``pathlib.Path`` for a per-test executor log — pure, no I/O side-effects.
 
     Shared by :func:`executor_log_path` (which creates + truncates) and by
@@ -102,7 +103,7 @@ def executor_log_path(artifact_dir: str, test_name: str, nodeid: str | None = No
     Falls back to a flat ``executor-logs/`` sub-directory when *nodeid* is absent.
 
     Creates the directory on demand and truncates the log file so each session
-    starts clean.  Use :func:`_executor_log_file` when you only need the path
+    starts clean.  Use :func:`executor_log_file` when you only need the path
     without the truncation side-effect (e.g. reading the file in teardown).
 
     This is the single source of truth used by all executor-providing fixtures
@@ -116,7 +117,7 @@ def executor_log_path(artifact_dir: str, test_name: str, nodeid: str | None = No
     Returns:
         Path string ending in ``<safe_name>.log``.
     """
-    log_file = _executor_log_file(artifact_dir, test_name, nodeid)
+    log_file = executor_log_file(artifact_dir, test_name, nodeid)
     log_file.parent.mkdir(parents=True, exist_ok=True)
     # Truncate to start fresh — avoids accumulating content from prior sessions.
     log_file.write_text("", encoding="utf-8")
