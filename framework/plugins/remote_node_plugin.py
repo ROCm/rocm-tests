@@ -544,9 +544,11 @@ def pytest_configure(config: pytest.Config) -> None:
     if config.getoption("--mock-gpu", default=False) or not remote_node_path:
         detector_override = getattr(config, "_gpu_detector", None)
 
-    from framework.config.loader import load_config as _load_cfg
+    _cfg = getattr(config, "_framework_config", None)
+    if _cfg is None:
+        from framework.config.loader import load_config as _load_cfg  # pylint: disable=import-outside-toplevel
 
-    _cfg = _load_cfg(config_path=config.getoption("--rocm-config", default=None))
+        _cfg = _load_cfg(config_path=config.getoption("--rocm-config", default=None))
 
     try:
         pool = NodePool(

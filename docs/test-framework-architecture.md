@@ -21,6 +21,7 @@ This document is a deep-dive companion to the root README. It covers every frame
    - [Prerequisite Contract](#prerequisite-contract)
    - [Configuration Reference](#configuration-reference)
    - [Pre-Install Fleet Provisioning](#pre-install-fleet-provisioning)
+   - [Shared Test Utilities](#shared-test-utilities-testscommon)
    - [Structured Observability & Reporting](#structured-observability--reporting)
    - [Agentic AI Test Authoring](#agentic-ai-test-authoring)
    - [CI/CD Integration](#cicd-integration)
@@ -53,8 +54,9 @@ Test files call `Requisite Executor` and receive an `Execution Result` — they 
 pytest invocation
   └── conftest.py (root)
         ├── MarkDecorator.__getattr__ patch   # enables @pytest.mark.ci.pr dotted syntax (pytest 7+)
-        └── pytest_plugins = [13 plugins, registration order matters]
+        └── pytest_plugins = [14 plugins, registration order matters]
               ├── markers_plugin      # FIRST: category-profile marker injection (CATEGORY_PROFILES)
+              ├── session_plugin      # SECOND: framework_config, run_ctx, _attach_test_log
               ├── gpu_plugin          # --no-gpu/--gpu-arch/--mock-gpu; gpu_arch; dry_run_executor
               ├── remote_node_plugin  # NodePool; target_executor; multi_gpu_fixture; multi_node_fixture
               ├── scheduling_plugin   # DynamicScheduler; --schedule-policy; --collect-runtimes
@@ -82,28 +84,52 @@ framework/
   rocm/libs/    hip.py; rccl.py; amd_smi.py; stack.py
 
 tests/
-  common/                        factories.py (fake_gpu_info, fake_execution_result); _cmake_build.py -- NOT test files
+  common/                        NOT test files — shared utilities (norecursedirs)
+    factories.py                 fake_gpu_info(), fake_execution_result() — unit test helpers
+    spirv.py                     assert_spirv_offload_bundle() — SPIR-V offload validation
+    ml_provisioning/             PyTorch-on-ROCm provisioning engine (see PyTorch Workflow below)
+      fixtures.py                Three-phase fixture logic; sanity cache; pre-install promotion
+      spec.py                    CLI/config spec parsing; mode constants; gfx_family_for_arch()
+      provisioner.py             Core engine: venv, channel, uv/pip install, sanity, metadata
+      providers.py               Package names; node-side sanity snippet
+      workload.py                workload_failure_detail() — hipErrorInvalidImage diagnostics
+      requirements-pytorch.txt   Ancillary ecosystem deps (not torch/torchvision/torchaudio)
+      README.md                  Full PyTorch provisioning reference
+    criu/                        CRIU checkpoint-restore runtime helpers
+      fixtures.py                ensure_criu_runtime() / ensure_criu_runtime_target()
+      steps.py                   criu_dump(), criu_restore(), attach_criu_log(), kill_pid()
+      installer.py               Standalone CRIU + amdgpu_plugin build+install script
   dry_run/                       ci.pr DryRun / cpu_only tests (no GPU required)
   e2e/
-    compiler/                    hipcc compilation tests; CompileSpec conftest registry
-    hip_runtime/                 HIP driver API and multi-stream kernel tests; CMake build
+    compiler/                    hipcc and SPIR-V compilation tests; CompileSpec conftest registry
+    hip_runtime/                 HIP driver API, multi-stream, IPC, multiprocess tests; CMake build
+    hip_directed/                Catch2-based HIP directed tests; CMake build
     hipblaslt/                   hipBLASLt GEMM heuristic and shape-boundary tests; CMake build
-    hwq_heuristic/               hardware queue heuristic tests; CMake build
-    rocm_libs/                   rocsolver, rocblas, and other ROCm library tests; CMake build
+    hwq_heuristic/               GPU hardware queue heuristic tests; CMake build
+    rccl/                        RCCL collective communication tests; external_build clone
+    rocm_examples/               ROCm official examples suite; external_build clone
+    rocm_libs/                   rocsolver, rocblas, montecarlo_weather tests; CMake build
     rocprim/                     rocPRIM primitives and multi-GPU HMM tests; CMake build
+    hpc/quda/                    QUDA lattice QCD tests; external_build clone
+    recovery/criu/               GPU process checkpoint-restore tests (uses tests/common/criu/)
 ```
 
 ### Plugin Load Order
 
 Every plugin is listed in `conftest.py -> pytest_plugins`. Pytest loads them left-to-right before collecting tests.
 
-**Critical ordering constraint:** `markers_plugin` **must be first**. It injects `hw.*`, `ci.*`, and `layer.*` markers from `CATEGORY_PROFILES` during `pytest_collection_modifyitems`. Any plugin that reads those markers — `scheduling_plugin` (sorts by `hw.*`) and `gpu_plugin` (skips by `hw.gpu`) — must be registered after `markers_plugin` so that profile-annotated tests are fully marked before they are sorted or skipped.
+**Critical ordering constraints:**
+
+1. `markers_plugin` **must be first**. It injects `hw.*`, `ci.*`, and `layer.*` markers from `CATEGORY_PROFILES` during `pytest_collection_modifyitems`. Any plugin that reads those markers — `scheduling_plugin` (sorts by `hw.*`) and `gpu_plugin` (skips by `hw.gpu`) — must be registered after `markers_plugin` so that profile-annotated tests are fully marked before they are sorted or skipped.
+
+2. `session_plugin` **must be second** (immediately after `markers_plugin`). It provides `framework_config` and `run_ctx` — foundational session fixtures that `remote_node_plugin`, `executor_plugin`, `health_plugin`, `builder_plugin`, and `install_plugin` all depend on. Unlike conftest-defined fixtures (which pytest scopes to tests below that conftest's directory), plugin-provided fixtures are globally visible regardless of directory layout, enabling enterprise or consumer repos to place test directories outside the public subtree without hitting fixture-not-found errors.
 
 **Dotted marker syntax:** `conftest.py` patches `MarkDecorator.__getattr__` to enable `@pytest.mark.ci.pr` notation. pytest 7+ removed this behaviour; the patch restores it by delegating `pytest.mark.ci.pr` to `getattr(pytest.mark, "ci.pr")`.
 
 | Plugin | CLI options added | Key fixtures provided |
 |---|---|---|
 | `markers_plugin` | — | — (hook only: injects profile markers at collection) |
+| `session_plugin` | — | `framework_config`, `run_ctx`, `_attach_test_log` (autouse) |
 | `gpu_plugin` | `--no-gpu`, `--gpu-arch`, `--mock-gpu`, `--rocm-config` | `gpu_arch`, `dry_run_executor` |
 | `remote_node_plugin` | `--remote-node`, `--gpu-acquire-timeout`, `--gpu-health-metrics`, `--monitor-gpu`, `--gpu-drain-secs`, `--gpu-drain-timeout` | `node_pool`, `target_executor`, `multi_gpu_fixture`, `multi_node_fixture` |
 | `scheduling_plugin` | `--schedule-policy`, `--collect-runtimes`, `--vram-headroom-gb` | — (hook only: sorts items, assigns xdist_group) |
@@ -723,31 +749,51 @@ history_depth = 5              # number of prior runs kept by --allure-db
 
 ### Pre-Install Fleet Provisioning
 
-`install_plugin` provisions ROCm and OS packages on all fleet nodes **before tests start**. Runs in parallel via `ThreadPoolExecutor` at session start.
-> WIP
+`install_plugin` provisions ROCm, OS packages, and ML frameworks on all fleet nodes **before test collection begins**. Runs in parallel via `ThreadPoolExecutor` at session start. Multiple `--pre-install` flags may be combined.
 
 ```bash
 # Install a specific ROCm version (skips nodes already at that version)
-pytest tests/e2e/ --remote-node host.yaml \
-  --pre-install rocm=6.4.0 -n 4 -v
+pytest tests/e2e/ --remote-node host.yaml --pre-install rocm=6.4.0 -n 4 -v
 
 # Install OS packages on all nodes
-pytest tests/e2e/ --remote-node host.yaml \
-  --pre-install pkg=libssl-dev,curl -n 4 -v
+pytest tests/e2e/ --remote-node host.yaml --pre-install pkg=libssl-dev,curl -n 4 -v
 
-# Combine: ROCm version + extra packages
+# Combine ROCm + packages
 pytest tests/e2e/ --remote-node host.yaml \
   --pre-install rocm=6.4.0 --pre-install pkg=libdrm-amdgpu1 -n 4 -v
+
+# Pre-install PyTorch (auto mode — production wheels)
+pytest tests/e2e/ --remote-node host.yaml --pre-install "pytorch=mode=auto" -n 4 -v
+
+# PyTorch with explicit GPU target
+pytest tests/e2e/ --remote-node host.yaml \
+  --pre-install "pytorch=mode=multiarch,device=gfx942" -n 4 -v
+
+# PyTorch with exact version pins (no fallback)
+pytest tests/e2e/ --remote-node host.yaml \
+  --pre-install "pytorch=mode=multiarch,device=gfx942,torch=2.14.0a0+rocm7.12.0a20260716" -n 4 -v
 ```
 
-Supported `--pre-install` key=value pairs:
+Supported `--pre-install` targets:
 
-| Key | Effect |
+| Target | Effect |
 |---|---|
-| `rocm=<version>` | Check current ROCm version; install if different; skip if already at target |
+| `rocm=<version>` | Check installed ROCm version; install if different; skip if already at target |
 | `pkg=<name>[,<name>]` | `apt-get install` the listed packages on all fleet nodes |
+| `pytorch=<key=value,...>` | Install ROCm PyTorch wheels into a managed venv on each node; see [PyTorch Provisioning](pytorch-provisioning.md) |
 
-If any node fails to install, the session exits with rc=4.
+If any node fails to install, the session exits with rc=4. PyTorch pre-install results are written to `output/artifacts/pre-install/framework-provision-results.json` and shared with xdist workers.
+
+#### PyTorch install modes
+
+| Mode | Channel | Use when |
+|---|---|---|
+| `auto` (default) | multiarch → family | Latest nightly; widest hardware coverage |
+| `multiarch` | Multi-arch index, `torch[device-gfxNNN]` | Specific GPU arch, single candidate |
+| `family` | Per-arch v2 index | Family-scoped wheel tree |
+| `staging` | Pre-promotion index | Pre-release validation (explicit opt-in only) |
+
+See [`docs/pytorch-provisioning.md`](pytorch-provisioning.md) for the full install option reference, three-phase fixture flow, and test authoring guidance.
 
 ---
 
@@ -831,6 +877,97 @@ pytest tests/ --no-gpu --html=build/report.html --self-contained-html -v
 #### Run Correlation
 
 Every log line carries `run_id` (unique per session, from `run_ctx`) and `test_id` (pytest nodeid). This makes failures traceable across distributed log aggregators.
+
+---
+
+### Shared Test Utilities (`tests/common/`)
+
+`tests/common/` contains importable helpers shared across test areas. It is excluded from collection via `norecursedirs`. All modules are directly importable because the repo root is on `sys.path` via `pythonpath = ["."]` in `pyproject.toml`.
+
+```python
+from tests.common.factories         import fake_gpu_info, fake_execution_result
+from tests.common.spirv             import assert_spirv_offload_bundle
+from tests.common.ml_provisioning.fixtures import ensure_pytorch_env
+from tests.common.criu.fixtures     import ensure_criu_runtime, ensure_criu_runtime_target
+from tests.common.criu.steps        import criu_dump, criu_restore, attach_criu_log
+```
+
+#### `factories.py` — Synthetic test data
+
+Lightweight factory functions for unit tests that don't need real hardware:
+
+```python
+gpu    = fake_gpu_info(arch="gfx1100", vram_mb=16384)
+result = fake_execution_result(exit_code=0, stdout="RESULT_OK\nTHROUGHPUT=12.5\n")
+```
+
+These are the only objects that should be constructed manually in tests. Never construct `GpuInfo` or `ExecutionResult` directly in test code.
+
+#### `spirv.py` — SPIR-V offload bundle validation
+
+```python
+assert_spirv_offload_bundle(target_executor, rock_dir, binary_path, label="my_kernel")
+```
+
+Runs `llvm-objdump --offloading` on the binary via `target_executor` and asserts `amdgcnspirv` is present. Probes three canonical `llvm-objdump` locations under `rock_dir`. Used by SPIR-V compilation tests.
+
+#### `ml_provisioning/` — PyTorch provisioning
+
+Full reference in [`docs/pytorch-provisioning.md`](pytorch-provisioning.md). Entry point for new tests:
+
+```python
+# In tests/conftest.py — already wired. Consume via fixtures:
+def test_my_model(require_torch, torch_python, target_executor, ld_path):
+    result = target_executor.run(
+        f"env LD_LIBRARY_PATH={ld_path['LD_LIBRARY_PATH']} {torch_python} workload.py"
+    )
+    assert result.ok, result.stderr
+```
+
+#### `criu/` — CRIU checkpoint-restore runtime
+
+CRIU enables GPU process checkpoint-restore tests. `tests/common/criu/` provides everything needed to build, install, and drive CRIU on baremetal, SSH, and container targets.
+
+**Entry points (`fixtures.py`):**
+
+```python
+# Host/SSH path: clone via external_build (fixture has access to host filesystem)
+criu_prefix = ensure_criu_runtime(external_build, cmake_executor, framework_config)
+
+# Container/target path: installer self-clones inside the target
+criu_prefix = ensure_criu_runtime_target(target_executor, framework_config)
+```
+
+Both functions return the shell command prefix (e.g. `sudo -n env PATH=... criu`) and auto-install CRIU + the `amdgpu_plugin.so` when missing.
+
+**Runtime helpers (`steps.py`):**
+
+```python
+dump    = criu_dump(executor, criu, workdir, pid)          # checkpoint a running process
+restore = criu_restore(executor, criu, workdir)            # restore; polls log for RESTORE_OK
+text    = attach_criu_log(executor, workdir, "dump.log")   # read root-owned log + Allure attach
+kill_pid(executor, pid)                                    # best-effort kill -9 by PID
+```
+
+**Extending CRIU tests:** Declare a session-scoped conftest fixture that calls `ensure_criu_runtime*` and returns the `criu` prefix. Use `criu_dump` / `criu_restore` from `steps.py` in test functions. Never call `criu` directly — always use the returned prefix to ensure the correct PATH and LD_LIBRARY_PATH are forwarded through `sudo`.
+
+**Control via environment variables:**
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ROCM_TEST_CRIU_AUTO_INSTALL` | `1` | Set to `0` to disable auto-install (suite skips instead) |
+| `ROCM_TEST_CRIU_VERSION` | `v4.1` | CRIU git tag to clone and build |
+| `CRIU_REPO` | upstream GitHub URL | Override with a local mirror for airgapped nodes |
+
+**Standalone pre-installation** (avoids auto-install overhead at test time):
+
+```bash
+python3 tests/common/criu/installer.py v4.1
+# or with an existing checkout:
+python3 tests/common/criu/installer.py --src-dir /path/to/criu v4.1
+```
+
+The installer auto-detects the package manager (`apt-get`, `dnf`, or `zypper`) and installs all build prerequisites, then builds CRIU and the `amdgpu_plugin.so` and places them at `/usr/local/sbin/criu` and `/usr/lib/criu/amdgpu_plugin.so`.
 
 ---
 
