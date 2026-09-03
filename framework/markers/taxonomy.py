@@ -213,4 +213,15 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # ROCm system tools — rocm-bandwidth-test ships pre-built in the ROCm install
+    # at {rock_dir}/bin/rocm-bandwidth-test. Validates plugin loading, DMA bandwidth
+    # across CPU/GPU agent pairs, peer-to-peer transfers, scaling, schmoo, sweep,
+    # one-to-all, and hardware health-check sub-tests.
+    "tests/e2e/system_tools/rocm_bandwidth_test": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
 }
