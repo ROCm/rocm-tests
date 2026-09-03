@@ -191,7 +191,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     ],
     # amd-smi event tests: GPU reset event correctness and concurrency.
     # Weekly cadence (destructive reset); runtime.* is per test function.
-    "tests/e2e/amd_smi/events": [
+    "tests/e2e/system_tools/amd_smi/events": [
         "hw.gpu",
         "layer.runtime",
         "ci.weekly",

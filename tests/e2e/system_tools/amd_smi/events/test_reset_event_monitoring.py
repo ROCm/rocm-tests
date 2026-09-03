@@ -19,9 +19,9 @@ import pytest
 
 logger = logging.getLogger("rocm.test")
 
-# Small, sensible defaults (env-overridable) — GPU reset is slow and destructive.
-_RESET_ITERS = int(os.environ.get("ROCM_TEST_AMDSMI_RESET_ITERS", "5"))
-_RESET_COOLDOWN = int(os.environ.get("ROCM_TEST_AMDSMI_RESET_COOLDOWN", "3"))
+# Defaults match the upstream AIGQA repeated_reset_event_stress.sh script (--iterations 20 --cooldown 5).
+_RESET_ITERS = int(os.environ.get("ROCM_TEST_AMDSMI_RESET_ITERS", "20"))
+_RESET_COOLDOWN = int(os.environ.get("ROCM_TEST_AMDSMI_RESET_COOLDOWN", "5"))
 _NUM_MONITORS = int(os.environ.get("ROCM_TEST_AMDSMI_MONITORS", "3"))
 _RESET_TARGET = os.environ.get("ROCM_TEST_AMDSMI_RESET_TARGET", "all")
 
@@ -94,7 +94,7 @@ def _assert_event_log(name: str, metrics: dict[str, int]) -> None:
     assert metrics["dup"] == 0, f"{name}: found {metrics['dup']} consecutive duplicate event group(s)"
 
 
-@pytest.mark.runtime.medium
+@pytest.mark.runtime.soak
 def test_repeated_reset_event_stress(target_executor, random_events_env):
     """Stress the event subsystem across N GPU reset cycles with a single background amd-smi event monitor.
 
