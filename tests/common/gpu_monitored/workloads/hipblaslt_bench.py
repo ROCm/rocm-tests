@@ -3,14 +3,10 @@
 
 """hipblaslt_bench: run hipblaslt-bench GEMM sweep under power/temp monitoring.
 
-Shapes come from ROCmTestInternal's hipBLASlt_GEMM.sh.
-
 ``hipblaslt-bench`` is a ROCm test client (shipped in the
 ``hipblaslt-benchmarks`` / ``amdrocm-blas-test*`` package, and in the ROCm
 test tarball) and is expected to be **preinstalled** at
-``<rocm_root>/bin/hipblaslt-bench`` before the suite runs -- exactly how
-ROCmTest consumes it (``runHipBLASlt_GEMM.py`` installs the package as a
-prerequisite, then runs ``<rocm_dir>/bin/hipblaslt-bench``). This test does
+``<rocm_root>/bin/hipblaslt-bench`` before the suite runs. This test does
 NOT build hipBLASLt from source or install a package; if the binary is
 absent it reports ``BUILD_FAILED`` so CI surfaces the missing prerequisite.
 """

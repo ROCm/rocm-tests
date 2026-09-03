@@ -66,7 +66,7 @@ class TransferBench(Test):
             print("  [transferbench] TransferBench not found")
             return RunResult(exit_code=1)
 
-        # Read env-var overrides (aligned with ROCmTestInternal's args).
+        # Read env-var overrides.
         # Validate them here rather than forwarding raw strings: a typo
         # like ``SWEEP_MAX=8m`` otherwise falls through to whatever the
         # TransferBench binary decides to do; instead we warn and fall
