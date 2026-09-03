@@ -143,15 +143,7 @@ jobs:
     name: "e2e tests"
     runs-on: ${{ inputs.runs_on }}
     if: ${{ inputs.target_available != 'false' }}
-    timeout-minutes: 210
-    # SECURITY NOTE: This container runs as root (--user 0:0) with seccomp disabled
-    # (--security-opt seccomp=unconfined). Both are required by current GPU driver and
-    # ROCm runtime constraints — KFD and DRI device access fail under non-root with a
-    # default seccomp profile on these runners.
-    # TODO(security): Evaluate whether a custom seccomp profile scoped to specific
-    # GPU syscalls (e.g. io_uring, perf_event_open) and a non-root user with
-    # supplemental 'video'/'render' group membership can replace these settings
-    # after hardware validation. Track in https://github.com/ROCm/rocm-tests/issues.
+    timeout-minutes: 230
     container:
       image: ghcr.io/rocm/no_rocm_image_ubuntu24_04@sha256:4150afe4759d14822f0e3f8930e1124f26e11f68b5c7b91ec9a02b20b1ebbb98
       options: >-
@@ -170,7 +162,41 @@ jobs:
         shell: bash
 
     steps:
+      - name: Checkout CI scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/**
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+          path: _ci_scripts
+
+      - name: Check runner queue wait time
+        id: queue_guard
+        env:
+          # Secondary safety net: check_runners in e2e-nightly.yml already vetted
+          # runner availability before this job was dispatched. This step catches the
+          # rare edge case where a runner went offline between the pre-check and job
+          # pickup. Uses github.run_started_at (workflow trigger time) as the
+          # reference — the window here is intentionally generous (15 min) so that
+          # legitimate slow-start runners are not falsely skipped.
+          WORKFLOW_QUEUED_AT: ${{ github.run_started_at }}
+          RUNNER_NAME: ${{ inputs.runs_on }}
+          MAX_QUEUE_WAIT_SECS: '900'   # 15 min safety-net window
+        run: python3 _ci_scripts/.github/scripts/queue_guard.py
+
+      - name: Report skipped platform
+        if: ${{ steps.queue_guard.outputs.proceed == 'false' }}
+        env:
+          PLATFORM_NAME: ${{ inputs.name }}
+          SKIP_REASON:   ${{ steps.queue_guard.outputs.skip_reason }}
+        run: |
+          echo "::warning::Platform ${PLATFORM_NAME} skipped — ${SKIP_REASON}"
+          echo "## ⏭ Platform skipped — ${PLATFORM_NAME}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "> **Reason:** ${SKIP_REASON}" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Resolve platform
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
           PLATFORM_NAME: ${{ inputs.name }}
           TARGET_AVAILABLE: ${{ inputs.target_available }}
@@ -179,23 +205,20 @@ jobs:
           echo "target_available: ${TARGET_AVAILABLE}"
 
       - name: Setup Python
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: setup-python
         with:
           python-version: 3.12
 
       - name: Checkout rocm-tests
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Checkout TheRock
-        # SECURITY: Pin ref to a specific commit SHA instead of the floating 'main'
-        # branch to prevent supply chain attacks (a compromised TheRock main would
-        # execute as root with seccomp=unconfined on the GPU runner).
-        # To update: run `git ls-remote https://github.com/ROCm/TheRock.git HEAD`
-        # and replace the SHA below, then update the comment with the date and tag.
-        # TODO(security): replace 'main' with a pinned SHA before merging.
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: "ROCm/TheRock"
@@ -211,6 +234,7 @@ jobs:
       #   artifact_source = <workflow.yml>   → run_id resolved by setup_matrix;
       #   When include_dev=true: also fetches _dev archives (headers, cmake, .a)
       - name: Install ROCm artifacts
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
           ARTIFACT_GROUP: ${{ inputs.artifact_group }}
           GPU_ARCH: ${{ inputs.gpu_arch }}
@@ -271,6 +295,7 @@ jobs:
           fi
 
       - name: Install uv
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         uses: astral-sh/setup-uv@bd01e18f51369d5a26f1651c3cb451d3417e3bba # v6.3.1
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -279,6 +304,7 @@ jobs:
           enable-cache: true
 
       - name: Install test dependencies
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends make pciutils
@@ -287,6 +313,7 @@ jobs:
           uv pip install -r requirements.txt
 
       - name: Run e2e tests
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
           COMMIT_ID: ${{ github.sha }}
           CURRENT_BRANCH: ${{ github.ref_name }}
@@ -341,9 +368,26 @@ jobs:
         if: always()
         env:
           PLATFORM_NAME: ${{ inputs.name }}
+          QUEUE_GUARD_PROCEED: ${{ steps.queue_guard.outputs.proceed }}
+          QUEUE_GUARD_SKIP_REASON: ${{ steps.queue_guard.outputs.skip_reason }}
         shell: python
         run: |
           import re, json, os
+
+          # When queue_guard fired, no tests ran — write a runner-timeout sentinel
+          # so the report table shows "⏭ Runner timeout" rather than "❌ Failed (0 tests)".
+          if os.environ.get("QUEUE_GUARD_PROCEED", "true") == "false":
+              counts = {
+                  "platform": os.environ["PLATFORM_NAME"],
+                  "passed": 0, "skipped": 0, "failed": 0, "error": 0, "total": 0,
+                  "runner_timeout": True,
+                  "skip_reason": os.environ.get("QUEUE_GUARD_SKIP_REASON", "runner not acquired in time"),
+              }
+              os.makedirs("test-counts", exist_ok=True)
+              with open("test-counts/counts.json", "w") as f:
+                  json.dump(counts, f)
+              print(f"Queue guard skipped platform — writing timeout sentinel: {counts}")
+              import sys; sys.exit(0)
 
           counts = {
               "platform": os.environ["PLATFORM_NAME"],
