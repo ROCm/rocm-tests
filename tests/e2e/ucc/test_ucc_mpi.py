@@ -28,10 +28,10 @@ COLLS: tuple[str, ...] = tuple(
 )
 
 # Four is the minimum that exercises the half/reverse/odd-even sub-teams the
-# workload builds from the world communicator; hence the original's 4-GPU gate.
+# workload builds from the world communicator; hence the 4-GPU gate.
 RANKS = int(os.environ.get("ROCM_TEST_UCC_RANKS", "4"))
 
-# ``rocm`` is the point of the port: it moves device memory, not host buffers.
+# ``rocm`` is the point of the test: it moves device memory, not host buffers.
 MTYPES = os.environ.get("ROCM_TEST_UCC_MTYPES", "rocm")
 
 MPIRUN_EXPORTS: tuple[str, ...] = (
@@ -93,7 +93,7 @@ class UccReport:
 
 
 def build_run_command(mpirun: str, ucc_test_mpi: str) -> str:
-    """Return the ``mpirun`` command line for the ported workload."""
+    """Return the ``mpirun`` command line for the workload."""
     exports = " ".join(f"-x {assignment}" for assignment in MPIRUN_EXPORTS)
     return (
         f"{mpirun} {exports} -np {RANKS} {ucc_test_mpi} "

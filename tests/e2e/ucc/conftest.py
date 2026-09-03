@@ -6,16 +6,14 @@
 ``ucc_test_mpi`` needs a GPU-aware MPI stack that no ROCm package ships and that
 the framework does not otherwise provide: ``detect_mpi_runtime`` finds host MPI
 without UCX, and ``provision_openmpi_runtime`` builds a CPU-only OpenMPI.  This
-module therefore reproduces the three autotools builds performed by ROCmTest's
-``ucc_scatter_gather.sh``:
+module therefore performs three autotools builds:
 
     1. UCX      configured ``--with-rocm``
     2. OpenMPI  configured ``--with-ucx`` against that UCX
     3. UCC      configured against UCX, OpenMPI, ROCm and RCCL
 
-RCCL comes from the ROCm install rather than from source, matching the original:
-its step 2 is answered "n" under ``-q``, which points ``--with-rccl`` at
-``$_ROCM_DIR``.
+RCCL comes from the ROCm install rather than from source, so ``--with-rccl``
+points at the ROCm directory.
 
 Each step is skipped when its install sentinel already exists, so the (long)
 first build is paid once per workspace.  Set ``ROCM_TEST_UCX_PREFIX``,
