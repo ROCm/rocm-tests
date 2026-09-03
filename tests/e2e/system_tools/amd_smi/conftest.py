@@ -33,7 +33,7 @@ def _resolve_amd_smi(executor, rock_dir: str) -> str | None:
     """Prefer ``<rock_dir>/bin/amd-smi``; fall back to amd-smi on PATH. Returns None if absent."""
     if rock_dir:
         probe = executor.run(f"test -x {rock_dir}/bin/amd-smi && echo OK")
-        if "OK" in (probe.stdout or ""):
+        if (probe.stdout or "").strip() == "OK":
             return f"{rock_dir}/bin/amd-smi"
     which = executor.run("command -v amd-smi")
     if which.ok and (which.stdout or "").strip():
@@ -103,7 +103,7 @@ def coral_gemm_binary(external_build, cmake_build_dir, compiler_build_dir: str, 
 
     binary = pathlib.Path(build_dir) / "gemm"
     if not binary.is_file():
-        pytest.skip("CoralGemm build did not produce the gemm binary — check build logs")
+        pytest.fail(f"CoralGemm build succeeded but gemm binary not found at {binary} — check build logs")
 
     logger.info("coral_gemm_binary: binary ready at %s", binary)
     return str(binary)
