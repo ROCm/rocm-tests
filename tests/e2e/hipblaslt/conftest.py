@@ -397,7 +397,7 @@ def hipblaslt_test_binary(rock_dir: str, cmake_executor) -> str:
     Unlike the other binaries here this one is not built: it ships in the hipBLASLt
     clients package alongside its ~450 MB ``hipblaslt_gtest.data``, which the binary
     locates relative to its own install directory. It is therefore run by absolute
-    path out of ``<rock_dir>/bin`` rather than copied, matching ROCmTest.
+    path out of ``<rock_dir>/bin`` rather than copied.
     """
     binary = pathlib.Path(rock_dir) / "bin" / _HIPBLASLT_TEST_BINARY
     reason = (

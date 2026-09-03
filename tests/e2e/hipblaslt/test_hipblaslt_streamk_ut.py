@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: MIT
 """Run the hipBLASLt unit tests with Tensile StreamK solution selection forced.
 
-Ported from ROCmTest ``hipBlasltUT_With_StreamK``, which sets
-``TENSILE_SOLUTION_SELECTION_METHOD=2`` and runs the preinstalled ``hipblaslt-test``
-gtest binary over ``*quick*`` or ``*nightly*``, re-running ordinary GEMM correctness
-while Tensile selects solutions through the StreamK path. Tests must have actually run
-and passed -- reporting no failures is not enough, since a filter that matches nothing
-also exits 0 and prints ``[  PASSED  ] 0 tests.``
+Sets ``TENSILE_SOLUTION_SELECTION_METHOD=2`` and runs the preinstalled
+``hipblaslt-test`` gtest binary over ``*quick*`` or ``*nightly*``, re-running
+ordinary GEMM correctness while Tensile selects solutions through the StreamK path.
+Tests must have actually run and passed -- reporting no failures is not enough,
+since a filter that matches nothing also exits 0 and prints
+``[  PASSED  ] 0 tests.``
 """
 
 from __future__ import annotations
@@ -21,11 +21,10 @@ import pytest
 
 logger = logging.getLogger(__name__)
 
-#: ROCmTest's ``HIPBLASLTStreamK.execute`` env override.
+#: Forces Tensile to select solutions through the StreamK path.
 _STREAMK_ENV = "TENSILE_SOLUTION_SELECTION_METHOD=2"
 
-#: ROCmTest maps its coverage levels onto these gtest filters via ``HIPBLASLT``'s
-#: ``hipblaslt_sanity_incl_cases`` / ``hipblaslt_nightly_incl_cases``.
+#: Coverage levels mapped onto the gtest filters that select each tier's cases.
 _COVERAGE_FILTERS = {
     "quick": "*quick*",
     "nightly": "*nightly*",
@@ -53,9 +52,8 @@ _FAILED_NAME_RE = re.compile(r"^\[\s*FAILED\s*\]\s+(\S+)", re.MULTILINE)
 # it a safe independent cross-check on the completed count.
 _RUN_MARKER_RE = re.compile(r"^\[\s*RUN\s*\]", re.MULTILINE)
 
-# Upstream sometimes reports a resource shortfall as a gtest skip. ROCmTest's parser
-# reclassifies those as failures; keeping the same list preserves that behaviour
-# instead of silently accepting a masked failure.
+# Upstream sometimes reports a resource shortfall as a gtest skip. Reclassify those
+# as failures instead of silently accepting a masked failure.
 _SKIP_MASKED_FAILURES: tuple[re.Pattern, ...] = (re.compile(r"Host\s+memory\s+usage\s+limit\s+exceed", re.I),)
 
 # Kept narrow so ordinary gtest failure text cannot trip it.
