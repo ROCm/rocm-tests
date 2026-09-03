@@ -1,9 +1,8 @@
 # GPU Monitored Tests
 
-Port of the AIGQA `gpu_monitored_tests` suite into the rocm-tests pytest framework.
 Each test runs a GPU stress workload under continuous `amd-smi monitor` sampling,
-then applies the original **5-layer validation**, monitoring-evidence gates,
-post-run analysis, and HTML report generation.
+then applies a **5-layer validation**, monitoring-evidence gates, post-run
+analysis, and HTML report generation.
 
 ## Layout
 
@@ -14,7 +13,7 @@ post-run analysis, and HTML report generation.
 | `tests/e2e/rvs/` | Session fixtures for RVS binary discovery / optional source build |
 
 Logic lives under `tests/common/gpu_monitored/workloads/` and is orchestrated by
-`MonitoredTestOrchestrator` (original `TestRunner`).
+`MonitoredTestOrchestrator`.
 
 ## Framework integration
 
@@ -42,7 +41,7 @@ RVS ``stdout_file`` workload output uses ``run_command_redirect`` via the
 framework executor (shell redirect to ``console.log``); everything else
 routes through framework executors directly.
 
-## Tests (9)
+## Tests (5)
 
 | Pytest name | Workload |
 |-------------|----------|
@@ -50,11 +49,7 @@ routes through framework executors directly.
 | `test_gpu_transferbench_monitored` | TransferBench rsweep |
 | `test_gpu_rvs_iet_stress_monitored` | RVS IET |
 | `test_gpu_rvs_tst_monitored` | RVS TST |
-| `test_gpu_sln_stress_monitored` | SLN stress (ROCmTest NDA source) |
-| `test_gpu_hmm_cuda_memtest_monitored` | HMM memtest (ROCmTest NDA source) |
-| `test_gpu_power_band_stress_monitored` | PyTorch DDP + power cap cycling |
 | `test_gpu_hipblaslt_bench_monitored` | hipBLASLt GEMM sweep |
-| `test_gpu_inference_server_stress_monitored` | vLLM inference server stress |
 
 ## Running
 
@@ -73,15 +68,13 @@ pytest tests/e2e/gpu_monitored/ -v --rock-dir=/opt/rocm
 
 | Variable | Purpose |
 |----------|---------|
-| `ROCM_TEST_ROCMTEST_PATH` | Path to ROCmTest tree (SLN / HMM NDA sources) |
 | `ROCM_TEST_RVS_REF` | Git ref when building RVS from source |
 | `GPU_MONITOR_INTERVAL` | amd-smi sample interval (default 1s) |
 | `GPU_MONITOR_STRICT_PRETEST` | Fail on dirty pre-test dmesg when `1` |
 | `CUDAMEMTEST_DURATION` | cudamemtest time budget (default 1800s) |
 | `CUDAMEMTEST_MAX_BLOCKS` | Override cuda_memtest memory sizing |
-| `PYTORCH_VALIDATOR_PATH` | Path to `pytorch_training_validator/rocm_diag/run_suite.py` |
 
-RVS config resolution uses the vendored `rvs_config_mapping.csv` (ROCmTest-compatible).
+RVS config resolution uses the vendored `rvs_config_mapping.csv`.
 When RVS is built from source, session fixtures export `ROCM_TEST_RVS_BIN`,
 `ROCM_TEST_RVS_CONF_ROOT`, and `ROCM_TEST_TRANSFERBENCH_BIN`.
 

@@ -57,9 +57,8 @@ CRASH_PATTERNS = re.compile(
 )
 
 # Critical dmesg patterns — these FAIL the test when found in the dmesg
-# delta (new kernel messages during the test window). Aligned with
-# ROCmTestInternal's ``system_health_watchdog.KERNEL_ALERT_RULES``
-# critical categories. A GPU reset, kernel panic, or watchdog lockup
+# delta (new kernel messages during the test window).
+# A GPU reset, kernel panic, or watchdog lockup
 # during a test means the hardware was unhealthy regardless of what the
 # test's own stdout reported.
 # NOTE on pattern precision: the 10x-run validation surfaced two
@@ -762,8 +761,7 @@ def _validate_transferbench(  # noqa: C901
 ) -> ValidationResult:
     """Validate TransferBench rsweep output.
 
-    Aligned with ROCmTestInternal's ``Transfer_bench`` parser: look for
-    ``Transfer N | X.XX GB/s | ...`` data lines and ``Aggregate (CPU)``
+    Look for ``Transfer N | X.XX GB/s | ...`` data lines and ``Aggregate (CPU)``
     summary. Flag ``[ERROR]`` lines as failures.
     """
     text = _read_log(log_file)
@@ -975,9 +973,8 @@ def validate_result(  # noqa: C901
             msg = msg or res.message
 
     # Layer 3: dmesg — critical kernel events FAIL the test; informational
-    # events are annotated but don't flip pass/fail. This is the key
-    # differentiator from ROCmTestInternal: a GPU that silently reset and
-    # recovered mid-test will report PASS from the test's own stdout, but
+    # events are annotated but don't flip pass/fail. A GPU that silently
+    # reset and recovered mid-test will report PASS from the test's own stdout, but
     # dmesg captures the hardware-level fault. Without this, operators
     # would need to manually cross-reference dmesg after every run.
     if dmesg_file and dmesg_file.is_file() and dmesg_file.stat().st_size > 0:
@@ -1070,8 +1067,7 @@ def validate_result(  # noqa: C901
 # Pre-test health probe (Design B)
 # ---------------------------------------------------------------------------
 # Per-category narrowings of ``DMESG_CRITICAL`` for the pre-test probe.
-# Same severity classes as ROCmTestInternal's ``KERNEL_ALERT_RULES``
-# critical bucket so triage tooling that already understands category
+# Categorized so triage tooling that already understands category
 # names (gpu_reset, kernel_panic, watchdog_lockup, ...) can consume our
 # ``pretest_health.json`` directly. Layer 3 still uses the flat
 # ``DMESG_CRITICAL`` regex; this categorization exists purely to make
@@ -1115,8 +1111,7 @@ def categorize_dmesg_critical(text: str) -> dict[str, int]:
     Returns a dict with stable keys (every category present, zero when
     not matched) so dashboards can chart consistently across runs and
     consumers can rely on every category being present in
-    ``pretest_health.json``. The first matching category wins per line
-    — same convention as ROCmTestInternal's ``KERNEL_ALERT_RULES`` —
+    ``pretest_health.json``. The first matching category wins per line,
     so a line containing both ``BUG:`` and ``Call Trace`` is counted
     under ``bug_oops`` only.
     """

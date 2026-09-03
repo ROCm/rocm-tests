@@ -807,7 +807,7 @@ def validate_monitoring(test_name: str, per_gpu: dict, pattern: str, run_dir: st
         # For serial workloads, stats in per_gpu are already computed over
         # each GPU's active window (see compute_per_gpu). We want to catch
         # both "no GPU ever activated" AND "every GPU that activated did
-        # so weakly" — the original code only did the first.
+        # so weakly".
         min_util = profile.get("min_util", 0)
         min_vram_pct = profile.get("min_vram_pct", 0)
         active = [(gid, st) for gid, st in per_gpu.items() if st.get("active_samples", 0) > 0]

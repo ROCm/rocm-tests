@@ -23,9 +23,8 @@ from tests.common.gpu_monitored.config import Config
 
 from .shared_builder import SharedToolBuilder
 
-# Vendored copy of ROCmTest's device->config mapping
-# (ROCmTest/tests/TOOLS/RVS/rvs_config_mapping.csv). Keep in sync when
-# upstream RVS adds new silicon / config dirs.
+# Vendored device->config mapping. Keep in sync when upstream RVS adds new
+# silicon / config dirs.
 _CONFIG_MAP_PATH = Path(__file__).with_name("rvs_config_mapping.csv")
 _config_map_cache: dict[str, dict[str, str]] | None = None
 
@@ -48,9 +47,9 @@ def find_bin(config: Config) -> Path | None:
 
 
 # ---------------------------------------------------------------------------
-# ROCmTest-compatible config resolution (rvs_config_mapping.csv)
+# Config resolution (rvs_config_mapping.csv)
 # ---------------------------------------------------------------------------
-# This mirrors ROCmTest's ``RocmValidationSuite`` config lookup exactly:
+# Config lookup:
 #   * key on the PCI ``<device_id>_<revision>`` (DID_RID);
 #   * per-test cell in the CSV names the relative conf subdir:
 #       ``./``        -> generic top-level ``conf/<test>.conf``
@@ -58,7 +57,7 @@ def find_bin(config: Config) -> Path | None:
 #       (empty)       -> test not applicable for this device -> UNSUPPORTED
 #   * device not present in the CSV at all               -> UNSUPPORTED
 #   * mapped config file missing on disk                 -> FAIL
-# Path components are resolved case-insensitively, same as ROCmTest.
+# Path components are resolved case-insensitively.
 
 
 class ConfigMapUnavailableError(Exception):
@@ -280,7 +279,7 @@ class RvsConfigEscapesRootError(ConfigMapUnavailableError):
 
 def _resolve_ci_path(conf_root: Path, subdir: str, conf_name: str) -> Path | None:
     """Resolve ``conf_root/<subdir>/<conf_name>``, exact first then
-    case-insensitively per path component (mirrors ROCmTest).
+    case-insensitively per path component.
 
     Returns ``None`` when the file simply is not there. Raises
     ``RvsConfigEscapesRootError`` when a candidate exists but resolves outside

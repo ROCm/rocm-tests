@@ -226,9 +226,9 @@ class Monitor:
         """Exec amd-smi directly when the monitor executor is local.
 
         ``CpuExecutor.start_background`` wraps commands in ``/bin/sh``; killing
-        the shell can orphan the amd-smi child. Direct ``Popen`` matches the
-        original gpu_monitored suite and lets ``_kill_monitor`` stop the real
-        process. Remote ``SshExecutor`` paths still use ``start_background``.
+        the shell can orphan the amd-smi child. Direct ``Popen`` lets
+        ``_kill_monitor`` stop the real process. Remote ``SshExecutor`` paths
+        still use ``start_background``.
         """
         if self.monitor_executor is None:
             return True

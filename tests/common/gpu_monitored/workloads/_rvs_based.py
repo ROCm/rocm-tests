@@ -35,8 +35,8 @@ class _RvsBased(Test):
     _conf_name: str  # e.g. "iet_stress.conf"
     _human_label: str  # e.g. "IET" (used only in the UNSUPPORTED message)
 
-    # Config resolution mirrors ROCmTest (``rvs.resolve_conf_for_device`` +
-    # the vendored ``rvs_config_mapping.csv``): the PCI ``device_id`` selects,
+    # Config resolution uses ``rvs.resolve_conf_for_device`` and the vendored
+    # ``rvs_config_mapping.csv``: the PCI ``device_id`` selects,
     # per test, the exact conf subdir (``./`` generic, ``./MI300A/`` per-model,
     # or empty -> UNSUPPORTED). This replaces the old GPU-short-name -> single
     # dir guess that misrouted (e.g. MI250 vs MI250X) and mis-reported
@@ -79,7 +79,7 @@ class _RvsBased(Test):
         device_id = ctx.config.gpu_device_id
         if device_id:
             # Authoritative path: device is identified -> honor the CSV verdict
-            # exactly (ROCmTest semantics). Do NOT fall back to the generic
+            # exactly. Do NOT fall back to the generic
             # config for a *known* device whose cell is empty/missing, so an
             # UNSUPPORTED test stays UNSUPPORTED instead of silently running a
             # possibly-wrong generic config.
