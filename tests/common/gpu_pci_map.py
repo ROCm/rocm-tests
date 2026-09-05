@@ -97,44 +97,107 @@ def short_name_for_device(device_id: str) -> str:
     return GPU_DEVICE_MAP.get((device_id or "").lower(), "")
 
 
-def detect_gpu_conf_dir_from_lspci(*, cmake_executor=None) -> str:
-    """Detect GPU PCI device ID via lspci and map to RVS config directory name."""
+# Vendor 0x1002 is AMD. The classes cover VGA (0300), display controller (0380)
+# and processing accelerator (1200) so datacenter parts are not missed: MI210
+# reports 0380, which a VGA-only filter drops entirely.
+_SYSFS_PCI_ID_CMD = (
+    "for dev in /sys/bus/pci/devices/*; do "
+    "vendor=$(cat $dev/vendor 2>/dev/null); class=$(cat $dev/class 2>/dev/null); "
+    "case $vendor:$class in "
+    "0x1002:0x0300*|0x1002:0x0380*|0x1002:0x1200*) "
+    "echo $(cat $dev/device 2>/dev/null)_$(cat $dev/revision 2>/dev/null);; "
+    "esac; done | tail -n 1"
+)
+
+# Ordered ``(name, command, pattern, default_revision)`` detection candidates.
+# Every entry is a fallback rather than an exclusive choice: amd-smi and rocm-smi
+# need a healthy driver plus access to /dev/kfd and /dev/dri/renderD*, so they
+# report N/A for a caller outside the render group, while lspci and PCI sysfs
+# still answer.
+# lspci is matched on the textual class names because numeric class filters miss
+# parts that enumerate as "Display controller".
+_DETECTION_METHODS: tuple[tuple[str, str, re.Pattern, str], ...] = (
+    (
+        "amd-smi",
+        "amd-smi static --asic 2>/dev/null",
+        re.compile(r"DEVICE_ID:\s*0x([0-9a-fA-F]{4}).*?REV_ID:\s*0x([0-9a-fA-F]{1,2})", re.DOTALL),
+        "",
+    ),
+    (
+        "amd-smi with sudo",
+        "sudo -n amd-smi static --asic 2>/dev/null",
+        re.compile(r"DEVICE_ID:\s*0x([0-9a-fA-F]{4}).*?REV_ID:\s*0x([0-9a-fA-F]{1,2})", re.DOTALL),
+        "",
+    ),
+    (
+        "rocm-smi",
+        "rocm-smi --showid 2>/dev/null",
+        re.compile(r"Device ID:\s*0x([0-9a-fA-F]{4}).*?Device Rev:\s*0x([0-9a-fA-F]{1,2})", re.DOTALL),
+        "",
+    ),
+    (
+        "lspci",
+        "lspci -nn -v 2>/dev/null | grep -iE 'vga|display|accelerators' | grep -i amd | tail -n 1",
+        re.compile(
+            r"\[(?:[0-9a-fA-F]{4}):(?P<DID>[0-9a-fA-F]{4})\](?:.*?rev (?P<RID>[0-9a-fA-F]+))?",
+            re.IGNORECASE,
+        ),
+        "00",
+    ),
+    ("pci sysfs", _SYSFS_PCI_ID_CMD, re.compile(r"0x([0-9a-fA-F]{4})_0x([0-9a-fA-F]{1,2})"), ""),
+)
+
+
+def _run_detection(cmd: str, cmake_executor=None) -> str:
+    """Run a detection command, returning stdout ("" when it could not run)."""
     if cmake_executor is not None:
-        result = cmake_executor.run("lspci -n -d 1002: | grep -E '0300|1200' | head -1")
-        line = (result.stdout or "").strip()
-    else:
-        rc, stdout, _stderr = run_cmd_get_stdout_stderr(
-            "bash",
-            "-c",
-            "lspci -n -d 1002: | grep -E '0300|1200' | head -1",
-            timeout=10,
-            quiet=True,
-        )
-        line = stdout.strip() if rc == 0 else ""
+        return (cmake_executor.run(cmd).stdout or "").strip()
+    # The exit code is deliberately ignored: the pattern match is the gate, so a
+    # command that exits non-zero but still printed usable ids is accepted, and a
+    # missing binary simply yields no output and falls through to the next method.
+    _rc, stdout, _stderr = run_cmd_get_stdout_stderr("bash", "-c", cmd, timeout=30, quiet=True)
+    return (stdout or "").strip()
 
-    if not line:
-        logger.warning("No AMD GPU detected via lspci")
+
+def _device_revision_from_output(output: str, pattern: re.Pattern, default_revision: str = "") -> str:
+    """Extract ``<device_id>_<revision>`` from detection output, else ``""``.
+
+    ``default_revision`` covers lspci, which omits ``rev`` entirely for revision 0.
+    """
+    for match in pattern.finditer(output or ""):
+        groups = match.groupdict()
+        if groups:
+            device_id, revision_id = groups.get("DID"), groups.get("RID")
+        else:
+            device_id, revision_id = match.group(1), match.group(2)
+        revision_id = revision_id or default_revision
+        if device_id and revision_id:
+            return f"{device_id.lower()}_{revision_id.lower()}"
+    return ""
+
+
+def detect_device_revision(*, cmake_executor=None) -> str:
+    """Return the GPU ``<device_id>_<revision>`` key, trying each source in order."""
+    for name, cmd, pattern, default_revision in _DETECTION_METHODS:
+        output = _run_detection(cmd, cmake_executor)
+        key = _device_revision_from_output(output, pattern, default_revision)
+        if key:
+            logger.debug("PCI device_id_revision from %s: %s", name, key)
+            return key
+        logger.debug("PCI device id lookup via %s returned no usable ids; trying the next method", name)
+    logger.warning("No valid PCI DeviceID/RevisionID found via amd-smi, rocm-smi, lspci or PCI sysfs")
+    return ""
+
+
+def detect_gpu_conf_dir(*, cmake_executor=None) -> str:
+    """Detect the GPU and map it to its RVS config directory name."""
+    key = detect_device_revision(cmake_executor=cmake_executor)
+    if not key:
         return ""
 
-    match = re.search(r"1002:([0-9a-f]{4})", line, re.IGNORECASE)
-    if not match:
-        logger.warning("Could not parse device ID from lspci line: %s", line)
-        return ""
-    device_id = match.group(1).lower()
-
-    rev_match = re.search(r"\(rev\s+([0-9a-f]+)\)", line, re.IGNORECASE)
-    rev = rev_match.group(1).lower() if rev_match else "00"
-
-    key = f"{device_id}_{rev}"
     gpu_name = GPU_DEVICE_MAP.get(key, "")
-
     if gpu_name:
-        logger.info("Detected GPU: device_id=%s, rev=%s, key=%s -> %s", device_id, rev, key, gpu_name)
+        logger.info("Detected GPU: key=%s -> %s", key, gpu_name)
     else:
-        logger.warning(
-            "GPU detected (device_id=%s, rev=%s, key=%s) but no mapping found",
-            device_id,
-            rev,
-            key,
-        )
+        logger.warning("GPU detected (key=%s) but no mapping found", key)
     return gpu_name

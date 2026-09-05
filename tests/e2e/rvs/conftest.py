@@ -17,11 +17,12 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import shlex
 
 import pytest
 
 from framework.executors.local_executor import run_cmd_get_stdout_stderr
-from tests.common.gpu_pci_map import detect_gpu_conf_dir_from_lspci
+from tests.common.gpu_pci_map import detect_gpu_conf_dir
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def _file_exists(path: pathlib.Path, cmake_executor=None) -> bool:
 
 def _detect_gpu_conf_dir(cmake_executor=None) -> str:
     """Detect GPU PCI device ID and map to RVS config directory name."""
-    return detect_gpu_conf_dir_from_lspci(cmake_executor=cmake_executor)
+    return detect_gpu_conf_dir(cmake_executor=cmake_executor)
 
 
 def _collect_conf_roots(
@@ -199,7 +200,7 @@ def rvs_binary(
 
     if rvs_bin is None:
         pytest.fail(
-            f"RVS binary not found under {install_dir} after install. " f"Contents: {list(install_dir.rglob('*'))[:20]}"
+            f"RVS binary not found under {install_dir} after install. Contents: {list(install_dir.rglob('*'))[:20]}"
         )
 
     logger.info("RVS binary installed at: %s", rvs_bin)
@@ -210,6 +211,28 @@ def rvs_binary(
 def gpu_conf_dir(cmake_executor) -> str:
     """Auto-detect GPU and return the matching RVS config directory name."""
     return _detect_gpu_conf_dir(cmake_executor)
+
+
+@pytest.fixture
+def rvs_env(rvs_binary: str, rock_dir: str, ld_path: dict) -> str:
+    """Return ``VAR=value`` assignments for running RVS via ``env``.
+
+    ``libomp.so`` lives under ``llvm/lib`` and the binary may sit in an
+    ``extras-N`` tree carrying its own ``lib``; without both on
+    ``LD_LIBRARY_PATH`` RVS fails to load instead of reporting a verdict. Passing
+    them explicitly also survives ``sudo``, which resets the environment for the
+    modules that need root.
+    """
+    rvs_base = pathlib.Path(rvs_binary).resolve().parent.parent
+    libs = [f"{rvs_base}/lib", f"{rock_dir}/lib", f"{rock_dir}/llvm/lib"]
+    if existing := ld_path.get("LD_LIBRARY_PATH"):
+        libs.append(existing)
+    assignments = {
+        "ROCM_PATH": rock_dir,
+        "RVS_PATH": str(rvs_base),
+        "LD_LIBRARY_PATH": ":".join(libs),
+    }
+    return " ".join(f"{key}={shlex.quote(value)}" for key, value in assignments.items())
 
 
 @pytest.fixture(scope="session")
@@ -240,8 +263,7 @@ def rvs_find_conf(rock_dir: str, rvs_source: str, cmake_executor, rvs_binary: st
 
         if gpu_only:
             pytest.skip(
-                f"GPU-specific config {config_name} not found under {gpu_conf_dir} "
-                f"in {[str(r) for r in search_roots]}"
+                f"GPU-specific config {config_name} not found under {gpu_conf_dir} in {[str(r) for r in search_roots]}"
             )
 
         pytest.skip(f"RVS config {config_name} not found in {[str(r) for r in search_roots]}")
