@@ -100,6 +100,30 @@ jobs:
           out_file   = os.environ["GITHUB_OUTPUT"]
           summary    = os.environ["GITHUB_STEP_SUMMARY"]
 
+          # ── Bot denylist ──────────────────────────────────────────────────
+          # Block known automation accounts from acquiring GPU runners regardless
+          # of which auth check would otherwise pass.
+          # Additionally, any login ending with "[bot]" (GitHub's own naming
+          # convention for App bots: Dependabot, Renovate, github-actions, etc.)
+          # is always denied.
+          _BOT_LOGINS = {
+              "dependabot",
+              "renovate",
+              "github-actions",
+              "pre-commit-ci",
+              "allcontributors",
+              "imgbot",
+              "mergify",
+          }
+
+          def _is_bot(login: str) -> bool:
+              if login.lower().endswith("[bot]"):
+                  return True
+              # Strip the "[bot]" suffix before checking the denylist —
+              # GitHub App logins appear both as "dependabot" and "dependabot[bot]".
+              stripped = login.lower().removesuffix("[bot]").rstrip()
+              return stripped in _BOT_LOGINS
+
           # Associations that imply write access to this repo.
           # MEMBER      → ROCm org member → automatically in rocm-tests-write
           # COLLABORATOR → directly invited with push access
@@ -158,6 +182,12 @@ jobs:
                     flush=True)
               sys.exit(0)
 
+          # ── Bot guard (evaluated before all auth checks) ─────────────────────
+          # Bots must never receive a GPU runner regardless of which check below
+          # would otherwise pass (e.g. a bot pushing to an internal branch).
+          if _is_bot(actor):
+              finish(False, f"bot account denied — actor={actor!r}")
+
           # ── Check 1: workflow_dispatch ────────────────────────────────────────
           # Triggering workflow_dispatch requires at least write access to the
           # repo — no further verification needed.
@@ -167,17 +197,17 @@ jobs:
           # ── Check 2: internal branch (non-fork PR) ────────────────────────────
           # GitHub only allows actors with push access to push branches to the
           # base repo.  A non-fork PR is therefore proof of write access.
-          # GitHub's author_association reflects the actor's relationship to the
-          # repo directly (OWNER/MEMBER/COLLABORATOR for org members or direct
-          # invites), but team membership alone (e.g. rocm-tests-write) does NOT
-          # upgrade association — it stays CONTRIBUTOR even though the actor has
-          # full push access.  For non-fork PRs, GitHub's own branch-protection
-          # already enforces push access, so the association check is redundant
-          # and incorrectly blocks team members.
-          # Exception: deny association="NONE" to block bots and GitHub Actions
-          # service accounts that have no meaningful user identity.
-          if is_fork == "false" and association != "NONE":
-              finish(True, f"internal branch — push access confirmed (association={association})")
+          #
+          # author_association is intentionally NOT consulted here.  GitHub's
+          # author_association reflects only *public* org membership.  An actor
+          # whose ROCm org membership is set to "private" receives association=NONE
+          # even though they are a genuine org member with push access (this was
+          # the root cause of the sushkaur1 skip on PR #97).  Using association
+          # would falsely deny valid contributors.  GitHub's branch-protection is
+          # the authoritative gate for non-fork pushes; that already ran before
+          # this workflow even started.  Bot accounts are blocked by the guard above.
+          if is_fork == "false":
+              finish(True, f"internal branch — push access confirmed (association={association!r})")
 
           # ── Check 3: fork PR from a write-access actor ────────────────────────
           # ROCm org members and direct collaborators may still open PRs from
