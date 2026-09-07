@@ -367,7 +367,5 @@ int main()
 
     CHECK_HIP(hipDeviceReset());
     std::cout << "Goodbye!" << std::endl;
-    return diff_output_to_correct;
-
     return static_cast<int>(diff_to_correct);
 }
