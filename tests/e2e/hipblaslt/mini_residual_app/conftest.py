@@ -42,29 +42,10 @@ def _check_headers(rock_dir: str) -> None:
         any(kernel_lib.glob("*.dat")) or any(kernel_lib.glob("*.so*"))
     )
     if not has_kernels:
-        try:
-            subprocess.run(
-                ["sudo", "apt", "update"],
-                check=True,
-                capture_output=True,
-                timeout=120,
-            )
-            subprocess.run(
-                ["sudo", "apt", "install", "-y", "rocm-hipblaslt-dev"],
-                check=True,
-                capture_output=True,
-                timeout=300,
-            )
-        except subprocess.CalledProcessError as e:
-            pytest.skip(
-                f"hipblaslt kernel libraries not found and auto-install failed. "
-                f"Manual install required: sudo apt install rocm-hipblaslt-dev"
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pytest.skip(
-                f"hipblaslt kernel libraries not found. "
-                f"Install manually: sudo apt install rocm-hipblaslt-dev"
-            )
+        pytest.skip(
+            f"hipblaslt kernel libraries not found under {rock_dir}/lib/hipblaslt/library/. "
+            f"ROCm installation is incomplete. Rebuild ROCm with hipBLASLt libraries enabled."
+        )
 
 
 @pytest.fixture(scope="session")
