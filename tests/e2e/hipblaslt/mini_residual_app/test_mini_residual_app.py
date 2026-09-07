@@ -36,6 +36,8 @@ Explicit markers:
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 # Architectures where hipBLASLt has no FP8 GEMM kernels.
@@ -49,6 +51,35 @@ _FATAL_STDERR_PATTERNS = [
     "Cannot read",
     "Could not load",
 ]
+
+
+def _resolve_tensile_lib_path(tensile_lib_path: str, rock_dir: str) -> str:
+    """Resolve hipBLASLt Tensile library path, checking arch-specific subdirectories.
+
+    hipBLASLt organizes kernel libraries in GPU architecture subdirectories
+    (e.g., gfx942/). If the base tensile_lib_path is a directory with no loose
+    kernel files, search for arch-specific subdirectories.
+
+    Args:
+        tensile_lib_path: Path to hipblaslt/library/ (from builder_plugin)
+        rock_dir:         Path to ROCm/TheRock install root.
+
+    Returns:
+        Resolved path: either tensile_lib_path or an arch-specific subdirectory.
+    """
+    base = pathlib.Path(tensile_lib_path)
+    if not base.exists():
+        return tensile_lib_path
+
+    has_loose_libs = any(base.glob("*.dat*")) or any(base.glob("Kernels.so*"))
+    if has_loose_libs:
+        return tensile_lib_path
+
+    arch_dirs = sorted(base.glob("gfx*"))
+    if arch_dirs:
+        return str(arch_dirs[0])
+
+    return tensile_lib_path
 
 
 def _check_fatal_stderr(result, label: str) -> None:
@@ -72,6 +103,7 @@ def test_mini_residual_app_default(
     tensile_lib_path: str,
     mini_residual_app_binary: str,
     gpu_arch: str | None,
+    rock_dir: str,
 ):
     """LLM-like shape (M=8192, N=32768, K=1024, 1000 iterations).
 
@@ -86,6 +118,7 @@ def test_mini_residual_app_default(
         tensile_lib_path:        hipBLASLt Tensile kernel directory path.
         mini_residual_app_binary: Compiled binary path from this conftest.
         gpu_arch:                Target GPU architecture string, or ``None``.
+        rock_dir:                Resolved ROCm install path.
     """
     if gpu_arch and gpu_arch.startswith(_NO_FP8_ARCH_PREFIXES):
         pytest.skip(
@@ -93,9 +126,10 @@ def test_mini_residual_app_default(
             "mini_residual_app FP8 path does not apply"
         )
     ld = ld_path["LD_LIBRARY_PATH"]
+    lib_path = _resolve_tensile_lib_path(tensile_lib_path, rock_dir)
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld}"
-        f" HIPBLASLT_TENSILE_LIBPATH={tensile_lib_path}"
+        f" HIPBLASLT_TENSILE_LIBPATH={lib_path}"
         f" {mini_residual_app_binary}",
         timeout=1800.0,
     )
@@ -117,6 +151,7 @@ def test_mini_residual_app_smoke(
     tensile_lib_path: str,
     mini_residual_app_binary: str,
     gpu_arch: str | None,
+    rock_dir: str,
 ):
     """Small-shape smoke run (M=1024, N=1024, K=512, 10 iterations).
 
@@ -130,6 +165,7 @@ def test_mini_residual_app_smoke(
         tensile_lib_path:        hipBLASLt Tensile kernel directory path.
         mini_residual_app_binary: Compiled binary path from this conftest.
         gpu_arch:                Target GPU architecture string, or ``None``.
+        rock_dir:                Resolved ROCm install path.
     """
     if gpu_arch and gpu_arch.startswith(_NO_FP8_ARCH_PREFIXES):
         pytest.skip(
@@ -137,9 +173,10 @@ def test_mini_residual_app_smoke(
             "mini_residual_app FP8 path does not apply"
         )
     ld = ld_path["LD_LIBRARY_PATH"]
+    lib_path = _resolve_tensile_lib_path(tensile_lib_path, rock_dir)
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld}"
-        f" HIPBLASLT_TENSILE_LIBPATH={tensile_lib_path}"
+        f" HIPBLASLT_TENSILE_LIBPATH={lib_path}"
         f" {mini_residual_app_binary}"
         " --M 1024 --N 1024 --K 512 --iters 10",
         timeout=300.0,
@@ -162,6 +199,7 @@ def test_mini_residual_app_two_phase(
     tensile_lib_path: str,
     mini_residual_app_binary: str,
     gpu_arch: str | None,
+    rock_dir: str,
 ):
     """Two-phase training loop (M=2048, N=2048, K=1024, 600 iters, 100 nonzero).
 
@@ -177,6 +215,7 @@ def test_mini_residual_app_two_phase(
         tensile_lib_path:        hipBLASLt Tensile kernel directory path.
         mini_residual_app_binary: Compiled binary path from this conftest.
         gpu_arch:                Target GPU architecture string, or ``None``.
+        rock_dir:                Resolved ROCm install path.
     """
     if gpu_arch and gpu_arch.startswith(_NO_FP8_ARCH_PREFIXES):
         pytest.skip(
@@ -184,9 +223,10 @@ def test_mini_residual_app_two_phase(
             "mini_residual_app FP8 path does not apply"
         )
     ld = ld_path["LD_LIBRARY_PATH"]
+    lib_path = _resolve_tensile_lib_path(tensile_lib_path, rock_dir)
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld}"
-        f" HIPBLASLT_TENSILE_LIBPATH={tensile_lib_path}"
+        f" HIPBLASLT_TENSILE_LIBPATH={lib_path}"
         f" {mini_residual_app_binary}"
         " --M 2048 --N 2048 --K 1024 --iters 600 --nonzero_iters 100",
         timeout=1200.0,
