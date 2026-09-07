@@ -15,6 +15,7 @@ Build output layout::
     output/test-binaries/rocm_libs/async_mixed_precision_workflow/async_mixed_precision_workflow
     output/test-binaries/rocm_libs/sparse_csrrf_analysis_reuse/sparse_csrrf_analysis_reuse
     output/test-binaries/rocm_libs/hip_mempool_probe/hip_mempool_probe
+    output/test-binaries/rocm_libs/miopen_np_nts_tensors/miopen_np_nts_tensors
 """
 
 from __future__ import annotations
@@ -164,6 +165,21 @@ def hip_mempool_probe_binary(gpu_arch: str | None, cmake_build_dir, require_gpu_
         target="hip_mempool_probe",
     )
     return built_binary(os.path.join(build_dir, "hip_mempool_probe"), "hip_mempool_probe")
+
+
+@pytest.fixture(scope="session")
+def miopen_np_nts_tensors_binary(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for, built_binary) -> str:
+    """Compile and return the MIOpen NP-NTS tensor convolution binary."""
+    require_gpu_arch_for("rocm_libs")
+    build_dir = cmake_build_dir(
+        **_COMMON_BUILD_KWARGS,
+        subdir="rocm_libs/miopen_np_nts_tensors",
+        gpu_arch=gpu_arch,
+        label="rocm_libs/miopen_np_nts_tensors",
+        artifact="miopen_np_nts_tensors",
+        target="miopen_np_nts_tensors",
+    )
+    return built_binary(os.path.join(build_dir, "miopen_np_nts_tensors"), "miopen_np_nts_tensors")
 
 
 @pytest.fixture(scope="session")
