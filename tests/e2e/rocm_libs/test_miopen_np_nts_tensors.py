@@ -44,6 +44,9 @@ def test_miopen_np_nts_tensors(
         f"Expected 'W00t!' sentinel in stdout but it was not found.\n"
         f"stdout: {result.stdout[:3000]}"
     )
-    assert "FAIL" not in result.stdout, (
-        f"Unexpected 'FAIL' marker in stdout:\n{result.stdout[:3000]}"
+    assert "this is BAD" not in result.stdout, (
+        f"Test indicated failure with 'this is BAD' in output:\n{result.stdout[:3000]}"
+    )
+    assert "This is a BAD thing" not in result.stdout, (
+        f"Test indicated failure with 'This is a BAD thing' in output:\n{result.stdout[:3000]}"
     )

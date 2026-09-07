@@ -322,21 +322,30 @@ int main()
         if (h_output[i] != h_output_correct[i]) ++diff_to_correct;
     }
 
-    std::cout << "Output tensor size: " << output_size << " elements.\n\n";
+    std::cout << "The output tensor has " << output_size << " total entries.\n\n"
+              << "Comparing (non-packed buf, non-packed desc) to "
+              << "(non-packed buf, packed desc)...\n\nDetected "
+              << diff_to_packed << " differences.\n\n";
 
-    std::cout << "NP-NTS vs (non-packed buf, packed desc): "
-              << diff_to_packed << " difference(s).\n";
     if (diff_to_packed == 0)
-        std::cout << "  NOTE: MIOpen produced identical output for NP-NTS and packed descriptors.\n\n";
+        std::cout << " --> NOTE!!! This is a BAD thing. It means that MIOpen is ignoring the\n"
+                  << "     non-packed strides set in the input tensor's descriptor!\n\n";
     else
-        std::cout << "  MIOpen distinguishes NP-NTS from packed descriptors.\n\n";
+        std::cout << " --> This *might* be ok. This means that MIOpen is doing something different\n"
+                  << "     when non-packed strides are passed to the input tensor descriptor.\n"
+                  << "     See below for more information.\n\n";
 
-    std::cout << "NP-NTS vs reference (packed buf, packed desc): "
-              << diff_to_correct << " difference(s).\n";
+    std::cout << "Comparing (non-packed buf, non-packed desc) to "
+              << "(packed buf, packed desc)...\n\nDetected "
+              << diff_to_correct << " differences.\n\n";
     if (diff_to_correct == 0)
-        std::cout << " --> W00t! NP-NTS convolution output matches the packed reference.\n" << std::endl;
+        std::cout << " --> W00t! The output of the convolution when the input tensor is non-trivially\n"
+                  << "     strided appears to be correct and this issue can (probably) be closed!\n"
+                  << std::endl;
     else
-        std::cout << " --> FAIL: NP-NTS convolution output differs from the packed reference.\n" << std::endl;
+        std::cout << " --> Yes, this is BAD. The output of the convolution when the input tensor is\n"
+                  << "     non-trivially strided is not correct.\n"
+                  << std::endl;
 
     // Cleanup
     CHECK_HIP(hipHostFree(h_output_correct));
@@ -357,6 +366,8 @@ int main()
     CHECK_MIOPEN(miopenDestroy(handle));
 
     CHECK_HIP(hipDeviceReset());
+    std::cout << "Goodbye!" << std::endl;
+    return diff_output_to_correct;
 
     return static_cast<int>(diff_to_correct);
 }
