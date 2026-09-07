@@ -189,10 +189,17 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
-    # amd-smi system-management validation. Clock-limit changes are node-wide,
-    # so tests acquire all GPUs (hw.multi_gpu) for exclusive access.
-    "tests/e2e/system_tools/amd_smi": [
-        "hw.multi_gpu",
+    # amd-smi event tests: GPU reset event correctness and concurrency.
+    # Weekly cadence (destructive reset); runtime.* is per test function.
+    "tests/e2e/system_tools/amd_smi/events": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/hip_directed": [
+        "hw.gpu",
         "layer.runtime",
         "ci.nightly",
         "e2e.stack",
