@@ -198,14 +198,7 @@ jobs:
           # GitHub only allows actors with push access to push branches to the
           # base repo.  A non-fork PR is therefore proof of write access.
           #
-          # author_association is intentionally NOT consulted here.  GitHub's
-          # author_association reflects only *public* org membership.  An actor
-          # whose ROCm org membership is set to "private" receives association=NONE
-          # even though they are a genuine org member with push access (this was
-          # the root cause of the sushkaur1 skip on PR #97).  Using association
-          # would falsely deny valid contributors.  GitHub's branch-protection is
-          # the authoritative gate for non-fork pushes; that already ran before
-          # this workflow even started.  Bot accounts are blocked by the guard above.
+          # author_association is intentionally NOT consulted here. 
           if is_fork == "false":
               finish(True, f"internal branch — push access confirmed (association={association!r})")
 
