@@ -18,7 +18,7 @@ from pathlib import Path
 import re
 
 from tests.common.gpu_monitored.config import Config
-from tests.common.gpu_monitored.executor_bridge import run_command_captured
+from tests.common.gpu_monitored.executor_bridge import run_command_redirect
 from tests.common.gpu_monitored.workloads.base import BuildContext, BuildStatus, RunContext, RunResult, Test, TestSpec
 
 # GEMM shapes: (M, N, K, batch_count)
@@ -114,7 +114,7 @@ class HipblasltBench(Test):
         ]
 
         total_shapes = len(NN_SHAPES) + len(NT_SHAPES)
-        print(
+        ctx.append_console(
             f"  Running {total_shapes} GEMM shapes ({len(NN_SHAPES)} NN + {len(NT_SHAPES)} NT), "
             f"{self.ITERS} iters each"
         )
@@ -185,7 +185,8 @@ class HipblasltBench(Test):
                 failed += 1
 
         summary = f"  Completed: {passed}/{total_shapes} shapes passed, " f"{failed} failed"
-        print(summary)
+        # Single writer only: the shape identity check counts this line, so a
+        # second copy from print() would fail a run in which every shape passed.
         ctx.append_console(summary)
         return RunResult(exit_code=1 if failed > 0 else 0, reproduce_cmd=reproduce)
 
@@ -202,7 +203,7 @@ class HipblasltBench(Test):
         return None
 
     @staticmethod
-    def _run_shape(  # noqa: C901
+    def _run_shape(
         ctx,
         bench,
         tA,
@@ -264,34 +265,48 @@ class HipblasltBench(Test):
             "--batch_count",
             str(B),
         ]
-        env = dict(os.environ)
-        env.update(env_overrides)
+        # Only the overrides. The subprocess inherits everything else, so
+        # copying ``os.environ`` in here just spelled every variable out as an
+        # explicit assignment, turning each logged command into a multi-kilobyte
+        # dump of one machine's environment and making the reproduce line
+        # unusable anywhere else. It is also wrong for a remote executor, which
+        # should not be handed the local host's environment.
+        env = dict(env_overrides)
         executor = None
         if ctx.target_executor is not None:
             executor = ctx.target_executor
         elif ctx.monitor_executor is not None:
             executor = ctx.monitor_executor
-        res = run_command_captured(
+        # Redirect to a file instead of capturing. The executor is built with
+        # ``stream_stdout=True`` and a ``test_logger``, both of which echo
+        # captured output to fd 1 and so into ``console.log``. That echo carries
+        # the tool's own CSV row, which would give each shape a second row on
+        # top of the one deliberately printed below, and the identity check in
+        # ``_validate_hipblaslt`` compares the whole parsed row list. Redirecting
+        # inside the shell leaves the executor nothing to echo.
+        # Absolute: the command is prefixed with ``cd`` when ``cwd`` is set, and
+        # a relative redirect target would resolve against that new directory.
+        shape_log = (ctx.run_dir / "hipblaslt_shape_stdout.log").resolve()
+        shape_log.parent.mkdir(parents=True, exist_ok=True)
+        exit_code = run_command_redirect(
             executor,
             cmd,
+            shape_log,
             env=env,
             cwd=cwd,
             timeout=float(timeout) if timeout is not None else None,
         )
-        if ctx.console_log is not None and (res.stdout or res.stderr):
-            ctx.append_console(res.stdout + res.stderr)
-        if res.exit_code == 124:
-            print(
+        output = shape_log.read_text(errors="replace") if shape_log.is_file() else ""
+        if exit_code == 124:
+            ctx.append_console(
                 f"  [hipblaslt] FAIL: watchdog timeout — shape {n}/{total} "
                 f"({tA}{tB} {M}x{N}x{K}x{B}) did not complete within "
                 f"--per-iter-watchdog {timeout}s"
             )
-            if res.stdout:
-                print(res.stdout[-1000:])
-            if res.stderr:
-                print(res.stderr[-1000:])
+            if output:
+                ctx.append_console(output[-1000:])
             return False
-        if res.exit_code != 0:
+        if exit_code != 0:
             # The "[hipblaslt] WARNING: shape" prefix is load-bearing:
             # ``_validate_hipblaslt`` counts occurrences of it to derive
             # shape_fail, which fails the test. Despite reading as a warning
@@ -299,30 +314,29 @@ class HipblasltBench(Test):
             # (e.g. WARNING -> ERROR) without updating the regex in
             # validation.py in the same commit -- on its own, a rename
             # silently drops the gate to zero matches.
-            print(
-                f"  [hipblaslt] WARNING: shape {n}/{total} ({tA}{tB} {M}x{N}x{K}x{B}) " f"failed (exit {res.exit_code})"
+            ctx.append_console(
+                f"  [hipblaslt] WARNING: shape {n}/{total} ({tA}{tB} {M}x{N}x{K}x{B}) " f"failed (exit {exit_code})"
             )
-            # print last 5 lines of output
-            out_lines = (res.stdout + res.stderr).splitlines()[-5:]
-            for line in out_lines:
-                print(line)
+            ctx.append_console("\n".join(output.splitlines()[-5:]))
             return False
 
         header_line = None
         data_line = None
-        for line in (res.stdout + res.stderr).splitlines():
+        for line in output.splitlines():
             if header_line is None and re.match(r"^\[\d+\]:transA", line):
                 header_line = line
             if data_line is None and re.match(r"^\s+[NT],[NT],\d", line):
                 data_line = line
 
         if print_header and header_line:
-            print(header_line)
+            ctx.append_console(header_line)
         if data_line:
-            print(data_line)
+            ctx.append_console(data_line)
             return True
         else:
             # Same load-bearing prefix as the exit-code branch above; see the
             # note there before changing this wording.
-            print(f"  [hipblaslt] WARNING: shape {n}/{total} ({tA}{tB} {M}x{N}x{K}x{B}) " f"produced no data row")
+            ctx.append_console(
+                f"  [hipblaslt] WARNING: shape {n}/{total} ({tA}{tB} {M}x{N}x{K}x{B}) " f"produced no data row"
+            )
             return False

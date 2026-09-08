@@ -12,10 +12,8 @@ import json
 import math
 import os
 from pathlib import Path
-import select
 import socket
 import sys
-import threading
 import time
 import traceback
 from typing import TYPE_CHECKING
@@ -62,12 +60,10 @@ class TerminationRequested(SystemExit):
 class MonitoredTestOrchestrator:
     """Runs one or more tests, collects outcomes."""
 
-    OUTPUT_PUMP_DRAIN_TIMEOUT_SEC = 10
     # How many consecutive pretest lines the dmesg delta will compare when
     # locating its anchor. Bounds the search on adversarial buffers; see
     # ``_write_dmesg_delta``.
     DMESG_ANCHOR_MAX_DEPTH = 256
-    OUTPUT_PUMP_POLL_SEC = 0.1
 
     def __init__(
         self,
@@ -381,13 +377,13 @@ class MonitoredTestOrchestrator:
     # -------------------------------------------------------------------
     # Workload execution with stdout tee to console.log
     # -------------------------------------------------------------------
-    def _run_workload(self, test: Test, ctx: RunContext, run_dir: Path) -> RunResult:  # noqa: C901
+    def _run_workload(self, test: Test, ctx: RunContext, run_dir: Path) -> RunResult:
         """Invoke test.run(ctx), capturing all stdout/stderr to console.log.
 
-        Workload fd 1/2 are redirected to a pipe whose reader thread writes
-        ``console.log``. The live console shows only the per-test summary block
-        printed afterwards. Subprocesses inherit fd 1/2, so redirection happens
-        at the fd level rather than swapping ``sys.stdout``.
+        Workload fd 1/2 point at ``console.log`` itself. The live console shows
+        only the per-test summary block printed afterwards. Subprocesses inherit
+        fd 1/2, so redirection happens at the fd level rather than swapping
+        ``sys.stdout``.
         """
         log_path = run_dir / "console.log"
 
@@ -395,12 +391,7 @@ class MonitoredTestOrchestrator:
         saved_stderr_fd: int | None = None
         saved_sys_stdout = sys.stdout
         saved_sys_stderr = sys.stderr
-        pipe_r: int | None = None
-        pipe_w: int | None = None
-        log_fh = None
-        pump: threading.Thread | None = None
-        pump_stop = threading.Event()
-        log_failed = threading.Event()
+        log_fd: int | None = None
         result = RunResult(exit_code=1)
 
         try:
@@ -411,55 +402,21 @@ class MonitoredTestOrchestrator:
             saved_stdout_fd = os.dup(1)
             saved_stderr_fd = os.dup(2)
 
-            pipe_r, pipe_w = os.pipe()
-            log_fh = open(log_path, "wb")  # noqa: SIM115 — long-lived handle, closed explicitly
-
-            def _pump(rfd=pipe_r, fh=log_fh):
-                """Drain the capture pipe until EOF or cancellation."""
-                try:
-                    while not pump_stop.is_set():
-                        try:
-                            readable, _, _ = select.select(
-                                [rfd],
-                                [],
-                                [],
-                                self.OUTPUT_PUMP_POLL_SEC,
-                            )
-                        except (OSError, ValueError):
-                            log_failed.set()
-                            break
-                        if not readable:
-                            continue
-                        try:
-                            chunk = os.read(rfd, 65536)
-                        except OSError:
-                            log_failed.set()
-                            break
-                        if not chunk:
-                            break
-                        try:
-                            fh.write(chunk)
-                            fh.flush()
-                        except (OSError, ValueError):
-                            log_failed.set()
-                finally:
-                    with contextlib.suppress(OSError):
-                        os.close(rfd)
-                    try:
-                        fh.close()
-                    except (OSError, ValueError):
-                        log_failed.set()
-
-            pump = threading.Thread(target=_pump, daemon=True)
-            pump.start()
-            os.dup2(pipe_w, 1)
-            os.dup2(pipe_w, 2)
-            # Only fd 1/2 and any descendants now hold the write end.
-            os.close(pipe_w)
-            pipe_w = None
+            # Hand fd 1/2 the log's own descriptor. An earlier version drained
+            # a pipe into ``console.log`` from a reader thread, which put a
+            # second offset on the file and left the log dependent on that
+            # thread outliving every writer: once the thread stopped, writes to
+            # fd 1 still succeeded but never reached disk, so the log was
+            # truncated with no error raised anywhere. ``O_APPEND`` keeps every
+            # write atomic across the workload, its children and this process.
+            log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_APPEND, 0o644)
+            os.dup2(log_fd, 1)
+            os.dup2(log_fd, 2)
+            os.close(log_fd)
+            log_fd = None
 
             # Pytest replaces sys.stdout with a capture object that does not
-            # write to fd 1.  Subprocesses inherit fd 1 (the pipe above) but
+            # write to fd 1.  Subprocesses inherit fd 1 (the log above) but
             # Python ``print()`` would bypass console.log unless we rebind the
             # text streams too.
             sys.stdout = os.fdopen(1, "w", buffering=1, closefd=False)
@@ -503,44 +460,13 @@ class MonitoredTestOrchestrator:
             if saved_stderr_fd is not None:
                 with contextlib.suppress(OSError):
                     os.dup2(saved_stderr_fd, 2)
-            # Setup can fail after ``os.pipe()`` but before the normal close
-            # (for example, opening console.log on a full filesystem). Close
-            # the write end before joining so a started pump can observe EOF.
-            if pipe_w is not None:
-                with contextlib.suppress(OSError):
-                    os.close(pipe_w)
-                pipe_w = None
-            if pump is not None:
-                pump.join(timeout=self.OUTPUT_PUMP_DRAIN_TIMEOUT_SEC)
-                if pump.is_alive():
-                    pump_stop.set()
-                    pump.join(timeout=max(1.0, self.OUTPUT_PUMP_POLL_SEC * 2))
-                    print(
-                        "  [runner] WARNING: output pump did not finish "
-                        f"within {self.OUTPUT_PUMP_DRAIN_TIMEOUT_SEC}s; "
-                        "console.log may be truncated"
-                    )
-                    # A cancelled drain abandons whatever is still in the
-                    # pipe, so the authoritative log may be missing its tail.
-                    log_failed.set()
-            if log_failed.is_set() and result.exit_code == 0:
-                result.exit_code = 1
-            # ``pipe_r`` and ``log_fh`` belong to the pump once it starts.
-            # If the pump is stuck in a hostile filesystem write, leave those
-            # unique descriptors owned by the daemon rather than closing them
-            # underneath it and risking descriptor-reuse corruption.
-            for fd in (saved_stdout_fd, saved_stderr_fd):
+            # ``log_fd`` is only still set if ``dup2`` failed, in which case
+            # fd 1/2 never referenced the log and the open descriptor would
+            # otherwise leak.
+            for fd in (saved_stdout_fd, saved_stderr_fd, log_fd):
                 if fd is not None:
                     with contextlib.suppress(OSError):
                         os.close(fd)
-            if pump is None:
-                for fd in (pipe_r,):
-                    if fd is not None:
-                        with contextlib.suppress(OSError):
-                            os.close(fd)
-                if log_fh is not None:
-                    with contextlib.suppress(OSError, ValueError):
-                        log_fh.close()
 
         return result
 

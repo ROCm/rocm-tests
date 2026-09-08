@@ -17,22 +17,15 @@ from tests.common.gpu_monitored.workloads.base import BuildContext, BuildStatus,
 
 
 def _emit(ctx: RunContext, msg: str) -> None:
-    """Print a marker and mirror it into ``console.log``.
+    """Write a validator-critical marker to ``console.log``.
 
-    ``console.log`` has two independent writers: the orchestrator's fd-level
-    pump (which owns a ``"wb"`` handle carrying ``print`` output) and
-    ``append_console`` (which opens the same path in ``"a"`` mode for captured
-    sub-process output). The two hold separate file offsets, so a bare ``print``
-    issued after the first ``ctx.exec`` is written at a stale offset and does
-    not survive in the artifact. Layer 2 greps ``console.log`` for the coverage
-    line, the per-sub-test ``(rc=...)`` markers and the watchdog sentinel, so
-    those have to be appended explicitly -- otherwise a run in which every
-    sub-test passed is still reported as ``missing cudamemtest coverage
-    summary``. Keep the wording in sync with the regexes in
-    ``validation._validate_memtest``; appending a marker twice is not harmless,
-    because the identity check compares the full list of parsed sub-test IDs.
+    Layer 2 greps ``console.log`` for the coverage line, the per-sub-test
+    ``(rc=...)`` markers and the watchdog sentinel, and its identity check
+    compares the full list of parsed sub-test IDs. Emitting a marker twice
+    therefore fails a passing run just as dropping one does, so route it
+    through the single writer rather than also printing it. Keep the wording
+    in sync with the regexes in ``validation._validate_memtest``.
     """
-    print(msg)
     ctx.append_console(msg)
 
 

@@ -10,7 +10,6 @@ from collections.abc import Sequence
 import contextlib
 from dataclasses import dataclass
 from enum import Enum
-import os
 from pathlib import Path
 import sys
 import threading
@@ -104,13 +103,28 @@ class RunContext:
 
     def append_console(self, text: str) -> None:
         """Append workload output to ``console.log`` for validation."""
-        if not text or self.console_log is None:
+        if not text:
             return
-        self.console_log.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.console_log, "a", encoding="utf-8", errors="replace") as fh:
-            fh.write(text)
-            if not text.endswith("\n"):
-                fh.write("\n")
+        self._write_console((text if text.endswith("\n") else text + "\n").encode(errors="replace"))
+
+    def _write_console(self, payload: bytes) -> None:
+        """Append raw bytes to ``console.log``.
+
+        The runner also points fd 1 at this file, but a pytest run can
+        ``dup2`` over fd 1 mid-test, after which writes to fd 1 still succeed
+        while landing somewhere else entirely and the marker is lost with no
+        error raised. The validators parse ``console.log``, so write to it
+        directly rather than trusting fd 1 to still be ours. Both writers open
+        it with ``O_APPEND``, so every write lands atomically at the end of
+        the file and the two offsets cannot clobber one another.
+        """
+        if not payload or self.console_log is None:
+            return
+        # Anything already buffered on fd 1 should stay ahead of this write.
+        with contextlib.suppress(OSError, ValueError):
+            sys.stdout.flush()
+        with contextlib.suppress(OSError), open(self.console_log, "ab") as fh:
+            fh.write(payload)
 
     def exec(
         self,
@@ -133,8 +147,10 @@ class RunContext:
             stdout_file.parent.mkdir(parents=True, exist_ok=True)
             stdout_file.write_bytes(b"")
             done = threading.Event()
+            streamed = 0
 
             def _follow() -> None:
+                nonlocal streamed
                 try:
                     reader = open(stdout_file, "rb")  # noqa: SIM115 — long-lived handle, closed explicitly
                 except OSError:
@@ -143,10 +159,8 @@ class RunContext:
                     while True:
                         chunk = reader.read(65536)
                         if chunk:
-                            try:
-                                os.write(1, chunk)
-                            except OSError:
-                                return
+                            self._write_console(chunk)
+                            streamed += len(chunk)
                             continue
                         if done.is_set():
                             return
@@ -169,7 +183,11 @@ class RunContext:
             finally:
                 done.set()
                 follower.join(timeout=30)
-                if self.console_log is not None and stdout_file.is_file():
+                # Whatever the follower streamed is already in ``console.log``.
+                # Appending it again would double every line
+                # and inflate the per-GPU check counts the validators
+                # reconcile; fall back only when the follower delivered nothing.
+                if self.console_log is not None and not streamed and stdout_file.is_file():
                     with contextlib.suppress(OSError):
                         self.append_console(stdout_file.read_text(errors="replace"))
 
