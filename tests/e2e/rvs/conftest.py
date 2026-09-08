@@ -30,17 +30,36 @@ _RVS_REPO_URL = "https://github.com/ROCm/ROCmValidationSuite.git"
 _RVS_REF = os.environ.get("ROCM_TEST_RVS_REF", "master")
 
 
-def _is_rvs_installed(rock_dir: str, cmake_executor=None) -> bool:
-    """Check if RVS is pre-installed with binary and config files."""
-    rock_dir_path = pathlib.Path(rock_dir)
-    rvs = rock_dir_path / "bin" / "rvs"
-    conf = rock_dir_path / "share" / "rocm-validation-suite" / "conf"
+def _find_preinstalled_rvs(rock_dir: str, cmake_executor=None) -> str:
+    """Return the path of a pre-installed ``rvs``, or ``""`` if there is none.
 
+    Both layouts are searched because the packages install into an ``extras-N``
+    subdirectory rather than the ROCm prefix itself, so looking only in
+    ``bin/rvs`` would miss a packaged RVS and fall through to a source build.
+    That matters beyond the wasted build: a build owned by the test user cannot
+    be loaded by ``rvs`` running under sudo, which the packaged root-owned copy
+    handles fine.
+
+    The config tree has to sit beside the binary, since an rvs without its conf
+    directory can run no action at all.
+    """
     if cmake_executor is None:
-        return rvs.is_file() and os.access(rvs, os.X_OK) and conf.is_dir()
+        for base in (pathlib.Path(rock_dir), *sorted(pathlib.Path(rock_dir).glob("extras*"))):
+            rvs = base / "bin" / "rvs"
+            conf = base / "share" / "rocm-validation-suite" / "conf"
+            if rvs.is_file() and os.access(rvs, os.X_OK) and conf.is_dir():
+                return str(rvs)
+        return ""
 
-    result = cmake_executor.run(f"test -x {rvs} && test -d {conf}")
-    return result.ok
+    probe = (
+        f"for base in {shlex.quote(rock_dir)} {shlex.quote(rock_dir)}/extras*; do "
+        'test -x "$base/bin/rvs" && test -d "$base/share/rocm-validation-suite/conf" '
+        '&& { echo "$base/bin/rvs"; break; }; done'
+    )
+    # The loop exits non-zero when nothing matched, so the output is the signal
+    # rather than the status.
+    found = (cmake_executor.run(probe).stdout or "").strip()
+    return found.splitlines()[0].strip() if found else ""
 
 
 def _file_exists(path: pathlib.Path, cmake_executor=None) -> bool:
@@ -133,7 +152,7 @@ def rvs_binary(
     """Locate or build the RVS binary.
 
     Priority:
-      1. Pre-installed at {rock_dir}/bin/rvs
+      1. Pre-installed at {rock_dir}/bin/rvs or {rock_dir}/extras*/bin/rvs
       2. Previously built at {rvs_source}/install/
       3. Build from source using framework cmake_build_dir + DESTDIR install
     """
@@ -141,10 +160,9 @@ def rvs_binary(
     install_dir = src_dir / "install"
 
     # 1. Check pre-installed
-    preinstalled = pathlib.Path(rock_dir) / "bin" / "rvs"
-    if _is_rvs_installed(rock_dir, cmake_executor):
+    if preinstalled := _find_preinstalled_rvs(rock_dir, cmake_executor):
         logger.info("Using pre-installed RVS: %s", preinstalled)
-        return str(preinstalled)
+        return preinstalled
 
     # 2. Check previously built
     if install_dir.exists():
@@ -251,6 +269,7 @@ def rvs_find_conf(rock_dir: str, rvs_source: str, cmake_executor, rvs_binary: st
     def _find_conf(config_name: str, *, gpu_only: bool = False, gpu_conf_dir: str = "") -> str:
         installed_conf = rock_dir_path / "share" / "rocm-validation-suite" / "conf"
         search_roots = _collect_conf_roots(
+            _binary_conf_root(rvs_binary),
             installed_conf,
             install_conf,
             source_conf,
@@ -271,6 +290,20 @@ def rvs_find_conf(rock_dir: str, rvs_source: str, cmake_executor, rvs_binary: st
     return _find_conf
 
 
+def _binary_conf_root(rvs_binary: str | None) -> pathlib.Path | None:
+    """Return the ``conf`` tree that sits beside ``rvs_binary``.
+
+    Both a packaged and a locally built rvs live at ``<base>/bin/rvs`` with their
+    configs under the matching ``<base>/share``, so deriving the root from the
+    resolved binary keeps the configs in step with the build that reads them
+    instead of pairing one version's binary with another's config.
+    """
+    if not rvs_binary:
+        return None
+    base = pathlib.Path(rvs_binary).resolve().parent.parent
+    return base / "share" / "rocm-validation-suite" / "conf"
+
+
 def _rvs_install_base(rvs_source: str | None) -> pathlib.Path | None:
     """Return the RVS ``install`` tree when the source checkout has one."""
     if not rvs_source:
@@ -279,7 +312,12 @@ def _rvs_install_base(rvs_source: str | None) -> pathlib.Path | None:
     return base if base.exists() else None
 
 
-def _export_rvs_conf_root(rvs_source: str, rock_dir: str, install_base: pathlib.Path | None) -> None:
+def _export_rvs_conf_root(
+    rvs_source: str,
+    rock_dir: str,
+    install_base: pathlib.Path | None,
+    rvs_binary: str | None = None,
+) -> None:
     """Point workloads at the first readable RVS ``conf`` tree."""
     install_conf = None
     if install_base is not None:
@@ -288,6 +326,7 @@ def _export_rvs_conf_root(rvs_source: str, rock_dir: str, install_base: pathlib.
             None,
         )
     for root in (
+        _binary_conf_root(rvs_binary),
         install_conf,
         pathlib.Path(rock_dir) / "share" / "rocm-validation-suite" / "conf",
         pathlib.Path(rvs_source) / "rvs" / "conf",
@@ -333,7 +372,7 @@ def export_rvs_env_paths(
 
     install_base = _rvs_install_base(rvs_source)
     if rvs_source:
-        _export_rvs_conf_root(rvs_source, rock_dir, install_base)
+        _export_rvs_conf_root(rvs_source, rock_dir, install_base, rvs_binary)
 
     if transferbench_binary:
         os.environ["ROCM_TEST_TRANSFERBENCH_BIN"] = transferbench_binary
