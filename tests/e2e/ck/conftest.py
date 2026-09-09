@@ -43,7 +43,7 @@ def ck_streamk_build(
     gpu_arch: str | None,
 ) -> str:
     """Configure and build the CK tile stream-k GEMM example; return build directory."""
-    if gpu_arch is not None and gpu_arch not in _SUPPORTED_ARCHS:
+    if gpu_arch is None or gpu_arch not in _SUPPORTED_ARCHS:
         pytest.skip(f"CK stream-k GEMM requires gfx942 or gfx950; detected arch: {gpu_arch}")
 
     return cmake_build_dir(
