@@ -33,11 +33,10 @@ _ROCBLAS_SAMPLES = [
     "rocblas-example-user-driven-tuning",
 ]
 
+
 @pytest.mark.runtime.medium
 @pytest.mark.parametrize("sample_name", _ROCBLAS_SAMPLES)
-def test_rocblas_samples_dynamic(
-    target_executor, rock_dir, sample_name, rocblas_library_guard, ld_path: dict
-):
+def test_rocblas_samples_dynamic(target_executor, rock_dir, sample_name, _rocblas_library_guard, ld_path: dict):
     """Execute a single rocBLAS sample and validate its output."""
     cmd_dir = os.path.join(rock_dir, "bin")
     ld = ld_path["LD_LIBRARY_PATH"]
@@ -47,21 +46,15 @@ def test_rocblas_samples_dynamic(
     _validate_rocblas_sample_output(result, sample_name)
 
 
-def _validate_rocblas_sample_output(
-    result: ExecutionResult, test_case_name: str
-) -> None:
+def _validate_rocblas_sample_output(result: ExecutionResult, test_case_name: str) -> None:
     """Validate sample output against sample-specific expected patterns."""
     data = result.stdout
 
     if test_case_name == "rocblas-example-user-driven-tuning":
-        pattern = (
-            r"^(\d+)\s+solution\(s\)\s+found\s+that\s+can\s+solve\s+this\s+GEMM\."
-        )
+        pattern = r"^(\d+)\s+solution\(s\)\s+found\s+that\s+can\s+solve\s+this\s+GEMM\."
         assert any(
             re.search(pattern, line) for line in data.splitlines()
-        ), (
-            f"Expected solutions found message not in output for {test_case_name}"
-        )
+        ), f"Expected solutions found message not in output for {test_case_name}"
 
     elif test_case_name == "rocblas-example-scal-template":
         lines = data.splitlines()
@@ -74,11 +67,9 @@ def _validate_rocblas_sample_output(
             ):
                 found = True
                 break
-        assert (
-            found
-        ), f"Expected pattern not found in output for {test_case_name}"
+        assert found, f"Expected pattern not found in output for {test_case_name}"
 
     else:
-        assert re.search(r"Pass", data, flags=re.IGNORECASE), (
-            f"Expected 'Pass' not found in output for {test_case_name}"
-        )
+        assert re.search(
+            r"Pass", data, flags=re.IGNORECASE
+        ), f"Expected 'Pass' not found in output for {test_case_name}"
