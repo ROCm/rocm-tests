@@ -58,6 +58,32 @@ material.
 
 ---
 
+### 3. mixbench
+
+The `_mixbench_build_dir` fixture clones
+[ekondis/mixbench](https://github.com/ekondis/mixbench) at runtime into the
+gitignored `output/` build tree and builds only the `mixbench-hip/` CMake
+sub-project.  The repository is **not** vendored into `rocm-tests`; no mixbench
+source files are present in this repository.
+
+- **Copyright:** Copyright (C) Elias Konstantinos and contributors
+- **License:** GNU General Public License v2.0 (GPL-2.0)
+- **Upstream repository:** https://github.com/ekondis/mixbench
+- **Upstream license file:** https://github.com/ekondis/mixbench/blob/master/LICENSE
+
+The GPL-2.0 governs the mixbench source code and any binaries built from it.
+`rocm-tests` does not distribute the mixbench source or its compiled binaries;
+they are built and consumed locally on the target test node during execution.
+If any downstream packaging flow (container image, release artifact, build cache)
+includes the cloned mixbench source tree or its compiled output, that distribution
+must comply with GPL-2.0 terms: the corresponding source must be made available
+and the GPL-2.0 license text must be included.
+
+The clone ref defaults to `master` and is overridable via
+`ROCM_TEST_MIXBENCH_REF`.
+
+---
+
 ## First-Party Test Code
 
 All sources under `tests/e2e/hip_runtime/src/` — including the self-contained
