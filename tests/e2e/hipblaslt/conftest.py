@@ -304,34 +304,43 @@ def tensile_lib_path(rock_dir: str, gpu_arch: str | None, arch_lib_path, cmake_e
         Absolute path string to the resolved Tensile library directory.
     """
     library_base = pathlib.Path(rock_dir) / "lib" / "hipblaslt" / "library"
-    tensile_lib = arch_lib_path(library_base)
 
+    # Some ROCm installs place kernels directly under library/, others under library/<arch>/.
+    # Check the base dir first; if not found there, scan one level of arch subdirectories.
     if gpu_arch:
-        # Some ROCm installs place kernels directly under library/, others under library/<arch>/.
-        # Check the base path first; fall back to the arch subdirectory.
-        stem_base = f"{library_base}/TensileLibrary_lazy_{gpu_arch}.dat"
-        stem_arch = f"{library_base}/{gpu_arch}/TensileLibrary_lazy_{gpu_arch}.dat"
-        candidates = [
-            stem_base, f"{stem_base}.zlib", f"{stem_base}.gz",
-            stem_arch, f"{stem_arch}.zlib", f"{stem_arch}.gz",
-        ]
-        if not _any_tensile_lib_present(candidates, cmake_executor):
-            checked = "\n".join(f"  - {path}" for path in candidates)
-            pytest.fail(
-                f"hipBLASLt Tensile kernels missing for arch {gpu_arch!r}. Checked (plain + compressed):\n"
-                f"{checked}\n"
-                "Install the BLAS artifact package (pass --blas to install_rocm_from_artifacts.py)."
-            )
-        # Use whichever directory actually contains the files.
-        arch_subdir = pathlib.Path(f"{library_base}/{gpu_arch}")
-        if _any_tensile_lib_present(
-            [f"{stem_arch}", f"{stem_arch}.zlib", f"{stem_arch}.gz"], cmake_executor
-        ) and not _any_tensile_lib_present(
-            [f"{stem_base}", f"{stem_base}.zlib", f"{stem_base}.gz"], cmake_executor
-        ):
-            tensile_lib = str(arch_subdir)
+        stem_base = str(library_base / f"TensileLibrary_lazy_{gpu_arch}.dat")
+        stem_arch = str(library_base / gpu_arch / f"TensileLibrary_lazy_{gpu_arch}.dat")
+        base_variants = [stem_base, f"{stem_base}.zlib", f"{stem_base}.gz"]
+        arch_variants = [stem_arch, f"{stem_arch}.zlib", f"{stem_arch}.gz"]
+        if _any_tensile_lib_present(base_variants, cmake_executor):
+            return str(library_base)
+        if _any_tensile_lib_present(arch_variants, cmake_executor):
+            return str(library_base / gpu_arch)
+        checked = "\n".join(f"  - {p}" for p in base_variants + arch_variants)
+        pytest.fail(
+            f"hipBLASLt Tensile kernels missing for arch {gpu_arch!r}. Checked:\n{checked}\n"
+            "Install the BLAS artifact package (pass --blas to install_rocm_from_artifacts.py)."
+        )
 
+    # gpu_arch not specified — scan library/ for the first arch subdir that has kernels.
+    tensile_lib = _resolve_tensile_lib_dir(library_base, cmake_executor)
     return tensile_lib
+
+
+def _resolve_tensile_lib_dir(library_base: pathlib.Path, cmake_executor) -> str:
+    """Return the Tensile library directory, checking base then arch subdirs.
+
+    Falls back to library_base itself when no arch subdir with kernels is found.
+    """
+    if cmake_executor is None:
+        # Check flat layout first.
+        if any(library_base.glob("TensileLibrary_lazy_*.dat*")):
+            return str(library_base)
+        # Scan one level of arch subdirectories (e.g. library/gfx942/).
+        for subdir in sorted(library_base.iterdir()):
+            if subdir.is_dir() and any(subdir.glob("TensileLibrary_lazy_*.dat*")):
+                return str(subdir)
+    return str(library_base)
 
 
 def _any_tensile_lib_present(candidates: list[str], cmake_executor) -> bool:
