@@ -307,10 +307,14 @@ def tensile_lib_path(rock_dir: str, gpu_arch: str | None, arch_lib_path, cmake_e
     tensile_lib = arch_lib_path(library_base)
 
     if gpu_arch:
-        stem = f"{tensile_lib}/TensileLibrary_lazy_{gpu_arch}.dat"
-        # TheRock ships the lazy library either uncompressed or zlib/gzip-compressed;
-        # hipBLASLt decompresses on load, so accept whichever variant is present.
-        candidates = [stem, f"{stem}.zlib", f"{stem}.gz"]
+        # Some ROCm installs place kernels directly under library/, others under library/<arch>/.
+        # Check the base path first; fall back to the arch subdirectory.
+        stem_base = f"{library_base}/TensileLibrary_lazy_{gpu_arch}.dat"
+        stem_arch = f"{library_base}/{gpu_arch}/TensileLibrary_lazy_{gpu_arch}.dat"
+        candidates = [
+            stem_base, f"{stem_base}.zlib", f"{stem_base}.gz",
+            stem_arch, f"{stem_arch}.zlib", f"{stem_arch}.gz",
+        ]
         if not _any_tensile_lib_present(candidates, cmake_executor):
             checked = "\n".join(f"  - {path}" for path in candidates)
             pytest.fail(
@@ -318,6 +322,14 @@ def tensile_lib_path(rock_dir: str, gpu_arch: str | None, arch_lib_path, cmake_e
                 f"{checked}\n"
                 "Install the BLAS artifact package (pass --blas to install_rocm_from_artifacts.py)."
             )
+        # Use whichever directory actually contains the files.
+        arch_subdir = pathlib.Path(f"{library_base}/{gpu_arch}")
+        if _any_tensile_lib_present(
+            [f"{stem_arch}", f"{stem_arch}.zlib", f"{stem_arch}.gz"], cmake_executor
+        ) and not _any_tensile_lib_present(
+            [f"{stem_base}", f"{stem_base}.zlib", f"{stem_base}.gz"], cmake_executor
+        ):
+            tensile_lib = str(arch_subdir)
 
     return tensile_lib
 
