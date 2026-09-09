@@ -50,6 +50,8 @@ _CMAKE_SRC_DIR = "tests/e2e/hipblaslt/src/hipblaslt_heuristic_workspace"
 _CMAKE_BINARY_NAME = "hipblaslt-heuristic-test"
 _ZERO_MAT_SRC_DIR = "tests/e2e/hipblaslt/src/hipblaslt_zero_mat"
 _ZERO_MAT_BINARY = "hipblaslt_zero_mat"
+_HEURISTIC_TEST_SRC_DIR = "tests/e2e/hipblaslt/src/hipblaslt_heuristic_test"
+_HEURISTIC_TEST_BINARY = "hipblaslt-heuristic-test"
 
 
 # ---------------------------------------------------------------------------
@@ -380,4 +382,48 @@ def hipblaslt_zero_mat_binary(_hip_zero_mat_cmake_build_dir: str, cmake_executor
     binary = os.path.join(_hip_zero_mat_cmake_build_dir, _ZERO_MAT_BINARY)
     if cmake_executor is None:
         assert os.path.isfile(binary), f"hipblaslt_zero_mat: binary not found at {binary} after build"
+    return binary
+
+
+# ---------------------------------------------------------------------------
+# CMake fixture for hipblaslt_heuristic_test (.hip source, strict error checking)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def _hip_heuristic_test_cmake_build_dir(gpu_arch: str | None, cmake_build_dir, cmake_executor) -> str:
+    """Build hipblaslt-heuristic-test (strict variant) via CMake; return build directory path.
+
+    Uses the source in ``tests/e2e/hipblaslt/src/hipblaslt_heuristic_test/``.
+    Skips when cmake is absent in local mode rather than raising ``FileNotFoundError``.
+    """
+    if cmake_executor is None and not shutil.which("cmake"):
+        pytest.skip("cmake not found in PATH — install cmake to run this test locally")
+
+    return cmake_build_dir(
+        src=_HEURISTIC_TEST_SRC_DIR,
+        subdir="hipblaslt_heuristic_test",
+        gpu_arch=gpu_arch,
+        compiler_mode="optional_auto",
+        label="hipblaslt_heuristic_test",
+        sync_dirs=[_HEURISTIC_TEST_SRC_DIR],
+        artifact=_HEURISTIC_TEST_BINARY,
+        target=_HEURISTIC_TEST_BINARY,
+    )
+
+
+@pytest.fixture(scope="session")
+def hipblaslt_heuristic_test_binary(_hip_heuristic_test_cmake_build_dir: str, cmake_executor) -> str:
+    """Return absolute path to the compiled hipblaslt-heuristic-test binary (strict variant).
+
+    Args:
+        _hip_heuristic_test_cmake_build_dir: Build directory from the CMake fixture.
+        cmake_executor: ``SshExecutor`` when running remotely, ``None`` for local.
+
+    Returns:
+        Absolute path to the ``hipblaslt-heuristic-test`` binary.
+    """
+    binary = os.path.join(_hip_heuristic_test_cmake_build_dir, _HEURISTIC_TEST_BINARY)
+    if cmake_executor is None:
+        assert os.path.isfile(binary), f"hipblaslt_heuristic_test: binary not found at {binary} after successful build"
     return binary
