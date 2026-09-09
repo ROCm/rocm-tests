@@ -37,28 +37,41 @@ _ROCBLAS_SAMPLES = [
 
 @pytest.mark.runtime.medium
 @pytest.mark.parametrize("sample_name", _ROCBLAS_SAMPLES)
-def test_rocblas_samples_dynamic(target_executor, rock_dir, sample_name, rocblas_library_guard, ld_path: dict):
+def test_rocblas_samples_dynamic(
+    target_executor,
+    rock_dir,
+    sample_name,
+    rocblas_library_guard,
+    ld_path: dict,
+):
     """Execute a single rocBLAS sample and validate its output."""
     cmd_dir = os.path.join(rock_dir, "bin")
     ld = ld_path["LD_LIBRARY_PATH"]
-    result = target_executor.run(
-        f"env LD_LIBRARY_PATH={shlex.quote(ld)} {shlex.quote(f'{cmd_dir}/{sample_name}')}", timeout=900.0
-    )
+    quoted_ld = shlex.quote(ld)
+    quoted_cmd = shlex.quote(f"{cmd_dir}/{sample_name}")
+    cmd = f"env LD_LIBRARY_PATH={quoted_ld} {quoted_cmd}"
+    result = target_executor.run(cmd, timeout=900.0)
 
-    assert (
-        result.ok
-    ), f"{sample_name} failed (exit={result.exit_code}): stdout: {result.stdout[:3000]} stderr: {result.stderr[:800]}"
+    msg = (
+        f"{sample_name} failed (exit={result.exit_code}): "
+        f"stdout: {result.stdout[:3000]} "
+        f"stderr: {result.stderr[:800]}"
+    )
+    assert result.ok, msg
     _validate_rocblas_sample_output(result, sample_name)
 
 
-def _validate_rocblas_sample_output(result: ExecutionResult, test_case_name: str) -> None:
+def _validate_rocblas_sample_output(
+    result: ExecutionResult,
+    test_case_name: str,
+) -> None:
     data = result.stdout
 
     if test_case_name == "rocblas-example-user-driven-tuning":
-        pattern = r"^(\d+)\s+solution\(s\)\s+found\s+that\s+can\s+solve\s+this\s+GEMM\."
-        assert any(
-            re.search(pattern, line) for line in data.splitlines()
-        ), f"Expected solutions found message not in output for {test_case_name}"
+        pattern = r"^(\d+)\s+solution\(s\)\s+found\s+that\s+can\s+" r"solve\s+this\s+GEMM\."
+        has_solution = any(re.search(pattern, line) for line in data.splitlines())
+        msg = "Expected solutions found message not in output " "for {}".format(test_case_name)
+        assert has_solution, msg
 
     elif test_case_name == "rocblas-example-scal-template":
         lines = data.splitlines()
@@ -71,9 +84,10 @@ def _validate_rocblas_sample_output(result: ExecutionResult, test_case_name: str
             ):
                 found = True
                 break
-        assert found, f"Expected pattern not found in output for {test_case_name}"
+        msg = "Expected pattern not found in output " "for {}".format(test_case_name)
+        assert found, msg
 
     else:
-        assert re.search(
-            r"passed|pass|PASS|PASSED|all tests passed|All tests passed", data, flags=re.IGNORECASE
-        ), f"Expected 'Pass' not found in output for {test_case_name}"
+        has_pass = re.search(r"\bpass(?:ed)?\b", data, flags=re.IGNORECASE)
+        msg = "Expected 'Pass' not found in output " "for {}".format(test_case_name)
+        assert has_pass, msg
