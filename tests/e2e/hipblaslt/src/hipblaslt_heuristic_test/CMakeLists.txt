@@ -11,12 +11,11 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${ROCM_TEST_CMAKE_MODULE_DIR}")
 include(rocm_setup)
 
-if(NOT GPU_ARCH)
-  message(FATAL_ERROR "GPU_ARCH is not set. Pass -DGPU_ARCH=<arch> (e.g. gfx942) to cmake.")
-endif()
-
 # Set HIP architectures before project() so CMake's HIP language module picks it up.
-set(CMAKE_HIP_ARCHITECTURES "${GPU_ARCH}")
+# When GPU_ARCH is absent the HIP toolchain auto-detects the installed GPU.
+if(GPU_ARCH)
+  set(CMAKE_HIP_ARCHITECTURES "${GPU_ARCH}")
+endif()
 
 # Compiler detection: prefer what the conftest passes via -DCMAKE_HIP_COMPILER
 # (a -D flag overrides CACHE values below); fall back to searching amdclang++.
