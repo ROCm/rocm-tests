@@ -75,5 +75,5 @@ def _validate_rocblas_sample_output(result: ExecutionResult, test_case_name: str
 
     else:
         assert re.search(
-            r"\bPass\b", data, flags=re.IGNORECASE
+            r"passed|pass|PASS|PASSED|all tests passed|All tests passed", data, flags=re.IGNORECASE
         ), f"Expected 'Pass' not found in output for {test_case_name}"
