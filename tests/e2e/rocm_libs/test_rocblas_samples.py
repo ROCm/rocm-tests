@@ -16,7 +16,7 @@ import pytest
 
 from framework.common import ExecutionResult
 
-# Sample list — must be kept in sync between parametrized and static tests.
+# Sample list for parametrized test execution.
 _ROCBLAS_SAMPLES = [
     "rocblas-example-c-dgeam",
     "rocblas-example-fortran-axpy",
@@ -33,46 +33,35 @@ _ROCBLAS_SAMPLES = [
     "rocblas-example-user-driven-tuning",
 ]
 
-
-@pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
-@pytest.mark.layer.math_lib
 @pytest.mark.runtime.medium
-@pytest.mark.os.linux
 @pytest.mark.parametrize("sample_name", _ROCBLAS_SAMPLES)
-def test_rocblas_samples_dynamic(target_executor, rock_dir, sample_name):
+def test_rocblas_samples_dynamic(
+    target_executor, rock_dir, sample_name, rocblas_library_guard, ld_path: dict
+):
     """Execute a single rocBLAS sample and validate its output."""
     cmd_dir = os.path.join(rock_dir, "bin")
-    result = target_executor.run(f"cd {cmd_dir} && ./{sample_name}")
+    ld = ld_path["LD_LIBRARY_PATH"]
+    result = target_executor.run(f"env LD_LIBRARY_PATH={ld} {cmd_dir}/{sample_name}")
 
     assert result.ok, f"{sample_name} failed: {result.stderr}"
     _validate_rocblas_sample_output(result, sample_name)
 
 
-@pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
-@pytest.mark.layer.math_lib
-@pytest.mark.runtime.medium
-@pytest.mark.os.linux
-def test_rocblas_samples_static(target_executor, rock_dir):
-    """Execute all rocBLAS samples in sequence and validate each output."""
-    cmd_dir = os.path.join(rock_dir, "bin")
-
-    for sample_name in _ROCBLAS_SAMPLES:
-        result = target_executor.run(f"cd {cmd_dir} && ./{sample_name}")
-        assert result.ok, f"{sample_name} failed: {result.stderr}"
-        _validate_rocblas_sample_output(result, sample_name)
-
-
-def _validate_rocblas_sample_output(result: ExecutionResult, test_case_name: str) -> None:
+def _validate_rocblas_sample_output(
+    result: ExecutionResult, test_case_name: str
+) -> None:
     """Validate sample output against sample-specific expected patterns."""
     data = result.stdout
 
     if test_case_name == "rocblas-example-user-driven-tuning":
-        pattern = r"^(\d+)\s+solution\(s\)\s+found\s+that\s+can\s+solve\s+this\s+GEMM\."
+        pattern = (
+            r"^(\d+)\s+solution\(s\)\s+found\s+that\s+can\s+solve\s+this\s+GEMM\."
+        )
         assert any(
             re.search(pattern, line) for line in data.splitlines()
-        ), f"Expected solutions found message not in output for {test_case_name}"
+        ), (
+            f"Expected solutions found message not in output for {test_case_name}"
+        )
 
     elif test_case_name == "rocblas-example-scal-template":
         lines = data.splitlines()
@@ -85,9 +74,11 @@ def _validate_rocblas_sample_output(result: ExecutionResult, test_case_name: str
             ):
                 found = True
                 break
-        assert found, f"Expected pattern not found in output for {test_case_name}"
+        assert (
+            found
+        ), f"Expected pattern not found in output for {test_case_name}"
 
     else:
-        assert re.search(
-            r"Pass", data, flags=re.IGNORECASE
-        ), f"Expected 'Pass' not found in output for {test_case_name}"
+        assert re.search(r"Pass", data, flags=re.IGNORECASE), (
+            f"Expected 'Pass' not found in output for {test_case_name}"
+        )
