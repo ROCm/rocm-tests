@@ -421,7 +421,8 @@ def _hip_heuristic_test_cmake_build_dir(gpu_arch: str | None, cmake_build_dir, c
     if cmake_executor is None and not shutil.which("cmake"):
         pytest.skip("cmake not found in PATH — install cmake to run this test locally")
 
-    return cmake_build_dir(
+    logger.info("hipblaslt_heuristic_test: cmake configure + build starting (src=%s)", _HEURISTIC_TEST_SRC_DIR)
+    build_dir = cmake_build_dir(
         src=_HEURISTIC_TEST_SRC_DIR,
         subdir="hipblaslt_heuristic_test",
         gpu_arch=gpu_arch,
@@ -431,6 +432,8 @@ def _hip_heuristic_test_cmake_build_dir(gpu_arch: str | None, cmake_build_dir, c
         artifact=_HEURISTIC_TEST_BINARY,
         target=_HEURISTIC_TEST_BINARY,
     )
+    logger.info("hipblaslt_heuristic_test: build complete → %s/%s", build_dir, _HEURISTIC_TEST_BINARY)
+    return build_dir
 
 
 @pytest.fixture(scope="session")
