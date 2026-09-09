@@ -222,4 +222,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # ComposableKernel (CK) tile GEMM tests: sparse-clones rocm-libraries and builds
+    # the CK tile stream-k GEMM example. Nightly; MI3xx (gfx942/gfx950) only.
+    "tests/e2e/ck": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
 }
