@@ -36,7 +36,7 @@ _ROCBLAS_SAMPLES = [
 
 @pytest.mark.runtime.medium
 @pytest.mark.parametrize("sample_name", _ROCBLAS_SAMPLES)
-def test_rocblas_samples_dynamic(target_executor, rock_dir, sample_name, _rocblas_library_guard, ld_path: dict):
+def test_rocblas_samples_dynamic(target_executor, rock_dir, sample_name, rocblas_library_guard, ld_path: dict):
     """Execute a single rocBLAS sample and validate its output."""
     cmd_dir = os.path.join(rock_dir, "bin")
     ld = ld_path["LD_LIBRARY_PATH"]
