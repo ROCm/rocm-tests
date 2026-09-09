@@ -19,10 +19,13 @@ import re
 
 import pytest
 
+from framework.rocm.libs.gtest import run_gtest
+
 logger = logging.getLogger(__name__)
 
 #: Forces Tensile to select solutions through the StreamK path.
-_STREAMK_ENV = "TENSILE_SOLUTION_SELECTION_METHOD=2"
+_STREAMK_ENV = {"TENSILE_SOLUTION_SELECTION_METHOD": "2"}
+_STREAMK_ENV_TEXT = " ".join(f"{key}={value}" for key, value in _STREAMK_ENV.items())
 
 #: Coverage levels mapped onto the gtest filters that select each tier's cases.
 _COVERAGE_FILTERS = {
@@ -56,8 +59,14 @@ _RUN_MARKER_RE = re.compile(r"^\[\s*RUN\s*\]", re.MULTILINE)
 # as failures instead of silently accepting a masked failure.
 _SKIP_MASKED_FAILURES: tuple[re.Pattern, ...] = (re.compile(r"Host\s+memory\s+usage\s+limit\s+exceed", re.I),)
 
-# Kept narrow so ordinary gtest failure text cannot trip it.
-_CRASH_PATTERNS: tuple[str, ...] = ("core dumped", "Segmentation fault", "terminate called", "HIP error")
+# Process death, which no summary can argue with. Kept narrow so ordinary gtest
+# failure text cannot trip it.
+_CRASH_PATTERNS: tuple[str, ...] = ("core dumped", "Segmentation fault", "terminate called")
+
+# API-level diagnostics rather than evidence of a crash: an unsupported or
+# negative-path config can print these while its own case still passes. Consulted
+# only once the run has already gone wrong, as context for the diagnosis.
+_DIAGNOSTIC_PATTERNS: tuple[str, ...] = ("HIP error",)
 
 
 @dataclass(frozen=True)
@@ -106,7 +115,7 @@ def _parse_report(output: str) -> _GTestReport | None:
 
 
 def _find_crashes(output: str) -> list[str]:
-    """Return crash evidence found in *output*."""
+    """Return evidence in *output* that the process died."""
     return [pattern for pattern in _CRASH_PATTERNS if pattern.lower() in output.lower()]
 
 
@@ -154,6 +163,13 @@ def _describe_problems(report: _GTestReport, output: str, exit_code: int) -> lis
     if exit_code != 0 and not problems:
         problems.append(f"gtest reported no failures but exited {exit_code}")
 
+    # Only ever added alongside a real problem, never as one: a run in which every
+    # case passed is a pass even if the log mentions a HIP error somewhere.
+    if problems:
+        seen = [pattern for pattern in _DIAGNOSTIC_PATTERNS if pattern.lower() in output.lower()]
+        if seen:
+            problems.append(f"output also contains {', '.join(seen)}")
+
     return problems
 
 
@@ -175,11 +191,18 @@ def test_hipblaslt_streamk_ut(  # pylint: disable=unused-argument
     # resolves its own kernel directory for the device architecture, whereas the
     # tensile_lib_path fixture points at the kernel-less base directory unless
     # --gpu-arch is given, which would fail every test in hipModuleLoad.
-    result = target_executor.run(
-        f"env LD_LIBRARY_PATH={ld} {_STREAMK_ENV} {hipblaslt_test_binary} --gtest_filter={gtest_filter}",
+    #
+    # Only ``raw_output`` and ``exit_code`` are read back: the accounting below is
+    # stricter than the helper's own summary, which counts tests but cannot tell a
+    # truncated run from a complete one.
+    result = run_gtest(
+        target_executor,
+        hipblaslt_test_binary,
+        gtest_filter=gtest_filter,
+        env={"LD_LIBRARY_PATH": ld, **_STREAMK_ENV},
         timeout=_TIMEOUT,
     )
-    output = (result.stdout or "") + (result.stderr or "")
+    output = result.raw_output
 
     crashes = _find_crashes(output)
     assert (
@@ -201,5 +224,5 @@ def test_hipblaslt_streamk_ut(  # pylint: disable=unused-argument
         report.passed,
         report.ran,
         report.skipped,
-        _STREAMK_ENV,
+        _STREAMK_ENV_TEXT,
     )
