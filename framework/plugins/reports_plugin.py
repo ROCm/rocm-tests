@@ -154,9 +154,11 @@ def pytest_configure(config: pytest.Config) -> None:
     """
     import pathlib
 
-    from framework.config.loader import load_config
+    cfg = getattr(config, "_framework_config", None)
+    if cfg is None:
+        from framework.config.loader import load_config  # pylint: disable=import-outside-toplevel
 
-    cfg = load_config(config_path=config.getoption("--rocm-config", default=None))
+        cfg = load_config(config_path=config.getoption("--rocm-config", default=None))
 
     # --- Session log: master truncates before any worker can write ---
     if not hasattr(config, "workerinput"):
@@ -580,10 +582,11 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
         return
 
     try:
-        from framework.config.loader import load_config
+        cfg = getattr(session.config, "_framework_config", None)
+        if cfg is None:
+            from framework.config.loader import load_config  # pylint: disable=import-outside-toplevel
 
-        config_path = session.config.getoption("--rocm-config", default=None)
-        cfg = load_config(config_path=config_path)
+            cfg = load_config(config_path=session.config.getoption("--rocm-config", default=None))
 
         if log_name:
             _write_executor_info(cfg.reporting.allure_results_dir, log_name)

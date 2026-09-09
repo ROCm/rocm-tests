@@ -133,3 +133,18 @@ def hwq_per_device_independence_binary(
         target="hwq_per_device_independence_test",
     )
     return built_binary(os.path.join(build_dir, "hwq_per_device_independence_test"), "hwq_per_device_independence_test")
+
+
+@pytest.fixture(scope="session")
+def hwq_stream_priority_binary(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for, built_binary) -> str:
+    """Compile and return the ``hwq_stream_priority`` binary path."""
+    require_gpu_arch_for("hwq_heuristic")
+    build_dir = cmake_build_dir(
+        **_COMMON_BUILD_KWARGS,
+        subdir="hwq_heuristic/hwq_stream_priority",
+        gpu_arch=gpu_arch,
+        label="hwq_heuristic/hwq_stream_priority",
+        artifact="hwq_stream_priority",
+        target="hwq_stream_priority",
+    )
+    return built_binary(os.path.join(build_dir, "hwq_stream_priority"), "hwq_stream_priority")
