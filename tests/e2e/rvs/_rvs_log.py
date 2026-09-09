@@ -55,17 +55,46 @@ def run_rvs(executor, rvs_env: str, binary: str, conf_path: str, timeout: float,
     return (result.stdout or "") + (result.stderr or ""), result.exit_code
 
 
-def list_gpu_ids(executor, rvs_env: str, binary: str, timeout: float = 300.0) -> list[str]:
-    """Return the RVS GPU ids the binary can see, via ``rvs -g``."""
+def _run_gpu_list(executor, rvs_env: str, binary: str, timeout: float) -> tuple[list[tuple[str, str]], int, str]:
+    """Return ``(node_gpu_pairs, exit_code, output)`` from ``rvs -g``."""
     result = executor.run(f"env {rvs_env} {binary} -g", timeout=timeout)
     output = (result.stdout or "") + (result.stderr or "")
-    return [gpu_id for _node, gpu_id in _GPU_LIST_RE.findall(output)]
+    return _GPU_LIST_RE.findall(output), result.exit_code, output
+
+
+def list_gpu_ids(executor, rvs_env: str, binary: str, timeout: float = 300.0) -> list[str]:
+    """Return the RVS GPU ids the binary can see, via ``rvs -g``."""
+    pairs, _exit_code, _output = _run_gpu_list(executor, rvs_env, binary, timeout)
+    return [gpu_id for _node, gpu_id in pairs]
+
+
+def gpu_node_map(executor, rvs_env: str, binary: str, timeout: float = 300.0) -> dict[str, int]:
+    """Map ``gpu_id -> KFD node index`` from ``rvs -g``.
+
+    Unlike :func:`list_gpu_ids` this refuses an empty inventory: its callers
+    verify per-GPU output against that GPU's own node, which cannot be done at
+    all without the mapping.
+    """
+    pairs, exit_code, output = _run_gpu_list(executor, rvs_env, binary, timeout)
+    mapping = {gpu_id: int(node) for node, gpu_id in pairs}
+    assert mapping, f"'rvs -g' listed no supported GPUs (exit={exit_code}):\n{output[-2000:]}"
+    return mapping
+
+
+def assert_not_crashed(output: str, exit_code: int, label: str) -> None:
+    """Reject an empty log and an RVS-level ABORT.
+
+    Split out of :func:`assert_log_sane` for PEQT, which attributes
+    ``RVS-ERROR`` lines to individual actions rather than failing the whole run
+    and so cannot use the error check below.
+    """
+    assert output.strip(), f"RVS {label} produced no output (exit={exit_code})"
+    assert not _ABORT_RE.search(output), f"RVS {label} reported ABORT:\n{output[-2000:]}"
 
 
 def assert_log_sane(output: str, exit_code: int, label: str) -> None:
     """Reject crashes and RVS-level errors before interpreting any verdict."""
-    assert output.strip(), f"RVS {label} produced no output (exit={exit_code})"
-    assert not _ABORT_RE.search(output), f"RVS {label} reported ABORT:\n{output[-2000:]}"
+    assert_not_crashed(output, exit_code, label)
     errors = _RVS_ERROR_RE.findall(output)
     assert not errors, "RVS {} logged {} error(s):\n{}".format(label, len(errors), "\n".join(errors[:10]))
 

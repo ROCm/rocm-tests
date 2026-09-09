@@ -40,11 +40,12 @@ import shlex
 import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
+from tests.e2e.rvs._rvs_log import assert_not_crashed, run_rvs, strip_ansi
 
 logger = logging.getLogger(__name__)
 
 _CONF_NAME = "rcqt_single.conf"
-_RVS_DEBUG_LEVEL = 3
+_LABEL = "RCQT"
 _RVS_TIMEOUT = 600.0
 
 _ACTION_NAME_RE = re.compile(r"\[\s*RESULT\s*\]\s*\[\s*[\d.]+\s*\]\s*Action\s*name\s*:\s*(\S+)")
@@ -53,10 +54,10 @@ _MISSING_RE = re.compile(r"Missing packages\s*:\s*(\d+)")
 _MISMATCH_RE = re.compile(r"Version mismatch packages\s*:\s*(\d+)")
 _META_MISSING = "Meta package not installed"
 _RVS_ERROR_RE = re.compile(r"RVS-ERROR.*", re.IGNORECASE)
-_ABORT_RE = re.compile(r"\bABORT\b")
 
 # Summary rows arrive colourised: "| <action> | RCQT | \x1b[32mPASS\x1b[0m |".
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# Matched locally rather than with the shared ``parse_summary`` because RCQT
+# needs the module column pinned to RCQT and accepts ``FAILED`` as well.
 _SUMMARY_ROW_RE = re.compile(r"^\|\s*([\w\-]+)\s*\|\s*RCQT\s*\|\s*(PASS|FAIL|FAILED)\s*\|", re.IGNORECASE)
 
 # ROCm component name prefixes as shipped by the deb/rpm repositories. Used only
@@ -148,7 +149,7 @@ def _summary_failures(text: str) -> list[str]:
     """Return actions the RVS summary table explicitly marks FAIL."""
     failed = []
     for line in text.splitlines():
-        match = _SUMMARY_ROW_RE.match(_ANSI_RE.sub("", line))
+        match = _SUMMARY_ROW_RE.match(strip_ansi(line))
         if match and match.group(2).upper() != "PASS":
             failed.append(match.group(1))
     return failed
@@ -175,21 +176,17 @@ def test_rvs_rcqt(target_executor, rvs_binary, rvs_find_conf, gpu_conf_dir, rvs_
     conf_path = shlex.quote(str(pathlib.Path(conf).resolve()))
 
     with step(f"Run RVS RCQT ({_CONF_NAME})"):
-        cmd = f"env {rvs_env} {binary} -c {conf_path} -d {_RVS_DEBUG_LEVEL}"
-        logger.info("Running RCQT: %s", cmd)
-        result = target_executor.run(cmd, timeout=_RVS_TIMEOUT)
-        output = (result.stdout or "") + (result.stderr or "")
+        output, exit_code = run_rvs(target_executor, rvs_env, binary, conf_path, _RVS_TIMEOUT, _LABEL)
 
     with step("Validate per-action package counters"):
-        assert output.strip(), f"RVS RCQT produced no output (exit={result.exit_code})"
-        assert not _ABORT_RE.search(output), f"RVS RCQT reported ABORT:\n{output[-2000:]}"
+        assert_not_crashed(output, exit_code, _LABEL)
 
         actions = _parse_rcqt_actions(output)
         # Without this an unparseable log would assert vacuously -- the exact
         # failure mode the TheRock summary branch suffers from.
         assert actions, (
             f"No RCQT actions found; expected '[RESULT] ... Action name :<name>' lines "
-            f"from {conf} (exit={result.exit_code}):\n{output[-2000:]}"
+            f"from {conf} (exit={exit_code}):\n{output[-2000:]}"
         )
 
         failures = _failure_reasons(actions)

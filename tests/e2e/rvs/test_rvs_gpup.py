@@ -42,11 +42,17 @@ import shlex
 import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
+from tests.e2e.rvs._rvs_log import (
+    assert_log_sane,
+    declared_actions,
+    gpu_node_map,
+    run_rvs,
+)
 
 logger = logging.getLogger(__name__)
 
 _CONF_NAME = "gpup_single.conf"
-_RVS_DEBUG_LEVEL = 3
+_LABEL = "GPUP"
 _RVS_TIMEOUT = 600.0
 
 _KFD_NODES = "/sys/devices/virtual/kfd/kfd/topology/nodes"
@@ -55,10 +61,6 @@ _KFD_NODES = "/sys/devices/virtual/kfd/kfd/topology/nodes"
 # form ``RVS-GPUP-TC1``, so hyphens must be allowed -- hence [^\]]+ rather than
 # the \w+_\d+ used for PEQT's pcie_act_N.
 _RESULT_RE = re.compile(r"\[\s*RESULT\s*\]\s*\[\s*[\d.]+\s*\]\s*\[([^\]]+)\]\s+gpup\s+(\d+)\s+(.*)")
-_GPU_LIST_RE = re.compile(r"GPU\[\s*(\d+)\s*-\s*(\d+)\s*\]")
-_ACTION_DECL_RE = re.compile(r"^\s*-\s*name\s*:\s*(\S+)", re.MULTILINE)
-_RVS_ERROR_RE = re.compile(r"RVS-ERROR.*", re.IGNORECASE)
-_ABORT_RE = re.compile(r"\bABORT\b")
 
 # One round trip to collect the whole KFD topology; reading each file separately
 # would be hundreds of executor calls against a remote node.
@@ -134,37 +136,12 @@ def _verify_entries(entries: list[tuple], gpu_nodes: dict[str, int], sysfs: dict
     return mismatches, per_action
 
 
-def _gpu_node_map(executor, rvs_env: str, binary: str) -> dict[str, int]:
-    """Map ``gpu_id -> KFD node index`` from ``rvs -g``."""
-    result = executor.run(f"env {rvs_env} {binary} -g", timeout=_RVS_TIMEOUT)
-    output = (result.stdout or "") + (result.stderr or "")
-    mapping = {gpu_id: int(node) for node, gpu_id in _GPU_LIST_RE.findall(output)}
-    assert mapping, f"'rvs -g' listed no supported GPUs (exit={result.exit_code}):\n{output[-2000:]}"
-    return mapping
-
-
 def _read_sysfs_index(executor) -> dict[tuple, set[str]]:
     """Collect and index the KFD topology in a single executor round trip."""
     dump = executor.run(_SYSFS_DUMP_CMD, timeout=_RVS_TIMEOUT)
     sysfs = _parse_sysfs_dump(dump.stdout or "")
     assert sysfs, f"No KFD topology found under {_KFD_NODES}; is amdgpu/kfd loaded?"
     return sysfs
-
-
-def _run_gpup(executor, rvs_env: str, binary: str, conf_path: str) -> tuple[str, int]:
-    """Run GPUP and return its combined output and exit code."""
-    cmd = f"env {rvs_env} {binary} -c {conf_path} -d {_RVS_DEBUG_LEVEL}"
-    logger.info("Running GPUP: %s", cmd)
-    result = executor.run(cmd, timeout=_RVS_TIMEOUT)
-    return (result.stdout or "") + (result.stderr or ""), result.exit_code
-
-
-def _assert_log_sane(output: str, exit_code: int) -> None:
-    """Reject crashes and RVS-level errors before interpreting any property."""
-    assert output.strip(), f"RVS GPUP produced no output (exit={exit_code})"
-    assert not _ABORT_RE.search(output), f"RVS GPUP reported ABORT:\n{output[-2000:]}"
-    errors = _RVS_ERROR_RE.findall(output)
-    assert not errors, "RVS GPUP logged {} error(s):\n{}".format(len(errors), "\n".join(errors[:10]))
 
 
 def _report_gpup_metrics(entries: list[tuple], per_action: collections.Counter) -> None:
@@ -181,8 +158,7 @@ def _assert_actions_covered(executor, conf_path: str, conf: str, seen: collectio
     Without this an action that silently ran nothing would pass by reporting no
     contradicting values.
     """
-    declared = set(_ACTION_DECL_RE.findall(executor.run(f"cat {conf_path}").stdout or ""))
-    missing = sorted(declared - set(seen))
+    missing = sorted(declared_actions(executor, conf_path) - set(seen))
     assert not missing, f"GPUP action(s) declared in {conf} produced no properties: {', '.join(missing)}"
 
 
@@ -195,17 +171,17 @@ def test_rvs_gpup(target_executor, rvs_binary, rvs_find_conf, gpu_conf_dir, rvs_
     conf_path = shlex.quote(str(pathlib.Path(conf).resolve()))
 
     with step("Map GPU ids to KFD topology nodes"):
-        gpu_nodes = _gpu_node_map(target_executor, rvs_env, binary)
+        gpu_nodes = gpu_node_map(target_executor, rvs_env, binary, timeout=_RVS_TIMEOUT)
         logger.info("GPU id -> KFD node: %s", gpu_nodes)
 
     with step("Read the KFD topology from sysfs"):
         sysfs = _read_sysfs_index(target_executor)
 
     with step(f"Run RVS GPUP ({_CONF_NAME})"):
-        output, exit_code = _run_gpup(target_executor, rvs_env, binary, conf_path)
+        output, exit_code = run_rvs(target_executor, rvs_env, binary, conf_path, _RVS_TIMEOUT, _LABEL)
 
     with step("Cross-verify reported properties against sysfs"):
-        _assert_log_sane(output, exit_code)
+        assert_log_sane(output, exit_code, _LABEL)
         entries = _parse_gpup_log(output)
         # Without this an empty or unparseable log would assert vacuously.
         assert entries, (

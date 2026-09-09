@@ -44,11 +44,16 @@ import shlex
 import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
+from tests.e2e.rvs._rvs_log import (
+    assert_log_sane,
+    declared_actions,
+    run_rvs,
+)
 
 logger = logging.getLogger(__name__)
 
 _CONF_NAME = "tst_single.conf"
-_RVS_DEBUG_LEVEL = 3
+_LABEL = "TST"
 # action_1 is serial (parallel: false), so wall time scales with GPU count:
 # ~30 s per GPU on the MI210 config, ~120 s per GPU on the generic one.
 _RVS_TIMEOUT = 1800.0
@@ -59,10 +64,6 @@ _VERDICT_RE = re.compile(r"\[\s*RESULT\s*\].*\[([^\]]+)\]\s*\[GPU::\s*(\d+)\]\s*
 _TEMP_RE = re.compile(
     r"\[([^\]]+)\]\s*tst\s+GPU\s+(\d+)\s+Current\s+(edge|junction)\s+temperature\s+is\s*:\s*([\d.-]+)"
 )
-_ACTION_DECL_RE = re.compile(r"^\s*-\s*name\s*:\s*(\S+)", re.MULTILINE)
-# Anchored on RVS's own prefix so a libc abort() elsewhere cannot fail the run.
-_ABORT_RE = re.compile(r"\bABORT\b")
-_RVS_ERROR_RE = re.compile(r"RVS-ERROR.*", re.IGNORECASE)
 _GFX_RE = re.compile(r"gfx[0-9a-f]+", re.IGNORECASE)
 
 # MI300 reports 0 for the edge/junction sensors TST reads, so the
@@ -95,14 +96,6 @@ def _parse_temperatures(text: str) -> list[tuple]:
         if match := _TEMP_RE.search(line):
             samples.append((match.group(1), match.group(2), match.group(3), float(match.group(4))))
     return samples
-
-
-def _assert_log_sane(output: str, exit_code: int) -> None:
-    """Reject crashes and RVS-level errors before interpreting any verdict."""
-    assert output.strip(), f"RVS TST produced no output (exit={exit_code})"
-    assert not _ABORT_RE.search(output), f"RVS TST reported ABORT:\n{output[-2000:]}"
-    errors = _RVS_ERROR_RE.findall(output)
-    assert not errors, "RVS TST logged {} error(s):\n{}".format(len(errors), "\n".join(errors[:10]))
 
 
 def _assert_temperatures_usable(samples: list[tuple], arch: str) -> None:
@@ -139,14 +132,6 @@ def _report_tst_metrics(verdicts: dict[tuple, bool], samples: list[tuple]) -> No
     )
 
 
-def _run_tst(executor, rvs_env: str, binary: str, conf_path: str) -> tuple[str, int]:
-    """Run TST and return its combined output and exit code."""
-    cmd = f"env {rvs_env} {binary} -c {conf_path} -d {_RVS_DEBUG_LEVEL}"
-    logger.info("Running TST: %s", cmd)
-    result = executor.run(cmd, timeout=_RVS_TIMEOUT)
-    return (result.stdout or "") + (result.stderr or ""), result.exit_code
-
-
 def _assert_all_passed(verdicts: dict[tuple, bool]) -> None:
     """Fail with the specific (action, GPU) pairs that reported ``pass: FALSE``."""
     failed = sorted(f"[{action}] GPU {gpu}" for (action, gpu), passed in verdicts.items() if not passed)
@@ -158,8 +143,7 @@ def _assert_all_passed(verdicts: dict[tuple, bool]) -> None:
 
 def _assert_actions_covered(executor, conf_path: str, conf: str, verdicts: dict[tuple, bool]) -> None:
     """Every action the config declares must have produced verdicts."""
-    declared = set(_ACTION_DECL_RE.findall(executor.run(f"cat {conf_path}").stdout or ""))
-    missing = sorted(declared - {action for action, _ in verdicts})
+    missing = sorted(declared_actions(executor, conf_path) - {action for action, _ in verdicts})
     assert not missing, f"TST action(s) declared in {conf} produced no verdict: {', '.join(missing)}"
 
 
@@ -173,10 +157,10 @@ def test_rvs_tst(target_executor, rvs_binary, rvs_find_conf, gpu_conf_dir, rvs_e
     arch = _target_arch(target_executor, rock_dir, gpu_arch)
 
     with step(f"Run RVS TST ({_CONF_NAME}) on {arch or 'unknown arch'}"):
-        output, exit_code = _run_tst(target_executor, rvs_env, binary, conf_path)
+        output, exit_code = run_rvs(target_executor, rvs_env, binary, conf_path, _RVS_TIMEOUT, _LABEL)
 
     with step("Qualify verdicts and temperature samples"):
-        _assert_log_sane(output, exit_code)
+        assert_log_sane(output, exit_code, _LABEL)
 
         verdicts = _parse_verdicts(output)
         # Without this an empty or unparseable log would assert vacuously.

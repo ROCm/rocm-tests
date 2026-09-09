@@ -38,13 +38,14 @@ import shlex
 import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
+from tests.e2e.rvs._rvs_log import RVS_DEBUG_LEVEL, assert_not_crashed
 
 logger = logging.getLogger(__name__)
 
 _CONF_NAME = "peqt_single.conf"
 # Path of the module rvs dlopens for peqt, relative to the install prefix.
 _PEQT_MODULE = "lib/rvs/libpeqt.so"
-_RVS_DEBUG_LEVEL = 3
+_LABEL = "PEQT"
 # PEQT only reads config space, so it finishes in well under a second per action
 # on an 8-GPU host. The ceiling is here to fail a wedged PCIe read rather than
 # hang the session.
@@ -60,9 +61,6 @@ _RVS_ERROR_RE = re.compile(r"RVS-ERROR\s.+\s*\[(\w+_\d+)\]")
 # the bracketed form above cannot attribute it and the action would otherwise be
 # treated as silent-but-passing.
 _RVS_ERROR_ACTION_RE = re.compile(r"RVS-ERROR\s.*?\baction\s+'(\w+_\d+)'")
-# Case-sensitive: RVS emits its own uppercase ABORT, and a lowercase "abort()"
-# from libc elsewhere in the log must not promote the run to FAIL.
-_ABORT_RE = re.compile(r"\bABORT\b")
 
 
 def _parse_peqt_actions(text: str) -> dict[str, bool]:
@@ -131,7 +129,7 @@ def test_rvs_peqt(target_executor, rvs_binary, rvs_find_conf, gpu_conf_dir, rvs_
     # resolving them against the caller's cwd is a trap on a remote executor.
     binary = shlex.quote(str(pathlib.Path(rvs_binary).resolve()))
     conf_path = shlex.quote(str(pathlib.Path(conf).resolve()))
-    cmd = f"sudo -n env {rvs_env} {binary} -c {conf_path} -d {_RVS_DEBUG_LEVEL}"
+    cmd = f"sudo -n env {rvs_env} {binary} -c {conf_path} -d {RVS_DEBUG_LEVEL}"
 
     with step(f"Run RVS PEQT ({_CONF_NAME})"):
         logger.info("Running PEQT: %s", cmd)
@@ -139,8 +137,7 @@ def test_rvs_peqt(target_executor, rvs_binary, rvs_find_conf, gpu_conf_dir, rvs_
         output = (result.stdout or "") + (result.stderr or "")
 
     with step("Parse per-action PEQT verdicts"):
-        assert output.strip(), f"RVS PEQT produced no output (exit={result.exit_code})"
-        assert not _ABORT_RE.search(output), f"RVS PEQT reported ABORT:\n{output[-2000:]}"
+        assert_not_crashed(output, result.exit_code, _LABEL)
         # rvs returns 0 even when actions report ``peqt false``, so a non-zero
         # code means the run never got as far as qualifying PCIe -- a module it
         # could not load, an unreadable config, or a rejected privilege check.
