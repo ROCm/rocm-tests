@@ -78,10 +78,13 @@ def _validate_rocblas_sample_output(result: ExecutionResult, test_case_name: str
         lines = data.splitlines()
         found = False
         for lineno, line in enumerate(lines):
-            if lineno + 1 < len(lines) and re.search(r"N\s+rocblas.*", line):
-                if re.search(r"\d+\s+\d+.*", lines[lineno + 1]):
-                    found = True
-                    break
+            if (
+                lineno + 1 < len(lines)
+                and re.search(r"N\s+rocblas.*", line)
+                and re.search(r"\d+\s+\d+.*", lines[lineno + 1])
+            ):
+                found = True
+                break
         assert found, f"Expected pattern not found in output for {test_case_name}"
 
     else:
