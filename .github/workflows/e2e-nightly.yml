@@ -165,11 +165,12 @@ jobs:
         target: ${{ fromJSON(needs.check_runners.outputs.targets) }}
     uses: ./.github/workflows/e2e-tests.yml
     with:
-      name:             ${{ matrix.target.name }}
-      runs_on:          ${{ matrix.target.runs_on }}
-      artifact_group:   ${{ matrix.target.artifact_group }}
-      gpu_arch:         ${{ matrix.target.gpu_arch || '' }}
-      tests_filters:    ${{ matrix.target.tests_filters }}
+      name:               ${{ matrix.target.name }}
+      runs_on:            ${{ matrix.target.runs_on }}
+      artifact_group:     ${{ matrix.target.artifact_group }}
+      gpu_arch:           ${{ matrix.target.gpu_arch || '' }}
+      compiler_gpu_arch:  ${{ matrix.target.compiler_gpu_arch || '' }}
+      tests_filters:      ${{ matrix.target.tests_filters }}
       source_repo:      ${{ inputs.source_repo || 'ROCm/rockrel' }}
       artifact_source:  ${{ inputs.artifact_source || 'multi_arch_release.yml' }}
       include_dev:      ${{ inputs.include_dev || true }}
