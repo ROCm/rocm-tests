@@ -36,7 +36,7 @@ _SAMPLES: list[tuple[str, str]] = [
 _SENTINEL = "hipblas-example-bfdot-hip-bfloat16"
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def hipblas_samples_bin_dir(target_executor, ld_path: dict, rock_dir: str) -> str:
     """Return rock_dir/bin after verifying hipblas sample binaries are present."""
     ld = ld_path["LD_LIBRARY_PATH"]
