@@ -27,8 +27,13 @@ on:
         required: true
         type: string
       gpu_arch:
-        description: 'GPU architecture string for --gpu-arch (e.g. gfx942)'
+        description: 'TheRock artifact family name for --amdgpu-targets (e.g. gfx110X-all). For single-chip targets this also serves as the compiler arch when compiler_gpu_arch is unset.'
         required: true
+        type: string
+        default: ''
+      compiler_gpu_arch:
+        description: 'Concrete LLVM chip identifier for --gpu-arch / hipcc (e.g. gfx1100). Required when gpu_arch is a family alias that clang++ does not accept. Defaults to gpu_arch when empty.'
+        required: false
         type: string
         default: ''
       tests_filters:
@@ -95,6 +100,10 @@ on:
         required: true
         type: string
       gpu_arch:
+        required: false
+        type: string
+        default: ''
+      compiler_gpu_arch:
         required: false
         type: string
         default: ''
@@ -319,7 +328,9 @@ jobs:
           CURRENT_BRANCH: ${{ github.ref_name }}
           PYTHON_LIB: ${{ steps.setup-python.outputs.python-path }}
           LD_LIBRARY_PATH: "${{ github.workspace }}/therock_build/lib:${LD_LIBRARY_PATH}"
-          GPU_ARCH: ${{ inputs.gpu_arch }}
+          # compiler_gpu_arch is the concrete LLVM chip string for hipcc/clang++ (e.g. gfx1100).
+          # Falls back to gpu_arch for targets where both fields are identical (e.g. gfx942, gfx1151).
+          COMPILER_GPU_ARCH: ${{ inputs.compiler_gpu_arch || inputs.gpu_arch }}
           TESTS_FILTERS: ${{ inputs.tests_filters }}
           KEYWORD_FILTER: ${{ inputs.keyword_filter }}
           TEST_PATHS_OVERRIDE: ${{ inputs.test_paths_override }}
@@ -354,7 +365,7 @@ jobs:
 
           pytest "${TEST_PATHS_ARRAY[@]}" \
             --rock-dir=therock_build \
-            --gpu-arch="${GPU_ARCH}" \
+            --gpu-arch="${COMPILER_GPU_ARCH}" \
             --html=nightly_report.html --self-contained-html \
             --md-report --md-report-verbose=1 --md-report-color=never \
             --md-report-flavor gfm --md-report-output=md_summary.md --md-report-tee \
