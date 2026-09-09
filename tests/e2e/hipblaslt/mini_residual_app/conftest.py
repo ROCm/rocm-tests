@@ -38,9 +38,7 @@ def _check_headers(rock_dir: str) -> None:
         )
 
     kernel_lib = pathlib.Path(rock_dir) / "lib" / "hipblaslt" / "library"
-    has_kernels = kernel_lib.exists() and (
-        any(kernel_lib.glob("**/*.dat*")) or any(kernel_lib.glob("**/*.hsaco"))
-    )
+    has_kernels = kernel_lib.exists() and (any(kernel_lib.glob("**/*.dat*")) or any(kernel_lib.glob("**/*.hsaco")))
     if not has_kernels:
         pytest.skip(
             f"hipblaslt kernel libraries not found under {rock_dir}/lib/hipblaslt/library/. "

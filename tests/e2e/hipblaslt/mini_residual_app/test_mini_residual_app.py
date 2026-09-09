@@ -91,8 +91,7 @@ def _check_fatal_stderr(result, label: str) -> None:
     """
     for pat in _FATAL_STDERR_PATTERNS:
         assert pat not in result.stderr, (
-            f"{label}: fatal library error in stderr (pattern: {pat!r}):\n"
-            f"stderr: {result.stderr[:2000]}"
+            f"{label}: fatal library error in stderr (pattern: {pat!r}):\n" f"stderr: {result.stderr[:2000]}"
         )
 
 
@@ -121,16 +120,11 @@ def test_mini_residual_app_default(
         rock_dir:                Resolved ROCm install path.
     """
     if gpu_arch and gpu_arch.startswith(_NO_FP8_ARCH_PREFIXES):
-        pytest.skip(
-            f"hipBLASLt has no FP8 GEMM kernels on {gpu_arch}; "
-            "mini_residual_app FP8 path does not apply"
-        )
+        pytest.skip(f"hipBLASLt has no FP8 GEMM kernels on {gpu_arch}; " "mini_residual_app FP8 path does not apply")
     ld = ld_path["LD_LIBRARY_PATH"]
     lib_path = _resolve_tensile_lib_path(tensile_lib_path, rock_dir)
     result = target_executor.run(
-        f"env LD_LIBRARY_PATH={ld}"
-        f" HIPBLASLT_TENSILE_LIBPATH={lib_path}"
-        f" {mini_residual_app_binary}",
+        f"env LD_LIBRARY_PATH={ld}" f" HIPBLASLT_TENSILE_LIBPATH={lib_path}" f" {mini_residual_app_binary}",
         timeout=1800.0,
     )
     assert result.ok, (
@@ -138,8 +132,7 @@ def test_mini_residual_app_default(
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     )
     assert "[PASS]" in result.stdout, (
-        f"mini_residual_app (default): '[PASS]' not found in stdout:\n"
-        f"{result.stdout[:2000]}"
+        f"mini_residual_app (default): '[PASS]' not found in stdout:\n" f"{result.stdout[:2000]}"
     )
     _check_fatal_stderr(result, "mini_residual_app_default")
 
@@ -168,10 +161,7 @@ def test_mini_residual_app_smoke(
         rock_dir:                Resolved ROCm install path.
     """
     if gpu_arch and gpu_arch.startswith(_NO_FP8_ARCH_PREFIXES):
-        pytest.skip(
-            f"hipBLASLt has no FP8 GEMM kernels on {gpu_arch}; "
-            "mini_residual_app FP8 path does not apply"
-        )
+        pytest.skip(f"hipBLASLt has no FP8 GEMM kernels on {gpu_arch}; " "mini_residual_app FP8 path does not apply")
     ld = ld_path["LD_LIBRARY_PATH"]
     lib_path = _resolve_tensile_lib_path(tensile_lib_path, rock_dir)
     result = target_executor.run(
@@ -186,8 +176,7 @@ def test_mini_residual_app_smoke(
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     )
     assert "[PASS]" in result.stdout, (
-        f"mini_residual_app (smoke): '[PASS]' not found in stdout:\n"
-        f"{result.stdout[:2000]}"
+        f"mini_residual_app (smoke): '[PASS]' not found in stdout:\n" f"{result.stdout[:2000]}"
     )
     _check_fatal_stderr(result, "mini_residual_app_smoke")
 
@@ -218,10 +207,7 @@ def test_mini_residual_app_two_phase(
         rock_dir:                Resolved ROCm install path.
     """
     if gpu_arch and gpu_arch.startswith(_NO_FP8_ARCH_PREFIXES):
-        pytest.skip(
-            f"hipBLASLt has no FP8 GEMM kernels on {gpu_arch}; "
-            "mini_residual_app FP8 path does not apply"
-        )
+        pytest.skip(f"hipBLASLt has no FP8 GEMM kernels on {gpu_arch}; " "mini_residual_app FP8 path does not apply")
     ld = ld_path["LD_LIBRARY_PATH"]
     lib_path = _resolve_tensile_lib_path(tensile_lib_path, rock_dir)
     result = target_executor.run(
@@ -236,7 +222,6 @@ def test_mini_residual_app_two_phase(
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     )
     assert "[PASS]" in result.stdout, (
-        f"mini_residual_app (two-phase): '[PASS]' not found in stdout:\n"
-        f"{result.stdout[:2000]}"
+        f"mini_residual_app (two-phase): '[PASS]' not found in stdout:\n" f"{result.stdout[:2000]}"
     )
     _check_fatal_stderr(result, "mini_residual_app_two_phase")
