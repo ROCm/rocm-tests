@@ -11,6 +11,7 @@ Tests verify that all samples execute successfully and produce expected output.
 
 import os
 import re
+import shlex
 
 import pytest
 
@@ -40,14 +41,17 @@ def test_rocblas_samples_dynamic(target_executor, rock_dir, sample_name, rocblas
     """Execute a single rocBLAS sample and validate its output."""
     cmd_dir = os.path.join(rock_dir, "bin")
     ld = ld_path["LD_LIBRARY_PATH"]
-    result = target_executor.run(f"env LD_LIBRARY_PATH={ld} {cmd_dir}/{sample_name}")
+    result = target_executor.run(
+        f"env LD_LIBRARY_PATH={shlex.quote(ld)} {shlex.quote(f'{cmd_dir}/{sample_name}')}", timeout=900.0
+    )
 
-    assert result.ok, f"{sample_name} failed: {result.stderr}"
+    assert (
+        result.ok
+    ), f"{sample_name} failed (exit={result.exit_code}): stdout: {result.stdout[:3000]} stderr: {result.stderr[:800]}"
     _validate_rocblas_sample_output(result, sample_name)
 
 
 def _validate_rocblas_sample_output(result: ExecutionResult, test_case_name: str) -> None:
-    """Validate sample output against sample-specific expected patterns."""
     data = result.stdout
 
     if test_case_name == "rocblas-example-user-driven-tuning":
@@ -71,5 +75,5 @@ def _validate_rocblas_sample_output(result: ExecutionResult, test_case_name: str
 
     else:
         assert re.search(
-            r"Pass", data, flags=re.IGNORECASE
+            r"\bPass\b", data, flags=re.IGNORECASE
         ), f"Expected 'Pass' not found in output for {test_case_name}"
