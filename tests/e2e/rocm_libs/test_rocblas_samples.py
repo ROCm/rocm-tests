@@ -68,9 +68,9 @@ def _validate_rocblas_sample_output(
     data = result.stdout
 
     if test_case_name == "rocblas-example-user-driven-tuning":
-        pattern = r"^(\d+)\s+solution\(s\)\s+found\s+that\s+can\s+" r"solve\s+this\s+GEMM\."
+        pattern = r"^(\d+)\s+solution\(s\)\s+found\s+that\s+can\s+solve\s+this\s+GEMM\."
         has_solution = any(re.search(pattern, line) for line in data.splitlines())
-        msg = "Expected solutions found message not in output " "for {}".format(test_case_name)
+        msg = f"Expected solutions found message not in output for {test_case_name}"
         assert has_solution, msg
 
     elif test_case_name == "rocblas-example-scal-template":
@@ -84,10 +84,10 @@ def _validate_rocblas_sample_output(
             ):
                 found = True
                 break
-        msg = "Expected pattern not found in output " "for {}".format(test_case_name)
+        msg = f"Expected pattern not found in output for {test_case_name}"
         assert found, msg
 
     else:
         has_pass = re.search(r"\bpass(?:ed)?\b", data, flags=re.IGNORECASE)
-        msg = "Expected 'Pass' not found in output " "for {}".format(test_case_name)
+        msg = f"Expected 'Pass' not found in output for {test_case_name}"
         assert has_pass, msg
