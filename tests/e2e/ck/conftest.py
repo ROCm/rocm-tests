@@ -18,8 +18,6 @@ _ROCM_LIBRARIES_REF = os.environ.get("ROCM_TEST_CK_REF", "develop")
 _CK_SPARSE_SUBTREE = "projects/composablekernel"
 _SUBDIR = "ck"
 
-# CMake source for the stream-k GEMM example, relative to the CK checkout root.
-_STREAMK_SRC_RELPATH = "example/ck_tile/40_streamk_gemm"
 _STREAMK_TARGET = "tile_example_streamk_gemm_basic"
 _STREAMK_BINARY = f"bin/{_STREAMK_TARGET}"
 
@@ -48,10 +46,8 @@ def ck_streamk_build(
     if gpu_arch is not None and gpu_arch not in _SUPPORTED_ARCHS:
         pytest.skip(f"CK stream-k GEMM requires gfx942 or gfx950; detected arch: {gpu_arch}")
 
-    src = str(ck_repo / _STREAMK_SRC_RELPATH)
-
     return cmake_build_dir(
-        src=src,
+        src=str(ck_repo),
         subdir=_SUBDIR,
         extra_cmake_args=[
             "-DBUILD_DEV=ON",

@@ -11,11 +11,7 @@ _FP16_ARGS = "-m=3840 -n=4096 -k=4096 -prec=fp16 -v=2 -a_layout=R -b_layout=C -c
 _FP8_ARGS = "-m=3840 -n=4096 -k=4096 -prec=fp8 -v=2 -a_layout=R -b_layout=C -c_layout=R"
 
 
-@pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
-@pytest.mark.layer.math_lib
 @pytest.mark.runtime.medium
-@pytest.mark.os.linux
 def test_ck_streamk_gemm_fp16(
     target_executor,
     ld_path: dict,
@@ -35,11 +31,7 @@ def test_ck_streamk_gemm_fp16(
     assert "correct" in result.stdout, f"ck_streamk fp16 did not report correct result:\n{result.stdout[:2000]}"
 
 
-@pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
-@pytest.mark.layer.math_lib
 @pytest.mark.runtime.medium
-@pytest.mark.os.linux
 def test_ck_streamk_gemm_fp8(
     target_executor,
     ld_path: dict,
