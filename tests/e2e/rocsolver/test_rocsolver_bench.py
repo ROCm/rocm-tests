@@ -11,17 +11,13 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 import re
+import shlex
 import time
 
 import pytest
 
-from framework.executors.local_executor import run_cmd_get_stdout_stderr
-from tests.common.gpu_monitored.validation import (
-    capture_dmesg,
-    dmesg_delta,
-)
+from framework.common.helpers import executor_log_file
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +60,20 @@ _FAIL_PATTERNS = (
 )
 
 
-def _find_rocsolver_bench(rock_dir: str) -> Path | None:
-    """Locate rocsolver-bench binary in the ROCm install."""
-    candidate = Path(rock_dir) / "bin" / "rocsolver-bench"
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return candidate
-    return None
+def _fail_lines(text: str) -> list[str]:
+    """Return the lines of *text* matching any failure pattern.
+
+    One pattern list qualifies both the bench output and the dmesg window, as
+    in the original test where a single ``fail_data`` set was passed to the
+    output parser and to the dmesg validator.
+    """
+    matched = []
+    for line in text.splitlines():
+        for pat in _FAIL_PATTERNS:
+            if pat in line:
+                matched.append(line.strip()[:150])
+                break
+    return matched
 
 
 def _check_output_for_errors(stdout: str, stderr: str) -> tuple[bool, str]:
@@ -78,21 +82,12 @@ def _check_output_for_errors(stdout: str, stderr: str) -> tuple[bool, str]:
     Returns (passed, message).
     """
     combined = stdout + "\n" + stderr
-    lines = combined.splitlines()
 
-    # Check for failure patterns
-    fail_lines = []
-    for line in lines:
-        for pat in _FAIL_PATTERNS:
-            if pat in line:
-                fail_lines.append(line.strip()[:150])
-                break
-
+    fail_lines = _fail_lines(combined)
     if fail_lines:
         msg = f"FAIL: {len(fail_lines)} error line(s) detected\n" + "\n".join(f"  -> {fl}" for fl in fail_lines[:5])
         return False, msg
 
-    # Check for pass markers
     has_pass = all(marker in combined for marker in _PASS_MARKERS)
     if not has_pass:
         return False, "FAIL: pass markers (cpu_time_us, gpu_time_us) not found in output"
@@ -100,27 +95,93 @@ def _check_output_for_errors(stdout: str, stderr: str) -> tuple[bool, str]:
     return True, "PASS: rocsolver-bench completed with expected output markers"
 
 
+_DMESG_SOURCES = (
+    "dmesg -T",
+    "sudo -n dmesg -T",
+    # -n bounds the read: the delta only ever spans one run, not the whole boot,
+    # and the framework logs command output verbatim with no way to opt out.
+    "journalctl -k --no-pager -n 200",
+)
+
+# auditd records the cwd and argv of every command run on the box, so these
+# lines carry arbitrary text — including this test's own paths — into the window.
+_AUDIT_RE = re.compile(r"\baudit(?:\[\d+\])?:")
+
+
+def _capture_dmesg(executor) -> str | None:
+    """Return the target host's kernel log, or ``None`` if no source is readable.
+
+    ``kernel.dmesg_restrict=1`` hides the ring buffer from unprivileged readers,
+    so retry under sudo as the original did (``runCmd("dmesg -T",
+    privilege=True)``), then fall back to the journal, which stores the same
+    kernel messages and is readable by ``adm``/``systemd-journal`` members. ``-n``
+    stops a node without passwordless sudo from blocking on a password prompt.
+    Only when every source fails does the caller downgrade the kernel check
+    rather than fail a run over it.
+    """
+    for cmd in _DMESG_SOURCES:
+        try:
+            result = executor.run(cmd, timeout=60.0)
+        except Exception as exc:
+            logger.warning("[rocsolver-bench] '%s' failed: %s", cmd, exc)
+            continue
+        if result.ok and result.stdout.strip():
+            return result.stdout
+    return None
+
+
+def _kernel_health_lines(lines: list[str]) -> list[str]:
+    """Drop audit records, keeping only lines that say something about the kernel.
+
+    Audit noise is not kernel health, and leaving it in lets an unrelated
+    process — or this test's own sudo probe — trip a fail pattern via the
+    command line auditd embeds. The artifact still records the full window.
+    """
+    return [line for line in lines if not _AUDIT_RE.search(line)]
+
+
+def _dmesg_delta(before: str, after: str) -> list[str]:
+    """Return the lines ``after`` gained relative to ``before``."""
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    if not before_lines:
+        return after_lines
+    anchor = before_lines[-1]
+    for idx in range(len(after_lines) - 1, -1, -1):
+        if after_lines[idx] == anchor:
+            return after_lines[idx + 1 :]
+    # The ring buffer wrapped past the anchor, so fall back to a line-set
+    # difference instead of reporting the whole snapshot as new.
+    seen = set(before_lines)
+    return [line for line in after_lines if line not in seen]
+
+
 @pytest.mark.runtime.medium
 def test_rocsolver_bench(
-    rock_dir,
-    ld_path,
+    target_executor,
+    rocsolver_bench_binary: str,
+    ld_path: dict,
     request,
     framework_config,
 ):
     """Stress-test GPU with rocsolver-bench gesvd in a timed loop."""
-    # Artifact directory
-    test_name = re.sub(r"[^A-Za-z0-9._=-]+", "_", request.node.name).strip("._")
-    run_dir = Path(framework_config.framework.artifact_dir) / "rocsolver" / test_name
+    console_log = executor_log_file(
+        framework_config.framework.artifact_dir,
+        request.node.name,
+        request.node.nodeid,
+    )
+    run_dir = console_log.parent
     run_dir.mkdir(parents=True, exist_ok=True)
-    bin_path = _find_rocsolver_bench(rock_dir)
-    if bin_path is None:
-        pytest.skip("rocsolver-bench binary not found (rocsolver-clients not installed)")
+    artifact_stem = console_log.stem
 
-    rocm_lib = os.path.join(rock_dir, "lib")
     ld = ld_path["LD_LIBRARY_PATH"]
-    if rocm_lib not in ld:
-        ld = f"{rocm_lib}:{ld}"
-    os.environ["LD_LIBRARY_PATH"] = ld
+    bench_cmd = " ".join(
+        [
+            f"env LD_LIBRARY_PATH={shlex.quote(ld)}",
+            shlex.quote(rocsolver_bench_binary),
+            *_BENCH_CMD_ARGS,
+        ]
+    )
 
     duration_min = int(os.environ.get("ROCSOLVER_BENCH_DURATION_MIN", "1"))
     duration_sec = duration_min * 60
@@ -130,39 +191,33 @@ def test_rocsolver_bench(
         duration_min,
     )
 
-    dmesg_before = capture_dmesg()
+    dmesg_before = _capture_dmesg(target_executor)
 
     deadline = time.monotonic() + duration_sec
     iteration = 0
     all_passed = True
     all_messages: list[str] = []
-    console_log = run_dir / "console_output.log"
 
     with console_log.open("w") as log_fh:
         while time.monotonic() < deadline:
             iteration += 1
-            rc, stdout, stderr = run_cmd_get_stdout_stderr(
-                str(bin_path),
-                *_BENCH_CMD_ARGS,
-                timeout=300,
-                quiet=True,
-            )
+            result = target_executor.run(bench_cmd, timeout=300.0)
 
             # Write full console output for this iteration
-            log_fh.write(f"=== Iteration {iteration} (exit_code={rc}) ===\n" f"{stdout}\n")
-            if stderr.strip():
-                log_fh.write(f"--- stderr ---\n{stderr}\n")
+            log_fh.write(f"=== Iteration {iteration} (exit_code={result.exit_code}) ===\n{result.stdout}\n")
+            if result.stderr.strip():
+                log_fh.write(f"--- stderr ---\n{result.stderr}\n")
             log_fh.write("\n")
             log_fh.flush()
 
-            if rc != 0:
-                msg = f"Iteration {iteration}: non-zero exit code {rc}"
+            if not result.ok:
+                msg = f"Iteration {iteration}: non-zero exit code {result.exit_code}"
                 logger.warning("[rocsolver-bench] %s", msg)
                 all_messages.append(msg)
                 all_passed = False
                 continue
 
-            passed, msg = _check_output_for_errors(stdout, stderr)
+            passed, msg = _check_output_for_errors(result.stdout, result.stderr)
             if not passed:
                 logger.warning("[rocsolver-bench] Iteration %d: %s", iteration, msg)
                 all_messages.append(f"Iteration {iteration}: {msg}")
@@ -177,34 +232,46 @@ def test_rocsolver_bench(
     )
 
     # Check dmesg for kernel-level issues
-    dmesg_after = capture_dmesg()
-    dmesg_new = dmesg_delta(dmesg_before, dmesg_after)
+    dmesg_after = _capture_dmesg(target_executor)
+    dmesg_available = dmesg_before is not None and dmesg_after is not None
+    dmesg_fail_lines: list[str] = []
 
-    # Save dmesg artifacts
-    if dmesg_before:
-        (run_dir / "dmesg_pretest.log").write_text(dmesg_before)
-    if dmesg_new:
-        (run_dir / "dmesg.log").write_text(dmesg_new)
+    if dmesg_available:
+        new_lines = _dmesg_delta(dmesg_before, dmesg_after)
+        dmesg_fail_lines = _fail_lines("\n".join(_kernel_health_lines(new_lines)))
+        (run_dir / f"{artifact_stem}_dmesg_pretest.log").write_text(dmesg_before)
+        if new_lines:
+            (run_dir / f"{artifact_stem}_dmesg.log").write_text("\n".join(new_lines) + "\n")
+    else:
+        logger.warning(
+            "[rocsolver-bench] kernel ring buffer unreadable — skipping the dmesg check",
+        )
 
-    dmesg_clean = True
-    if dmesg_new:
-        dmesg_clean = False
+    if dmesg_fail_lines:
         logger.error(
-            "[rocsolver-bench] dmesg has new entries during test — " "check dmesg.log artifact for details",
+            "[rocsolver-bench] dmesg logs have errors, kindly verify the dmesg log artifact",
         )
 
     pass_count = sum(1 for m in all_messages if "PASS" in m)
     fail_count = iteration - pass_count
 
     # Save results log
-    (run_dir / "rocsolver_bench_results.txt").write_text("\n".join(all_messages) + "\n")
+    (run_dir / f"{artifact_stem}_results.txt").write_text("\n".join(all_messages) + "\n")
 
+    if not dmesg_available:
+        dmesg_state = "unavailable"
+    elif dmesg_fail_lines:
+        dmesg_state = "HAS ERRORS"
+    else:
+        dmesg_state = "clean"
     summary = (
         f"rocsolver-bench gesvd: {iteration} iteration(s), "
         f"{pass_count} passed, {fail_count} failed, "
-        f"dmesg {'clean' if dmesg_clean else 'HAS CRITICAL EVENTS'}"
+        f"dmesg {dmesg_state}"
     )
     logger.info("[rocsolver-bench] %s", summary)
 
     assert all_passed, f"rocsolver-bench failed:\n{summary}\n" + "\n".join(m for m in all_messages if "FAIL" in m)[:500]
-    assert dmesg_clean, "dmesg has new entries during rocsolver-bench — " "check dmesg.log artifact for details"
+    assert not dmesg_fail_lines, "dmesg has error lines during rocsolver-bench:\n" + "\n".join(
+        f"  -> {line}" for line in dmesg_fail_lines[:5]
+    )
