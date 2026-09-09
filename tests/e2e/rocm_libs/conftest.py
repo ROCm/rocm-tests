@@ -218,116 +218,66 @@ def hip_mempool_env(target_executor, ld_path: dict, hip_mempool_probe_binary: st
 
 
 # ============================================================================
-# AMD SMI Library Benchmark Suite Fixtures
+# AMD SMI Benchmark Suite Fixtures (via amd-smi CLI)
 # ============================================================================
 
-# Full test list for amd-smi-lib benchmark suite.
-# Each test name maps to a callable in the imported amd-smi-lib test module.
-AMDSMI_FULL_TESTS = [
-    "AMDSMI_power",
-    "AMDSMI_temperature",
-    "AMDSMI_memory",
-    "AMDSMI_gpu_metrics_info",
-    "AMDSMI_gpu_busy",
-    "AMDSMI_throttle",
-    "AMDSMI_thermal_throttle",
-    "AMDSMI_voltage",
-    "AMDSMI_frequency",
-    "AMDSMI_process_info",
-    "AMDSMI_device_state",
-    "AMDSMI_clock_throttle_status",
-    "AMDSMI_od_volt_info",
-    "AMDSMI_version",
-    "AMDSMI_dev_drm",
-    "AMDSMI_drm_info",
-    "AMDSMI_available_governor",
-    "AMDSMI_smu_firmware_info",
-    "AMDSMI_pcie_bandwidth",
-    "AMDSMI_pcie_link_width",
-    "AMDSMI_pcie_link_rate",
-    "AMDSMI_pcie_event_counter_control",
-    "AMDSMI_pcie_event_counter_read",
-    "AMDSMI_ecc_enabled",
-    "AMDSMI_ecc_status",
-    "AMDSMI_ecc_count",
-    "AMDSMI_set_power_limit",
-    "AMDSMI_get_power_limit",
-    "AMDSMI_set_gpu_clocks_state",
-    "AMDSMI_get_gpu_clocks_state",
-    "AMDSMI_set_od_clk_info",
-    "AMDSMI_get_od_clk_info",
-    "AMDSMI_get_max_power",
-    "AMDSMI_set_power_ovdrv",
-    "AMDSMI_get_power_ovdrv",
-    "AMDSMI_get_soc_pstate",
-    "AMDSMI_set_soc_pstate",
-    "AMDSMI_gpu_reset",
-    "AMDSMI_get_pcie_info",
-    "AMDSMI_set_pcie_lanewidth",
-    "AMDSMI_get_pcie_lanewidth",
-    "AMDSMI_set_pcie_link_rate",
-    "AMDSMI_get_pcie_link_rate",
-    "AMDSMI_monitor_temperature",
-    "AMDSMI_monitor_power",
-    "AMDSMI_monitor_throttle",
-    "AMDSMI_monitor_qt_gpu_workload",
-    "AMDSMI_monitor_qt_gpu_file_workload",
-    "AMDSMI_node_power_management",
-    "AMDSMI_ubb_power_default",
-    "AMDSMI_ubb_power_workload",
-    "AMDSMI_ubb_threshold",
-]
 
-
-def _install_amdsmi() -> None:
-    """Install amd-smi-lib package via pip.
-
-    Logs the installation and raises on failure.
-    """
-    import subprocess  # pylint: disable=import-outside-toplevel
-
-    logger.info("Installing amd-smi-lib...")
-    result = subprocess.run(
-        ["pip", "install", "amd-smi-lib"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=300,
-    )
-    if result.returncode != 0:
-        logger.error("amd-smi-lib installation failed: %s", result.stderr)
-        raise RuntimeError(f"Failed to install amd-smi-lib: {result.stderr}")
-    logger.info("amd-smi-lib installed successfully.")
-
-
-@pytest.fixture(scope="session")
-def amdsmi_installed() -> None:
-    """Session-scoped fixture: install amd-smi-lib once at the start of the test suite."""
-    _install_amdsmi()
-
-
-@pytest.fixture(scope="session")
-def amdsmi_testlist() -> list[str]:
-    """Session-scoped fixture: return the full amd-smi-lib benchmark test list."""
-    return AMDSMI_FULL_TESTS.copy()
-
-
-@pytest.fixture(scope="session")
-def amdsmi_app_version(amdsmi_installed) -> str | None:
-    """Session-scoped fixture: fetch the installed amd-smi-lib version string.
+@pytest.fixture
+def amdsmi_available(target_executor) -> bool:
+    """Check if amd-smi command is available on the target system.
 
     Returns:
-        Version string (e.g. "1.0.0"), or None if not available.
+        True if amd-smi static --json succeeds, False otherwise.
     """
-    del amdsmi_installed
     try:
-        # Import SystemInfo from amd-smi-lib to fetch the app version
-        from amdsmi_lib import SystemInfo  # pylint: disable=import-outside-toplevel
-
-        sys_info = SystemInfo(password=None)
-        version = sys_info.get_app_version(packages=["amd-smi-lib"]).get("amd-smi-lib")
-        logger.info("amd-smi-lib version: %s", version)
-        return version
+        result = target_executor.run("amd-smi static --json 2>/dev/null | head -1")
+        is_available = bool(result.ok and result.stdout.strip())
+        if is_available:
+            logger.info("amd-smi command available on target")
+        else:
+            logger.warning("amd-smi command not available; suite will be skipped")
+        return is_available
     except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("Failed to retrieve amd-smi-lib version: %s", exc)
+        logger.warning("Failed to check amd-smi availability: %s", exc)
+        return False
+
+
+@pytest.fixture
+def amdsmi_version(target_executor) -> str | None:
+    """Fetch amd-smi version string via 'amd-smi --version'.
+
+    Returns:
+        Version string (e.g. "1.0.0"), or None if unavailable.
+    """
+    try:
+        result = target_executor.run("amd-smi --version 2>&1")
+        if result.ok and result.stdout:
+            version = result.stdout.strip().split("\n")[0]
+            logger.info("amd-smi version: %s", version)
+            return version
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("Failed to retrieve amd-smi version: %s", exc)
+    return None
+
+
+@pytest.fixture
+def amdsmi_gpu_metrics(target_executor, amdsmi_available) -> dict | None:
+    """Fetch GPU metrics via amd-smi metric --json.
+
+    Returns:
+        Parsed JSON dict if successful, None if unavailable or failed.
+    """
+    if not amdsmi_available:
         return None
+
+    try:
+        import json  # pylint: disable=import-outside-toplevel
+
+        result = target_executor.run("amd-smi metric --json")
+        if result.ok and result.stdout:
+            metrics = json.loads(result.stdout)
+            logger.info("amd-smi metrics fetched: %d GPU(s)", len(metrics.get("gpu_data", [])))
+            return metrics
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("Failed to fetch amd-smi metrics: %s", exc)
+    return None

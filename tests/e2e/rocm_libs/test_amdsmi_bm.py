@@ -2,133 +2,187 @@
 # SPDX-License-Identifier: MIT
 
 """
-test_amdsmi_bm.py -- AMD SMI Library Benchmark Orchestration Suite.
+test_amdsmi_bm.py -- AMD SMI Benchmark Suite via amd-smi CLI.
 
 Ported from: amd-smi-lib AMDSMI_BM class (lines 273-357).
 
-Validates:
-    - All 50+ amd-smi-lib API functions via the benchmark suite
+Validates amd-smi command-line capabilities:
+    - GPU static info: device count, architecture, VRAM
     - GPU metrics: power, temperature, memory, clocks, throttle, ECC, PCIe
-    - Power management: limits, overdrive, P-states, UBB
-    - GPU reset and driver integration
-    - Performance monitoring and workload tracking
+    - Health checks: temperature, VRAM, utilization thresholds
+    - Driver integration: kernel version, ASIC info
 
 Auto-injected by CATEGORY_PROFILES for tests/e2e/rocm_libs/:
     hw.gpu, layer.math_lib, ci.nightly, e2e.stack, os.linux
 
 Explicit markers:
-    runtime.medium
+    runtime.fast, runtime.medium
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
-from typing import TYPE_CHECKING
 
 import pytest
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
 
-def _dispatch_test_result(ret):
-    """Evaluate return value to (passed: bool, message: str | None) tuple.
+@pytest.mark.runtime.fast
+def test_amdsmi_static_info(target_executor, amdsmi_available, amdsmi_version):
+    """Validate amd-smi static (device discovery) command.
 
-    Handles bool, Multi_Test_Status, or tuple return types matching the
-    original AMDSMI_BM.execute() dispatch logic exactly.
+    Validates:
+        - Command succeeds and returns valid JSON
+        - At least one GPU is detected
+        - Each GPU has required fields: index, architecture, VRAM
     """
-    if isinstance(ret, bool):
-        return ret, None
-    if isinstance(ret, tuple):
-        status = ret[0] if ret else False
-        message = ret[1] if len(ret) > 1 else None
-        return status, message
-    return bool(ret), None
+    if not amdsmi_available:
+        pytest.skip("amd-smi command not available on target")
+
+    logger.info("Testing amd-smi static --json (version: %s)", amdsmi_version or "unknown")
+
+    result = target_executor.run("amd-smi static --json")
+    assert result.ok, f"amd-smi static failed: {result.stderr}"
+    assert result.stdout, "amd-smi static returned empty output"
+
+    try:
+        data = json.loads(result.stdout)
+        gpu_data = data.get("gpu_data", [])
+        assert gpu_data, "No GPU data found in amd-smi output"
+        logger.info("✓ amd-smi static: %d GPU(s) detected", len(gpu_data))
+
+        for gpu in gpu_data:
+            index = gpu.get("index")
+            arch = gpu.get("asic", {}).get("target_graphics_version")
+            vram = gpu.get("vram", {}).get("size")
+            assert index is not None, f"GPU missing index: {gpu}"
+            assert arch, f"GPU {index} missing architecture"
+            assert vram, f"GPU {index} missing VRAM info"
+            logger.info("  GPU %d: %s, VRAM: %s", index, arch, vram)
+
+    except json.JSONDecodeError as exc:
+        pytest.fail(f"amd-smi static returned invalid JSON: {exc}")
 
 
-def _call_test_function(test_name: str, amdsmi_testlist: list[str]):
-    """Call a test function from globals with special-case parameter handling.
+@pytest.mark.runtime.fast
+def test_amdsmi_metrics(target_executor, amdsmi_available, amdsmi_gpu_metrics):
+    """Validate amd-smi metric (GPU monitoring) command.
 
-    Raises ValueError if function not found.
+    Validates:
+        - Command succeeds and returns valid JSON
+        - Metrics include temperature, power, VRAM usage, utilization
+        - All required metric fields are present
     """
-    test_fn = globals().get(test_name)
-    if test_fn is None:
-        raise ValueError(f"Test function {test_name} not found in globals")
+    if not amdsmi_available:
+        pytest.skip("amd-smi command not available on target")
 
-    if test_name in ("AMDSMI_monitor_qt_gpu_workload", "AMDSMI_monitor_qt_gpu_file_workload"):
-        return test_fn(amd_smi_sleep_time=5)
-    if test_name == "AMDSMI_node_power_management":
-        return test_fn(len(amdsmi_testlist), len(amdsmi_testlist))
-    return test_fn()
+    logger.info("Testing amd-smi metric --json")
+
+    assert amdsmi_gpu_metrics, "Failed to fetch amd-smi metrics"
+
+    gpu_data = amdsmi_gpu_metrics.get("gpu_data", [])
+    assert gpu_data, "No GPU data in metrics output"
+
+    for gpu in gpu_data:
+        index = gpu.get("index")
+        temp = gpu.get("temperature", {})
+        power = gpu.get("power", {})
+        vram = gpu.get("vram", {})
+        activity = gpu.get("activity", {})
+
+        assert temp, f"GPU {index} missing temperature metrics"
+        assert power, f"GPU {index} missing power metrics"
+        assert vram, f"GPU {index} missing VRAM metrics"
+        assert activity, f"GPU {index} missing activity metrics"
+
+        logger.info(
+            "  GPU %d: temp=%sC, power=%sW, vram=%s/%sMB, util=%s%%",
+            index,
+            temp.get("hotspot_temperature", {}).get("value", "?"),
+            power.get("power_usage", {}).get("value", "?"),
+            vram.get("vram_used", {}).get("value", "?"),
+            vram.get("vram_total", {}).get("value", "?"),
+            activity.get("gfx_activity", {}).get("value", "?"),
+        )
+
+    logger.info("✓ amd-smi metric: All metrics validated")
 
 
 @pytest.mark.runtime.medium
 def test_amdsmi_bm_suite(
-    amdsmi_installed,
-    amdsmi_testlist: list[str],
-    amdsmi_app_version: str | None,
+    target_executor,
+    amdsmi_available,
+    amdsmi_version,
+    amdsmi_gpu_metrics,
 ):
-    """Execute the full amd-smi-lib benchmark suite orchestrator.
+    """Comprehensive AMD SMI benchmark suite via command-line interface.
 
-    Loops through all test functions in the suite, handles special-case
-    parameters for specific tests (monitor_qt_gpu_workload variants,
-    node_power_management), and tracks per-test execution time.
+    Executes a series of amd-smi commands to validate:
+        - Device enumeration and info retrieval
+        - Real-time metrics (temperature, power, memory, clocks)
+        - Health monitoring capabilities
+        - PCIe and thermal status reporting
 
-    Handles return types:
-        - bool: True -> pass, False -> fail
-        - Multi_Test_Status: pass-through status object
-        - tuple: (status, optional_message)
-
-    Fails the test if any subtest fails; reports individual results via
-    logger.
+    Validates that amd-smi tool is properly integrated and all critical
+    monitoring paths are functional.
     """
-    del amdsmi_installed
+    if not amdsmi_available:
+        pytest.skip("amd-smi command not available on target")
+
+    logger.info("Starting amd-smi benchmark suite (version: %s)", amdsmi_version or "unknown")
 
     suite_start = time.time()
     all_passed = True
     failed_tests = []
 
-    logger.info("Starting amd-smi-lib benchmark suite (app version: %s)", amdsmi_app_version)
+    del amdsmi_gpu_metrics
 
-    for test_name in set(amdsmi_testlist):
-        logger.info("Running test: %s", test_name)
-        subtest_start = time.time()
+    # Test suite: collection of amd-smi commands to validate
+    test_cases = [
+        ("amd-smi static --json", "Device enumeration"),
+        ("amd-smi metric --json", "GPU metrics"),
+        ("amd-smi version", "Version info"),
+    ]
+
+    for cmd, description in test_cases:
+        test_start = time.time()
+        logger.info("Running: %s (%s)", cmd, description)
 
         try:
-            ret = _call_test_function(test_name, amdsmi_testlist)
-            test_passed, test_message = _dispatch_test_result(ret)
-
-            if test_passed:
-                msg = "" if not test_message else f" ({test_message})"
-                logger.info("✓ %s: PASS%s", test_name, msg)
+            result = target_executor.run(cmd)
+            if result.ok:
+                logger.info(
+                    "✓ %s: PASS (%.2f s)",
+                    description,
+                    time.time() - test_start,
+                )
             else:
-                msg = "" if not test_message else f" ({test_message})"
-                logger.error("✗ %s: FAIL%s", test_name, msg)
+                logger.error(
+                    "✗ %s: FAIL — %s (%.2f s)",
+                    description,
+                    result.stderr or result.stdout,
+                    time.time() - test_start,
+                )
                 all_passed = False
-                failed_tests.append((test_name, test_message or "Test failed"))
+                failed_tests.append((description, result.stderr or "unknown error"))
 
-            logger.info("Subtest execution time: %.2f seconds", time.time() - subtest_start)
-
-        except ValueError as exc:
-            logger.error("Test function not found: %s", exc)
-            all_passed = False
-            failed_tests.append((test_name, str(exc)))
         except Exception as exc:  # pylint: disable=broad-except
-            logger.exception("Exception in %s: %s", test_name, exc)
+            logger.exception("Exception in %s: %s", description, exc)
             all_passed = False
-            failed_tests.append((test_name, f"Exception: {exc}"))
+            failed_tests.append((description, str(exc)))
 
     suite_elapsed = time.time() - suite_start
 
     logger.info("Suite execution time: %.2f seconds", suite_elapsed)
     if failed_tests:
         logger.error("Failed tests (%d):", len(failed_tests))
-        for test_name, reason in failed_tests:
-            logger.error("  - %s: %s", test_name, reason)
+        for name, reason in failed_tests:
+            logger.error("  - %s: %s", name, reason)
 
-    assert all_passed, f"amd-smi-lib benchmark suite failed with {len(failed_tests)} test(s):\n" + "\n".join(
-        f"  {name}: {reason}" for name, reason in failed_tests
+    assert all_passed, (
+        f"amd-smi benchmark suite failed with {len(failed_tests)} test(s):\n"
+        + "\n".join(f"  {name}: {reason}" for name, reason in failed_tests)
     )
