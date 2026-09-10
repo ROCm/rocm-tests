@@ -27,7 +27,8 @@ only the required target rather than compiling unrelated HIP runtime binaries:
 - ``hip_device_count_binary`` — builds ``hip_device_count`` (driver-API only;
   prints ``hipGetDeviceCount()`` to stdout; does not require ``--gpu-arch``).
 - ``mgbench_binary``          — factory building one vendored MGBench L1
-  benchmark (``fullduplex``, ``halfduplex``, ``uva``); needs gflags headers.
+  benchmark (``fullduplex``, ``halfduplex``, ``uva``); installs the gflags
+  development headers they compile against when absent.
 
 Build output layout::
 
@@ -51,6 +52,8 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import shlex
+import subprocess
 
 import pytest
 
@@ -64,6 +67,7 @@ _PARTITION_ISO_SUBDIR = "hip_runtime/partition_isolation"
 _MGBENCH_SRC_DIR = "tests/e2e/hip_runtime/src/mgbench"
 _MGBENCH_SUBDIR = "hip_runtime/mgbench"
 _GFLAGS_HEADER = "/usr/include/gflags/gflags.h"
+_GFLAGS_INSTALL_TIMEOUT_SECS = 1800.0
 
 # HIP samples upstream suite (ROCm/hip-tests "samples/" subtree).
 # Samples are the same sources published in ROCm/hip-tests.
@@ -363,20 +367,53 @@ def hip_device_count_binary(compile_binary) -> str:
     )
 
 
+def _gflags_install_script() -> str:
+    """Return a distro-aware script installing the gflags development headers.
+
+    No-ops when the headers are already present, so a provisioned host is left
+    untouched.  Uses ``sudo -n`` off-root so a password-less-sudo failure is an
+    immediate error rather than a prompt that hangs the run.
+    """
+    sudo = "" if os.geteuid() == 0 else "sudo -n "
+    return (
+        "set -e; "
+        f"if test -f {_GFLAGS_HEADER}; then exit 0; fi; "
+        "if command -v apt-get >/dev/null 2>&1; then "
+        f"  {sudo}apt-get update && {sudo}apt-get install -y --no-install-recommends libgflags-dev; "
+        "elif command -v dnf >/dev/null 2>&1; then "
+        f"  {sudo}dnf install -y gflags-devel; "
+        "elif command -v yum >/dev/null 2>&1; then "
+        f"  {sudo}yum install -y gflags-devel; "
+        "elif command -v zypper >/dev/null 2>&1; then "
+        f"  {sudo}zypper --non-interactive install gflags-devel; "
+        "else "
+        '  echo "no supported package manager found to install gflags" >&2; exit 1; '
+        "fi"
+    )
+
+
 @pytest.fixture(scope="session")
-def _require_gflags(cmake_executor) -> None:
-    """Skip when the gflags development headers are absent from the build host."""
-    probe = f"test -f {_GFLAGS_HEADER}"
+def _gflags_headers(cmake_executor) -> None:
+    """Install the gflags development headers the MGBench sources compile against.
+
+    Fails fast rather than skipping: an absent dependency otherwise surfaces as
+    an opaque ``gflags/gflags.h: No such file`` compiler error.
+    """
+    script = _gflags_install_script()
     if cmake_executor is not None:
-        present = cmake_executor.run(probe, timeout=15.0).ok
+        result = cmake_executor.run(f"bash -lc {shlex.quote(script)}", timeout=_GFLAGS_INSTALL_TIMEOUT_SECS)
+        code, err = result.exit_code, result.stderr
     else:
-        present = pathlib.Path(_GFLAGS_HEADER).is_file()
-    if not present:
-        pytest.skip(f"{_GFLAGS_HEADER} not found — install libgflags-dev (or gflags-devel)")
+        proc = subprocess.run(  # pylint: disable=subprocess-run-check
+            ["bash", "-lc", script], capture_output=True, text=True, timeout=_GFLAGS_INSTALL_TIMEOUT_SECS
+        )
+        code, err = proc.returncode, proc.stderr
+    if code != 0:
+        pytest.fail(f"gflags development headers install failed (exit={code}):\n{err[-2000:]}")
 
 
 @pytest.fixture(scope="session")
-def mgbench_binary(compile_binary, rock_dir: str, _require_gflags):
+def mgbench_binary(compile_binary, rock_dir: str, _gflags_headers):
     """Return a factory that compiles one vendored MGBench L1 benchmark.
 
     The upstream sources predate the ``hip/`` header prefix and include

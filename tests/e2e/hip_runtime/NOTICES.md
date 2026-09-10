@@ -48,9 +48,11 @@ The `mgbench_binary` fixture compiles three benchmarks vendored under
 this repository verbatim with their original copyright headers intact rather
 than fetched at runtime.
 
-The sources additionally require the gflags development headers to be present
-on the build host; gflags is neither vendored nor installed by this repository,
-and the fixture skips when it is absent.
+The sources compile against the gflags development headers. gflags itself is
+not vendored or redistributed here; when the headers are absent the fixture
+installs the distribution's own `libgflags-dev` / `gflags-devel` package on the
+build host, so the installed copy is governed by that distribution's packaging
+of gflags (BSD 3-Clause, Copyright (c) 2006, Google Inc.).
 
 - **Copyright:** Copyright (c) 2016, Tal Ben-Nun
 - **License:** BSD 3-Clause License
