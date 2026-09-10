@@ -124,45 +124,18 @@ jobs:
               f.write(f'targets={json.dumps(all_targets)}\n')
               f.write(f'skipped_targets={json.dumps(skipped)}\n')
 
-  check_runners:
-    name: Check runner availability
-    needs: setup_matrix
-    runs-on: ubuntu-latest
-    outputs:
-      targets:         ${{ steps.poll.outputs.targets }}
-      skipped_targets: ${{ steps.poll.outputs.skipped_targets }}
-    steps:
-      - name: Generate GitHub App token (runner health)
-        id: app_token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2
-        with:
-          app-id:      ${{ secrets.RUNNER_HEALTH_APP_ID }}
-          private-key: ${{ secrets.RUNNER_HEALTH_PRIVATE_KEY }}
-          owner: ROCm
-
-      - name: Checkout rocm-tests
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          sparse-checkout: .github/scripts/**
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      - name: Poll runner availability (persistent runners only)
-        id: poll
-        env:
-          GITHUB_TOKEN: ${{ steps.app_token.outputs.token }}
-          TARGETS_JSON: ${{ needs.setup_matrix.outputs.targets }}
-          MAX_WAIT_SECS: '120'
-          POLL_INTERVAL_SECS: '15'
-        run: python3 .github/scripts/check_runners.py
+  # check_runners disabled temporarily to test gfx1100 scheduling
+  # check_runners:
+  #   name: Check runner availability
+  #   ...
 
   e2e_nightly:
     name: "${{ matrix.target.name }}"
-    needs: [setup_matrix, check_runners]
+    needs: [setup_matrix]
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.check_runners.outputs.targets) }}
+        target: ${{ fromJSON(needs.setup_matrix.outputs.targets) }}
     uses: ./.github/workflows/e2e-tests.yml
     with:
       name:               ${{ matrix.target.name }}
@@ -179,7 +152,7 @@ jobs:
 
   report:
     name: "Nightly Test Summary — ${{ needs.setup_matrix.outputs.run_id || inputs.artifact_source || 'latest-release' }}"
-    needs: [setup_matrix, check_runners, e2e_nightly]
+    needs: [setup_matrix, e2e_nightly]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -193,7 +166,7 @@ jobs:
       - name: Build master summary table
         env:
           RUN_ID: ${{ needs.setup_matrix.outputs.run_id || inputs.artifact_source || 'latest-release' }}
-          SKIPPED_TARGETS: ${{ needs.check_runners.outputs.skipped_targets }}
+          SKIPPED_TARGETS: ${{ needs.setup_matrix.outputs.skipped_targets }}
         shell: python
         run: |
           import json, os, pathlib
