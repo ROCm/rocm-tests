@@ -1,11 +1,19 @@
 # Global owners — all root-level files
 * @ROCm/rocm-tests-admin
 
-# Test and framework source 
-/tests/      @ROCm/rocm-tests-write
-/framework/  @mparamas-amd @madkasul
+# Framework
+/conftest.py          @ROCm/rocm-tests-admin
+/framework/           @ROCm/rocm-tests-framework
+/framework/plugins/   @ROCm/rocm-tests-admin
 
 # CI workflows, build, and scan tooling
-/.github/     @mparamas-amd @madkasul
-/build_tools/ @mparamas-amd @madkasul
-/scan_tools/  @mparamas-amd @madkasul
+/.github/             @ROCm/rocm-tests-admin
+/build_tools/         @ROCm/rocm-tests-admin
+/scan_tools/          @ROCm/rocm-tests-admin
+
+# Testcases
+/tests/               @ROCm/rocm-tests-write
+/tests/common/        @ROCm/rocm-tests-framework
+
+# Documents
+/docs/                @ROCm/rocm-tests-write
