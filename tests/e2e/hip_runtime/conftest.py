@@ -26,6 +26,8 @@ only the required target rather than compiling unrelated HIP runtime binaries:
   binary for partition isolation; requires ``--gpu-arch``).
 - ``hip_device_count_binary`` — builds ``hip_device_count`` (driver-API only;
   prints ``hipGetDeviceCount()`` to stdout; does not require ``--gpu-arch``).
+- ``mgbench_binary``          — factory building one vendored MGBench L1
+  benchmark (``fullduplex``, ``halfduplex``, ``uva``); needs gflags headers.
 
 Build output layout::
 
@@ -41,6 +43,7 @@ Build output layout::
     output/test-binaries/hip_runtime/partition_isolation/buggy_workload
     output/test-binaries/hip_runtime/partition_isolation/hip_device_count
     output/test-binaries/hip_runtime/mps/rock_mps_test
+    output/test-binaries/hip_runtime/mgbench/{fullduplex,halfduplex,uva}
 """
 
 from __future__ import annotations
@@ -58,6 +61,9 @@ _IPC_MODULE_LOAD_SRC_DIR = "tests/e2e/hip_runtime/src/ipc_module_load"
 _ROCK_MPS_SRC_DIR = "tests/e2e/hip_runtime/src/mps"
 _PARTITION_ISO_SRC_DIR = "tests/e2e/hip_runtime/src/partition_isolation"
 _PARTITION_ISO_SUBDIR = "hip_runtime/partition_isolation"
+_MGBENCH_SRC_DIR = "tests/e2e/hip_runtime/src/mgbench"
+_MGBENCH_SUBDIR = "hip_runtime/mgbench"
+_GFLAGS_HEADER = "/usr/include/gflags/gflags.h"
 
 # HIP samples upstream suite (ROCm/hip-tests "samples/" subtree).
 # Samples are the same sources published in ROCm/hip-tests.
@@ -355,3 +361,37 @@ def hip_device_count_binary(compile_binary) -> str:
         opt="-O0",
         subdir=_PARTITION_ISO_SUBDIR,
     )
+
+
+@pytest.fixture(scope="session")
+def _require_gflags(cmake_executor) -> None:
+    """Skip when the gflags development headers are absent from the build host."""
+    probe = f"test -f {_GFLAGS_HEADER}"
+    if cmake_executor is not None:
+        present = cmake_executor.run(probe, timeout=15.0).ok
+    else:
+        present = pathlib.Path(_GFLAGS_HEADER).is_file()
+    if not present:
+        pytest.skip(f"{_GFLAGS_HEADER} not found — install libgflags-dev (or gflags-devel)")
+
+
+@pytest.fixture(scope="session")
+def mgbench_binary(compile_binary, rock_dir: str, _require_gflags):
+    """Return a factory that compiles one vendored MGBench L1 benchmark.
+
+    The upstream sources predate the ``hip/`` header prefix and include
+    ``<hip_runtime.h>`` directly, so ``{rock_dir}/include/hip`` is added to the
+    include path exactly as the upstream Makefiles did.
+    """
+
+    def _build(name: str) -> str:
+        return compile_binary(
+            src=f"{_MGBENCH_SRC_DIR}/{name}.cpp",
+            output_name=name,
+            include_dirs=[f"{rock_dir}/include/hip"],
+            opt="-O0",
+            extra_flags=["-g", "-lgflags"],
+            subdir=_MGBENCH_SUBDIR,
+        )
+
+    return _build
