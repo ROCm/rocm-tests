@@ -397,7 +397,7 @@ jobs:
           # values here.
           PR_TARGETS = [
               "linux-gfx950-MI355",
-              "linux-gfx1151",
+              "linux-gfx1151-StrixHalo",
           ]
 
           cfg = configparser.ConfigParser()
