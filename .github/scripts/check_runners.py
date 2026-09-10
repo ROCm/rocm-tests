@@ -75,10 +75,18 @@ def get_registered_labels(wanted: set[str]) -> set[str]:
                 break
 
             runners = data.get("runners", [])
+            level = "repo" if "repos" in base_url else "org"
+            print(f"  [{level}] page {page}: {len(runners)} runner(s) returned")
             if not runners:
                 break
             for r in runners:
-                if r.get("status") in ("online", "in_use"):
+                r_labels = [lbl["name"] for lbl in r.get("labels", [])]
+                r_status = r.get("status", "unknown")
+                r_name = r.get("name", "?")
+                # Always print runners whose labels overlap with wanted, regardless of status
+                if wanted & set(r_labels):
+                    print(f"    runner '{r_name}' status={r_status} labels={r_labels}")
+                if r_status in ("online", "in_use"):
                     for lbl in r.get("labels", []):
                         if lbl["name"] in wanted:
                             found.add(lbl["name"])
