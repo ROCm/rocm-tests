@@ -214,7 +214,7 @@ def _install_amdsmi(executor) -> None:
     logger.info("amd-smi-lib installed successfully.")
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def amdsmi_installed(target_executor) -> None:
     """Session-scoped fixture: install amd-smi-lib once at the start of the test suite.
 
