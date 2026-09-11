@@ -13,6 +13,9 @@ downstream packaging flow redistributes the cloned source or built binaries, tha
 redistribution must retain the upstream copyright notices, license terms, and
 disclaimers.
 
+One third-party project — MGBench, see below — is vendored into this directory
+rather than cloned at runtime, and is redistributed under its own license.
+
 ---
 
 ## Third-Party Runtime Dependencies
@@ -37,7 +40,27 @@ its own third-party dependencies are not downloaded by this module.
 
 ---
 
-### 2. ROCm runtime libraries
+### 2. MGBench (L1 multi-GPU transfer benchmarks)
+
+The `mgbench_binary` fixture compiles three benchmarks vendored under
+`tests/e2e/hip_runtime/src/mgbench/` — `fullduplex.cpp`, `halfduplex.cpp`, and
+`uva.cpp`. These are the `L1` benchmarks from the MGBench suite, committed to
+this repository verbatim with their original copyright headers intact rather
+than fetched at runtime.
+
+The sources compile against the gflags development headers. gflags itself is
+not vendored or redistributed here; when the headers are absent the fixture
+installs the distribution's own `libgflags-dev` / `gflags-devel` package on the
+build host, so the installed copy is governed by that distribution's packaging
+of gflags (BSD 3-Clause, Copyright (c) 2006, Google Inc.).
+
+- **Copyright:** Copyright (c) 2016, Tal Ben-Nun
+- **License:** BSD 3-Clause License
+- **Upstream repository:** https://github.com/tbennun/mgbench
+
+---
+
+### 3. ROCm runtime libraries
 
 Binaries built in this directory link against the HIP runtime from the ROCm
 installation on the target host. The `rock_mps_test` build additionally links
@@ -66,6 +89,10 @@ projects — are original AMD-authored code, copyright Advanced Micro Devices, I
 licensed under the MIT License (the same license as the parent repository). They
 are committed to this repository rather than fetched at runtime, and they do not
 derive from `hip-tests` source code.
+
+The sole exception is `src/mgbench/`, which is third-party BSD 3-Clause code as
+described above; any redistribution of those sources or the binaries built from
+them must retain the copyright notice, conditions, and disclaimer in each file.
 
 ---
 
