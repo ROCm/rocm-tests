@@ -250,9 +250,10 @@ Three built-in skills are accessible via slash commands. Each is backed by a sub
 - Never use `nodes_fixture` — use `target_executor` for all GPU tiers
 - Never `from framework.plugins import ...` — use fixture injection only
 - Never import `torch` on the coordinator process — run all PyTorch code via `target_executor.run(f"{torch_python} ...")`
+- Never reference external project code without first calling `external_build.assert_license_present()`
 - Always: module docstring with numbered `Validates:` list
-- Always: `allure_reporter.step()` wrapping every `target_executor.run()` call
-- Always: strong assertion (`parse_metric()` + threshold) — `exit_code == 0` alone is weak
+- Always: strong assertion (exit + sentinel; `parse_metric()` + threshold for numeric outputs) — exit code alone is weak
+- Always: run OSS compliance gate before generating tests that depend on third-party code
 
 **Example:**
 ```
@@ -265,17 +266,18 @@ Three built-in skills are accessible via slash commands. Each is backed by a sub
 
 ---
 
-### `/refiner [review-as <persona>] <file>` — Review and extend an existing test
+### `/refiner [review-as <persona>] <file>` — Review, extend, or drift-check an existing test
 
-**What it does:** Operates in two modes:
+**What it does:** Operates in three modes:
 
-- **Review** (default): Applies the 4-persona checklist, runs marker lint, and reports top-3 improvements with before/after code.
+- **Review** (default): Applies the 4-persona checklist, runs profile-aware marker lint, detects infrastructure problems and coverage gaps, reports top-3 improvements with before/after code.
 - **Extend** (when user says "add", "extend", or describes a new variant): Adds test functions or parametrize — never removes or renames existing functions.
+- **Drift** (when user says "drift", "sync", "upstream", or the test has `Ported from:` in the docstring): Compares the ported test against its upstream source. Detects changes in objective, configuration, assertions, or thresholds since the port was created.
 
 **Internal process — Review:**
 
-1. Reads the target file, `framework/markers/taxonomy.py`, `framework/markers/linter.py`, and `framework/plugins/artifacts_plugin.py`.
-2. Runs marker lint — surfaces violations per dimension per function.
+1. Reads the target file, companion `conftest.py`, `framework/markers/taxonomy.py`, `framework/markers/linter.py`.
+2. Runs profile-aware marker lint — checks `CATEGORY_PROFILES` first so auto-injected markers are not flagged.
 3. Applies all four persona checklists (or a specific persona if requested).
 4. Ranks top-3 improvements with concrete before/after code.
 
@@ -285,53 +287,76 @@ Three built-in skills are accessible via slash commands. Each is backed by a sub
 |---|---|
 | ERROR | `time.sleep(N)`, `os.environ["ROCR_VISIBLE_DEVICES"]`, `subprocess.run()`, `import torch` at module level, `from framework.plugins import` |
 | ERROR | `nodes_fixture`, hardcoded `/dev/renderD128`, `sys.exit()` in test body |
-| WARNING | Assertion only on `result.exit_code`; no stdout threshold check |
+| ERROR | External clone without `external_build.assert_license_present()` |
+| ERROR | `gpu_indices` with bare int argument instead of list |
+| WARNING | Assertion only on `result.exit_code`; no stdout sentinel or threshold check |
 | WARNING | ML test with no NaN/Inf guard; no `pytest.skip` for optional prereq |
 | WARNING | `ci.pr` + `runtime.medium` conflict; test downloading models marked `ci.pr` |
+| WARNING | Background-process test without `assert monitor.is_alive` after `start_background()` |
+| WARNING | External clone with floating `ref="main"` instead of pinned tag/SHA |
 
 **Four review personas:**
 
 #### `developer`
 GPU API correctness, assertion strength, HIP invocation patterns.
-- `target_executor.run(cmd)` must be wrapped in `allure_reporter.step()` for Allure traceability
-- Assertion quality: `exit_code == 0` alone is WEAK — `parse_metric()` + threshold is STRONG
-- Wrong precision (`f32_r` vs `f64_r`; `torch.float32` vs `torch.float64`)
-- Edge cases: VRAM near limit, multi-GPU rank interactions, thermal throttle behavior
+- Missing `LD_LIBRARY_PATH` silently breaks TheRock-linked binaries.
+- Assertion quality: `exit_code == 0` alone is WEAK — sentinel string is MEDIUM — `parse_metric()` + threshold is STRONG.
+- Edge cases: VRAM near limit, multi-GPU rank interactions, thermal throttle behavior.
+- For background-process tests: `monitor.is_alive` checked before triggering; `monitor.stop(timeout=N)` result asserted.
 
 #### `tester`
 Coverage uniqueness, missing failure modes, parametrize opportunities.
-- What if the required library is not installed? → `pytest.skip`, not crash
-- What if VRAM is insufficient? → clear error message, not hang
-- Assertion quality scale: `exit_code==0` (WEAK) → sentinel string (MEDIUM) → `parse_metric()` + threshold (STRONG) → NaN/Inf guard (STRONGEST)
-- Parametrize over: GPU arch, input sizes, data types (f16/f32/f64/bf16), batch sizes
+- What if the required library is not installed? → `pytest.skip`, not crash.
+- What if VRAM is insufficient? → clear error message, not hang.
+- Parametrize over: GPU arch, input sizes, data types (f16/f32/f64/bf16), batch sizes.
+- Negative test cases for error-handling paths (invalid argument, missing device).
 
 #### `automation`
 Marker accuracy, runtime weight vs actual wall time, CI gate placement.
-- `ci.pr` + `runtime.medium` = CONFLICT — medium tests must be `ci.nightly` or higher
-- `hw.multi_gpu` without `e2e.multinode` → missing Allure grouping for collective tests
-- Wrong `runtime.*` weight misleads `DynamicScheduler` → longer nightly wall time
-- Tests downloading models or requiring network access must NOT be `ci.pr`
+- `ci.pr` + `runtime.medium` = CONFLICT — medium tests must be `ci.nightly` or higher.
+- Wrong `runtime.*` weight misleads `DynamicScheduler` → longer nightly wall time.
+- Soak tests must be `ci.weekly`; soak tests without `timeout=` on `target_executor.run()` are incomplete.
 
 #### `devops`
-VRAM requirements, prerequisite declarations, health gate impact, artifact volume.
-- gfx1100 (RX 7900 XTX): 24 GB VRAM; gfx942 (MI300X): 192 GB VRAM — safe on MI300X may OOM on gfx1100
-- Missing `@pytest.mark.gpu_vram(N)` when workload needs a minimum VRAM threshold
-- Soak tests logging per-second stdout can generate GB of artifacts — use `ci.weekly` to gate them out of nightly
+VRAM requirements, prerequisite declarations, health gate impact, artifact volume, OSS compliance.
+- gfx1100 (RX 7900 XTX): 24 GB VRAM; gfx942 (MI300X): 192 GB VRAM.
+- Missing `@pytest.mark.gpu_vram(N)` when workload needs a minimum VRAM threshold.
+- External clone: `ref` pinned to tag/SHA? `assert_license_present()` called?
+- Soak tests logging per-second stdout can generate GB of artifacts.
+
+**Drift mode — Upstream drift analysis:**
+
+When the test was ported from an external source, the refiner compares the current rocm-tests test
+against its upstream to detect divergence since the port date:
+
+| Dimension checked | What triggers a finding |
+|---|---|
+| Test objective | Upstream fundamentally changed what it proves |
+| CLI arguments / config | New flags or changed defaults in upstream |
+| Assertion sentinels | Upstream changed a string the test asserts on |
+| Numeric thresholds | Upstream tightened or relaxed a performance/accuracy bound |
+| Test variants | Upstream added or removed parametrized scenarios |
+| OSS license | License changed in upstream repo |
+
+**Objective Deviation Protocol:** When upstream objective has completely changed, the refiner does NOT
+silently update. It presents findings and asks the user to choose: update, preserve, or keep both.
 
 **Extension types — Extend mode:**
 
 | User request | Pattern applied |
 |---|---|
-| "multi-GPU variant" | New function: `hw.multi_gpu` + `e2e.multinode`; still `target_executor` |
+| "multi-GPU variant" | New function: `hw.multi_gpu` + `gpu_count(N)` + `target_executor` |
 | "test more sizes" / "parametrize" | `@pytest.mark.parametrize(...)` on new function |
-| "negative test" / "what if it fails" | New function: `hw.cpu_only` + `dry_run_executor`; assert non-zero exit |
-| "soak variant" / "run longer" | New function: `ci.weekly` + `runtime.soak` + explicit `timeout` arg |
+| "negative test" / "what if it fails" | New function with same `hw.gpu` markers; assert `not result.ok` + error string |
+| "soak variant" / "run longer" | New function: `ci.weekly` + `runtime.soak` + explicit `timeout=` |
+| "monitor background" | New function using `start_background()` + `monitor.stop()` |
 
 **Usage:**
 ```bash
-/refiner tests/e2e/rocm_libs/test_rocblas_sgemm.py        # full 4-persona review
+/refiner tests/e2e/rocm_libs/test_rocblas_sgemm.py              # full 4-persona review
 /refiner review-as developer tests/e2e/compiler/test_hipcc.py
 /refiner tests/e2e/hip_runtime/test_multi_stream.py add a soak variant
+/refiner tests/e2e/rccl/test_rccl_allreduce.py drift             # upstream drift analysis
 ```
 
 **Output format (Review mode):**
@@ -356,30 +381,38 @@ OR
 
 ### `/porter <source-file>` — Port an external test into rocm-tests
 
-**What it does:** Takes an external test — shell script, raw Python, non-compliant pytest, C++ gtest — and rewrites it as a fully framework-compliant rocm-tests pytest file.
+**What it does:** Takes an external test — shell script, raw Python, non-compliant pytest, C++ gtest — and rewrites it as a fully framework-compliant rocm-tests pytest file. **Runs an OSS compliance gate before any transformation.**
 
-**Internal process (5 steps):**
+**Internal process (6 steps):**
 
-1. **Identify Logic** — reads source; records each operation, assertion, and guard.
-2. **Map Capabilities** — applies the transformation table to every external pattern.
-3. **Resolve Markers** — determines `hw/ci/layer/runtime/os` for each extracted test case.
-4. **Re-structure** — writes copyright + module docstring + module-level scripts + `allure_reporter.step()` + `parse_metric()`. One test function per independently testable assertion.
-5. **Validate** — `--collect-only` to confirm pytest discovers the ported test; shows transformation summary table.
+1. **OSS Compliance Gate** — checks license, prohibited identifiers, and third-party code before touching any source.
+2. **Identify Logic** — reads source; records each operation, assertion, guard, and upstream ref.
+3. **Map Capabilities** — applies the transformation table to every external pattern.
+4. **Resolve Markers** — determines `hw/ci/layer/runtime/os` for each extracted test case using `CATEGORY_PROFILES`.
+5. **Re-structure** — writes copyright + module docstring (`Ported from:`, `Upstream ref:`, `Ported on:`) + one test function per operation.
+6. **Validate** — `--collect-only` to confirm pytest discovers the ported test; shows Transformation Summary table.
 
-**Transformation table:**
+**Transformation table (key patterns):**
 
 | External Pattern | rocm-tests Replacement | Reason |
 |---|---|---|
 | `subprocess.run(cmd)` | `target_executor.run(cmd)` | Executor handles env, logging, timeout |
 | `os.environ["ROCR_VISIBLE_DEVICES"] = "0"` | Removed | Injected automatically by executor |
+| Long-running daemon + log parse | `start_background(cmd, log_path=...)` + `monitor.stop()` | `ExecutionResult` from stop |
 | `if not shutil.which("tool"): sys.exit(1)` | `pytest.skip("tool not available")` | Graceful skip vs session abort |
-| `try: import torch \nexcept ImportError: sys.exit(1)` | `pytest.skip("PyTorch not installed")` | Never sys.exit; use pytest.skip |
+| `try: import X \nexcept ImportError: sys.exit(1)` | `pytest.skip("X not installed")` | Never sys.exit; use pytest.skip |
 | `time.sleep(N)` | Removed | Health checks handle GPU readiness |
-| `assert proc.returncode == 0` | `assert result.ok` + `parse_metric()` | Stronger assertion; metric in Allure |
-| Hardcoded `/dev/renderD128` | `os_adapter.list_gpu_device_paths()[0]` | Never hardcode device paths |
-| `logging.info("step X")` | `allure_reporter.step("step X")` | Structured observability in Allure |
-| C++ `EXPECT_EQ(a, b)` | `assert a == b, f"Expected {b}, got {a}"` | Direct translation |
+| `git clone <url> && cmake && make` | `external_build.clone_repo(url, dest, ref=<pin>)` + build | Pin ref to tag/SHA; assert license |
+| Complex multi-fixture setup state | Frozen `@dataclass` in conftest | Single typed env object per test |
+| `assert proc.returncode == 0` | `assert result.ok` + sentinel/metric assertion | Stronger; stdout check required |
+| C++ `EXPECT_EQ(a, b)` / gtest `ASSERT_*` | Binary self-validates; Python asserts `result.ok` + `"PASSED" in result.stdout` | Keep gtest in C++; Python wraps |
 | Shell `${VAR:-default}` | `framework_config.section.field or "default"` | Config cascade replaces shell defaults |
+
+**Module docstring fields added by porter (mandatory):**
+- `Ported from:` — original source path or URL
+- `Upstream ref:` — commit/tag at port time, or "unknown"
+- `Ported on:` — ISO-8601 date
+- `OSS license:` — license of any third-party code included or cloned
 
 ---
 
@@ -865,7 +898,7 @@ GPU tests must assert beyond `exit_code == 0`. Use `parse_metric()` from `framew
 - Copyright + SPDX header: `# Copyright Advanced Micro Devices, Inc. / # SPDX-License-Identifier: MIT`
 - Module docstring with numbered `Validates:` list — required on every test file
 - Inline scripts as triple-quoted module-level constants (`_SCRIPT_NAME = '''...'''`), not inside functions
-- `allure_reporter.step(...)` wrapping every `target_executor.run()` call
+- `allure_reporter.step(...)` wrapping `target_executor.run()` calls — optional; add only when the user explicitly requests Allure reporting
 - Google-style docstrings on all public functions and modules in `framework/`
 - Type hints on all function signatures in `framework/` (enforced by `mypy`)
 
