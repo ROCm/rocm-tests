@@ -249,3 +249,4 @@ def amdsmi_app_version(amdsmi_installed) -> str | None:
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning("Failed to retrieve amd-smi-lib version: %s", exc)
         return None
+
