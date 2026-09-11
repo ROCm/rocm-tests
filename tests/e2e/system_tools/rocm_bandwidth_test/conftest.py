@@ -79,6 +79,13 @@ def rbt_binary(rock_dir: str, compiler_build_dir: str, external_build, cmake_bui
             if sub.returncode != 0:
                 pytest.fail(f"git submodule init failed:\n{sub.stderr}")
 
+        # The tb plugin's build_libamd_tb.sh reads ROCM_PATH to locate hipcc.
+        # cmake_build_dir already sets ROCM_PATH via cmake_env, but the nested
+        # sub-build shell script is invoked by CMake's ExternalProject and does
+        # not inherit cmake_env. Set it in the process environment so the shell
+        # inherits it through CMake's ExternalProject_Add invocation.
+        os.environ.setdefault("ROCM_PATH", rock_dir)
+
         build_dir = cmake_build_dir(
             src=str(repo),
             subdir="system_tools/rocm_bandwidth_test",
