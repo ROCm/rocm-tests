@@ -32,62 +32,50 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _dispatch_test_result(ret):
-    """Evaluate return value to (passed: bool, message: str | None) tuple.
+def _build_amd_smi_cmd(amd_smi: str, test_name: str) -> str:
+    """Map test name to amd-smi CLI command.
 
-    Handles bool, Multi_Test_Status, or tuple return types matching the
-    original AMDSMI_BM.execute() dispatch logic exactly.
+    The AMDSMI_FULL_TESTS list maps 1:1 to amd-smi subcommands. Underscores
+    in test names are converted to spaces for the CLI (e.g.
+    "AMDSMI_metric_watch1" → "amd-smi metric watch1").
+
+    Args:
+        amd_smi: Path to the amd-smi executable.
+        test_name: Test name from AMDSMI_FULL_TESTS.
+
+    Returns:
+        Full amd-smi CLI command string ready for target_executor.run().
     """
-    if isinstance(ret, bool):
-        return ret, None
-    if isinstance(ret, tuple):
-        status = ret[0] if ret else False
-        message = ret[1] if len(ret) > 1 else None
-        return status, message
-    return bool(ret), None
-
-
-def _call_test_function(test_name: str, amdsmi_testlist: list[str]):
-    """Call a test function from globals with special-case parameter handling.
-
-    Raises ValueError if function not found.
-    """
-    test_fn = globals().get(test_name)
-    if test_fn is None:
-        raise ValueError(f"Test function {test_name} not found in globals")
-
-    if test_name in ("AMDSMI_monitor_qt_gpu_workload", "AMDSMI_monitor_qt_gpu_file_workload"):
-        return test_fn(amd_smi_sleep_time=5)
-    if test_name == "AMDSMI_node_power_management":
-        return test_fn(len(amdsmi_testlist), len(amdsmi_testlist))
-    return test_fn()
+    parts = test_name.split("_")
+    subcommand = " ".join(parts[1:]).lower()
+    return f"{amd_smi} {subcommand}"
 
 
 @pytest.mark.runtime.medium
 def test_amdsmi_bm_suite(
+    target_executor,
     amdsmi_installed,
     amdsmi_testlist: list[str],
     amdsmi_app_version: str | None,
+    ld_path: dict,
 ):
-    """Execute the full amd-smi-lib benchmark suite orchestrator.
+    """Execute the full amd-smi-lib benchmark suite via direct amd-smi CLI invocations.
 
-    Loops through all test functions in the suite, handles special-case
-    parameters for specific tests (monitor_qt_gpu_workload variants,
-    node_power_management), and tracks per-test execution time.
+    Loops through all test subcommands in the suite, invokes each via
+    target_executor.run(), and tracks per-test execution time and exit codes.
 
-    Handles return types:
-        - bool: True -> pass, False -> fail
-        - Multi_Test_Status: pass-through status object
-        - tuple: (status, optional_message)
-
-    Fails the test if any subtest fails; reports individual results via
-    logger.
+    Fails the test if any subcommand exits non-zero; reports individual
+    results via logger.
     """
     del amdsmi_installed
 
     suite_start = time.time()
     all_passed = True
     failed_tests = []
+
+    amd_smi = "amd-smi"
+    ld = ld_path.get("LD_LIBRARY_PATH", "")
+    env_prefix = f"env LD_LIBRARY_PATH={ld} " if ld else ""
 
     logger.info("Starting amd-smi-lib benchmark suite (app version: %s)", amdsmi_app_version)
 
@@ -96,24 +84,19 @@ def test_amdsmi_bm_suite(
         subtest_start = time.time()
 
         try:
-            ret = _call_test_function(test_name, amdsmi_testlist)
-            test_passed, test_message = _dispatch_test_result(ret)
+            cmd = _build_amd_smi_cmd(amd_smi, test_name)
+            full_cmd = f"{env_prefix}{cmd}"
+            result = target_executor.run(full_cmd)
 
-            if test_passed:
-                msg = "" if not test_message else f" ({test_message})"
-                logger.info("✓ %s: PASS%s", test_name, msg)
+            if result.ok:
+                logger.info("✓ %s: PASS", test_name)
             else:
-                msg = "" if not test_message else f" ({test_message})"
-                logger.error("✗ %s: FAIL%s", test_name, msg)
+                logger.error("✗ %s: FAIL (exit_code=%d)", test_name, result.exit_code)
                 all_passed = False
-                failed_tests.append((test_name, test_message or "Test failed"))
+                failed_tests.append((test_name, f"exit_code={result.exit_code}"))
 
             logger.info("Subtest execution time: %.2f seconds", time.time() - subtest_start)
 
-        except ValueError as exc:
-            logger.error("Test function not found: %s", exc)
-            all_passed = False
-            failed_tests.append((test_name, str(exc)))
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception("Exception in %s: %s", test_name, exc)
             all_passed = False
