@@ -46,12 +46,14 @@ def test_amdsmitst(
 
     # Source amdsmitst.exclude to load BLACKLIST_ALL_ASICS for this ASIC.
     # Apply gtest filter to exclude blacklisted tests.
+    # Use bash explicitly since amdsmitst.exclude contains bash-only syntax (declare, arrays).
     cmd = (
-        f"cd {binary_dir} && "
+        f"bash -c 'cd {binary_dir} && "
         f". ./amdsmitst.exclude && "
         f"env LD_LIBRARY_PATH={ld} "
         f"{amdsmitst_binary} "
-        f'--gtest_filter="-$(echo ${{BLACKLIST_ALL_ASICS}})"'
+        f'--gtest_filter=\"-$(echo ${{BLACKLIST_ALL_ASICS}})\"'
+        f"'"
     )
 
     result = target_executor.run(cmd)
