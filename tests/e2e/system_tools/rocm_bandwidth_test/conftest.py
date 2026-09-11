@@ -79,16 +79,21 @@ def rbt_binary(rock_dir: str, compiler_build_dir: str, external_build, cmake_bui
             if sub.returncode != 0:
                 pytest.fail(f"git submodule init failed:\n{sub.stderr}")
 
-        # build_libamd_tb.sh reads $HIPCC and $CXX to locate hipcc for the
-        # transferbench nested CMake build. When these are unset it falls back
-        # to the hardcoded /opt/rocm/bin/hipcc, which breaks on versioned
-        # installs like /opt/rocm-10.1.0. Force-set them to rock_dir before
-        # the cmake_build_dir call so ExternalProject_Add inherits the correct
-        # compiler path through the process environment.
+        # build_libamd_tb.sh has a hardcoded fallback to /opt/rocm/bin/hipcc
+        # that overrides $CXX and $HIPCC env vars when they are empty.
+        # Patch the script in-place after clone to replace the fallback path
+        # with the resolved rock_dir, which is the only reliable way to inject
+        # the correct hipcc path into this nested ExternalProject sub-build.
         hipcc = os.path.join(rock_dir, "bin", "hipcc")
-        os.environ["ROCM_PATH"] = rock_dir
-        os.environ["HIPCC"] = hipcc
-        os.environ["CXX"] = hipcc
+        script = pathlib.Path(repo) / "plugins" / "tb" / "transferbench" / "build_libamd_tb.sh"
+        if script.is_file():
+            original = script.read_text()
+            patched = original.replace(
+                "BUILD_HIPCC_BINARY=/opt/rocm/bin/hipcc",
+                f"BUILD_HIPCC_BINARY={hipcc}",
+            )
+            if patched != original:
+                script.write_text(patched)
 
         build_dir = cmake_build_dir(
             src=str(repo),
