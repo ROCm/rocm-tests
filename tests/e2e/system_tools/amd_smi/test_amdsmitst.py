@@ -48,7 +48,7 @@ def test_amdsmitst(
     # Apply gtest filter to exclude blacklisted tests.
     cmd = (
         f"cd {binary_dir} && "
-        f"source ./amdsmitst.exclude && "
+        f". ./amdsmitst.exclude && "
         f"env LD_LIBRARY_PATH={ld} "
         f"{amdsmitst_binary} "
         f'--gtest_filter="-$(echo ${{BLACKLIST_ALL_ASICS}})"'
