@@ -19,11 +19,12 @@ from framework.rocm.libs.amd_smi import parse_fclk_per_gpu
 
 logger = logging.getLogger(__name__)
 
-# Per-architecture fclk reference values (MHz). Add GPU variants here as the
-# suite matures; unlisted architectures are skipped. All other cap values are
+# Per-architecture fclk reference values (MHz). Thresholds are validated against
+# official hardware specifications (e.g., MI300A for gfx942). Add GPU variants here
+# as the suite matures; unlisted architectures are skipped. All other cap values are
 # derived from these min/max defaults in ``derive_caps``.
 FCLK_SPECS: dict[str, dict[str, int]] = {
-    "gfx942": {"fclk_default_max": 2000, "fclk_default_min": 1200},
+    "gfx942": {"fclk_default_max": 2000, "fclk_default_min": 1200},  # MI300A
 }
 
 # Step (MHz) used to derive in/out-of-range probes from the min/max defaults.
