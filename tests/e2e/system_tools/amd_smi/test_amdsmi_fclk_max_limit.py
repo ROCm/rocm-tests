@@ -22,6 +22,7 @@ import time
 
 import pytest
 
+from framework.common.helpers import executor_log_path
 from framework.rocm.libs.amd_smi import parse_fclk_per_gpu
 from tests.e2e.system_tools.amd_smi._fclk import (
     SETTLE_SECS,
@@ -95,6 +96,8 @@ def test_amdsmi_fclk_max_enforced_under_rccl_workload(
     rock_dir: str,
     requested_gpu_count: int,
     amd_smi_bin: str,
+    framework_config,
+    request,
 ):
     """Cap fclk max under an RCCL all-reduce workload and verify enforcement."""
     all_reduce_perf = f"{rock_dir.rstrip('/')}/bin/all_reduce_perf" if rock_dir else "all_reduce_perf"
@@ -112,7 +115,12 @@ def test_amdsmi_fclk_max_enforced_under_rccl_workload(
 
     samples: list[list[dict]] = []
     violations: list[str] = []
-    with target_executor.start_background(rccl_cmd):
+    rccl_log = executor_log_path(
+        framework_config.framework.artifact_dir,
+        f"{request.node.name}__rccl",
+        request.node.nodeid,
+    )
+    with target_executor.start_background(rccl_cmd, log_path=rccl_log):
         time.sleep(_RCCL_WARMUP_SECS)
         logger.info("Set fclk max output: %s", combined_output(set_fclk_max(target_executor, cap_mhz, amd_smi_bin)))
 
