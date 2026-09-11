@@ -67,7 +67,7 @@ def test_amdsmi_fclk_max_set_below_min(target_executor, fclk_caps: FclkCaps, amd
     expected = re.compile(r"CLK_LIMIT:\s*Cannot set fclk max value less than min", re.IGNORECASE)
     assert expected.search(
         output
-    ), f"Expected 'Cannot set fclk max value less than min' not found in output: {output!r}"
+    ), f"Expected 'Cannot set fclk max value less than min' not found: {output!r}"
 
 
 @pytest.mark.gpu_count("ALL")
@@ -85,7 +85,7 @@ def test_amdsmi_fclk_max_set_above_max(target_executor, fclk_caps: FclkCaps, amd
         rf"CLK_LIMIT:\s*\[AMDSMI_STATUS_NOT_SUPPORTED\]\s*Unable to set max of fclk to {probe}\s*MHz",
         re.IGNORECASE,
     )
-    assert expected.search(output), f"Expected AMDSMI_STATUS_NOT_SUPPORTED message not found in output: {output!r}"
+    assert expected.search(output), f"Expected AMDSMI_STATUS_NOT_SUPPORTED message not found: {output!r}"
 
 
 @pytest.mark.gpu_count("ALL")
