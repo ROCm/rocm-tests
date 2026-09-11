@@ -16,13 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.fixture
-def amd_smi_bin(target_executor, rock_dir: str) -> str:
-    """Resolve the ``amd-smi`` command, falling back to ``<rock_dir>/bin``.
-
-    TheRock installs ``amd-smi`` under ``<rock_dir>/bin`` and does not always
-    export it on PATH, so a bare ``amd-smi`` invocation exits 127.
-    """
-    return resolve_amd_smi_bin(target_executor, rock_dir)
+def amd_smi_bin(rock_dir: str) -> str:
+    """Return the ``amd-smi`` command path from the rock installation."""
+    return resolve_amd_smi_bin(rock_dir)
 
 
 @pytest.fixture

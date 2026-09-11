@@ -165,32 +165,19 @@ def _to_scalar(node: Any) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def resolve_amd_smi_bin(executor: AbstractExecutor, rock_dir: str | None = None) -> str:
-    """Return a runnable ``amd-smi`` command for *executor*.
+def resolve_amd_smi_bin(rock_dir: str) -> str:
+    """Return the ``amd-smi`` command path from the rock installation.
 
-    Prefers the system PATH entry; falls back to ``<rock_dir>/bin/amd-smi`` when
-    the executor cannot find ``amd-smi`` on PATH (TheRock installs it there and
-    does not always export it).  Resolution runs through the executor so it works
-    identically for local, container, and SSH backends.
+    TheRock installs ``amd-smi`` under ``<rock_dir>/bin/amd-smi`` and tests
+    should always use the installation binary for predictability.
 
     Args:
-        executor: Any executor with a ``.run(command)`` method.
-        rock_dir: Optional TheRock/ROCm install root that provides
-            ``bin/amd-smi``.  Ignored when empty or None.
+        rock_dir: TheRock/ROCm install root.
 
     Returns:
-        The command string to invoke ``amd-smi`` — either ``"amd-smi"`` (on
-        PATH) or the absolute ``<rock_dir>/bin/amd-smi`` fallback.  Defaults to
-        ``"amd-smi"`` when neither can be confirmed.
+        The absolute path to ``<rock_dir>/bin/amd-smi``.
     """
-    if executor.run("command -v amd-smi").ok:
-        return "amd-smi"
-    if rock_dir:
-        candidate = f"{rock_dir.rstrip('/')}/bin/amd-smi"
-        if executor.run(f"test -f '{candidate}'").ok:
-            logger.debug("amd-smi not on PATH — using rock_dir binary at %s", candidate)
-            return candidate
-    return "amd-smi"
+    return f"{rock_dir.rstrip('/')}/bin/amd-smi"
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +190,7 @@ def amd_smi_version(executor: AbstractExecutor, amd_smi_bin: str = "amd-smi") ->
 
     Args:
         executor:    Any executor with a ``.run(command)`` method.
-        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
-            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
+        amd_smi_bin: ``amd-smi`` command path from :func:`resolve_amd_smi_bin`.
 
     Returns:
         Version tuple, or None if not detectable.
@@ -227,8 +213,7 @@ def require_amd_smi_version(
         executor:    Any executor with a ``.run()`` method.
         major:       Minimum required major version.
         minor:       Minimum required minor version (default 0).
-        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
-            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
+        amd_smi_bin: ``amd-smi`` command path from :func:`resolve_amd_smi_bin`.
 
     Raises:
         pytest.fail.Exception: When ``amd-smi`` is absent or below the required version —
@@ -256,8 +241,7 @@ def list_devices(executor: AbstractExecutor, amd_smi_bin: str = "amd-smi") -> li
 
     Args:
         executor:    Any executor with a ``.run(command)`` method.
-        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
-            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
+        amd_smi_bin: ``amd-smi`` command path from :func:`resolve_amd_smi_bin`.
 
     Returns:
         List of GpuDeviceInfo, one per detected GPU.  Empty on failure.
@@ -303,8 +287,7 @@ def query_gpu_temp(executor: AbstractExecutor, gpu_index: int = 0, amd_smi_bin: 
     Args:
         executor:    Any executor with a ``.run()`` method.
         gpu_index:   AMD GPU ordinal to query.
-        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
-            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
+        amd_smi_bin: ``amd-smi`` command path from :func:`resolve_amd_smi_bin`.
 
     Returns:
         Temperature in Celsius, or None if unavailable.
@@ -320,8 +303,7 @@ def query_vram_usage(
     Args:
         executor:    Any executor with a ``.run()`` method.
         gpu_index:   AMD GPU ordinal to query.
-        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
-            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
+        amd_smi_bin: ``amd-smi`` command path from :func:`resolve_amd_smi_bin`.
 
     Returns:
         GpuVramInfo with total/used/free in MB, or None if unavailable.
@@ -338,8 +320,7 @@ def query_ecc_errors(executor: AbstractExecutor, gpu_index: int = 0, amd_smi_bin
     Args:
         executor:    Any executor with a ``.run()`` method.
         gpu_index:   AMD GPU ordinal to query.
-        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
-            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
+        amd_smi_bin: ``amd-smi`` command path from :func:`resolve_amd_smi_bin`.
 
     Returns:
         Total correctable ECC error count, or None if unavailable.
@@ -356,8 +337,7 @@ def query_gpu_utilization(executor: AbstractExecutor, gpu_index: int = 0, amd_sm
     Args:
         executor:    Any executor with a ``.run()`` method.
         gpu_index:   AMD GPU ordinal to query.
-        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
-            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
+        amd_smi_bin: ``amd-smi`` command path from :func:`resolve_amd_smi_bin`.
 
     Returns:
         Integer percentage (0-100), or None if unavailable.
@@ -374,8 +354,7 @@ def query_clock_state(executor: AbstractExecutor, gpu_index: int = 0, amd_smi_bi
     Args:
         executor:    Any executor with a ``.run()`` method.
         gpu_index:   AMD GPU ordinal to query.
-        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
-            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
+        amd_smi_bin: ``amd-smi`` command path from :func:`resolve_amd_smi_bin`.
 
     Returns:
         Performance level string (e.g. ``"auto"``, ``"high"``), or None.
@@ -400,8 +379,7 @@ def _run_metric_json(executor: AbstractExecutor, gpu_index: int, amd_smi_bin: st
     Args:
         executor:    Any executor with a ``.run()`` method.
         gpu_index:   AMD GPU ordinal to query.
-        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
-            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
+        amd_smi_bin: ``amd-smi`` command path from :func:`resolve_amd_smi_bin`.
 
     Returns:
         Parsed first entry dict from the ``gpu_data`` array, or None on any failure.
@@ -522,8 +500,7 @@ def _query_thermal(executor: AbstractExecutor, gpu_index: int, amd_smi_bin: str 
     Args:
         executor:    Any executor with a ``.run()`` method.
         gpu_index:   AMD GPU ordinal.
-        amd_smi_bin: ``amd-smi`` command to invoke; pass the result of
-            :func:`resolve_amd_smi_bin` when the binary is not on PATH.
+        amd_smi_bin: ``amd-smi`` command path from :func:`resolve_amd_smi_bin`.
 
     Returns:
         GpuThermalInfo — fields are None when parsing fails.
