@@ -79,12 +79,16 @@ def rbt_binary(rock_dir: str, compiler_build_dir: str, external_build, cmake_bui
             if sub.returncode != 0:
                 pytest.fail(f"git submodule init failed:\n{sub.stderr}")
 
-        # The tb plugin's build_libamd_tb.sh reads ROCM_PATH to locate hipcc.
-        # cmake_build_dir already sets ROCM_PATH via cmake_env, but the nested
-        # sub-build shell script is invoked by CMake's ExternalProject and does
-        # not inherit cmake_env. Set it in the process environment so the shell
-        # inherits it through CMake's ExternalProject_Add invocation.
-        os.environ.setdefault("ROCM_PATH", rock_dir)
+        # build_libamd_tb.sh reads $HIPCC and $CXX to locate hipcc for the
+        # transferbench nested CMake build. When these are unset it falls back
+        # to the hardcoded /opt/rocm/bin/hipcc, which breaks on versioned
+        # installs like /opt/rocm-10.1.0. Force-set them to rock_dir before
+        # the cmake_build_dir call so ExternalProject_Add inherits the correct
+        # compiler path through the process environment.
+        hipcc = os.path.join(rock_dir, "bin", "hipcc")
+        os.environ["ROCM_PATH"] = rock_dir
+        os.environ["HIPCC"] = hipcc
+        os.environ["CXX"] = hipcc
 
         build_dir = cmake_build_dir(
             src=str(repo),
