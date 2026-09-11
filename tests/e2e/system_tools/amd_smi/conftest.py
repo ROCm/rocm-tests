@@ -10,7 +10,7 @@ import logging
 import pytest
 
 from framework.rocm.libs.amd_smi import list_devices, resolve_amd_smi_bin
-from tests.e2e.amd_smi._fclk import FCLK_SPECS, FclkCaps, derive_caps, restore_default_max
+from tests.e2e.system_tools.amd_smi._fclk import FCLK_SPECS, FclkCaps, derive_caps, restore_default_max
 
 logger = logging.getLogger(__name__)
 

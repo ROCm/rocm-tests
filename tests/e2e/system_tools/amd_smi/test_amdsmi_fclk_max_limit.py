@@ -23,7 +23,7 @@ import time
 import pytest
 
 from framework.rocm.libs.amd_smi import parse_fclk_per_gpu
-from tests.e2e.amd_smi._fclk import (
+from tests.e2e.system_tools.amd_smi._fclk import (
     SETTLE_SECS,
     FclkCaps,
     assert_default_max,
