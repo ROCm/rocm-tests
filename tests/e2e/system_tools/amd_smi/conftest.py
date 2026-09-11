@@ -3,8 +3,8 @@
 
 """conftest.py -- Fixtures for AMD SMI gtest suite.
 
-Provides: amdsmitst_binary (session-scoped fixture that locates the pre-installed
-amdsmitst gtest binary from the ROCm install tree).
+Provides: ``amdsmitst_binary`` (function-scoped fixture that locates the pre-installed
+amdsmitst gtest binary on the node selected for the current test).
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def _locate_amdsmitst_binary(executor, rock_dir: str) -> str:
     )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def amdsmitst_binary(target_executor, rock_dir: str) -> str:
     """Resolve the amdsmitst gtest binary from the ROCm install.
 
