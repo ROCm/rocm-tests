@@ -16,7 +16,9 @@ gtest suite and validates the exit code and output.
 """
 
 import pytest
+import logging
 
+logger = logging.getLogger(__name__)
 
 @pytest.mark.runtime.fast
 def test_amdsmitst(
@@ -57,7 +59,7 @@ def test_amdsmitst(
     )
 
     result = target_executor.run(cmd)
-    print(f"Test result : {result.stdout}")
+    logger.info(f"Test result : {result.stdout}")
 
     # Validate exit code is 0 (gtest's success marker).
     assert result.ok, (
