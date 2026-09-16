@@ -32,5 +32,5 @@ repository; only the benchmark selection list (`subset.json`, MIT, see its
 The mixbench-hip microbenchmark sources are fetched during test execution and
 compiled/run on AMD GPU hardware. No mixbench source is redistributed as part of
 this repository; only the pytest harness is checked in here. mixbench is licensed
-under GPL v2 (copyleft); it is neither vendored nor linked into this project's own
+under GPL-2.0 license; it is neither vendored nor linked into this project's own
 sources — it is built and executed as a standalone external binary at test time.
