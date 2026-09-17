@@ -1,0 +1,103 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
+name: Read existing AMDGPU versions
+
+on:
+  push:
+    branches:
+      - users/y1k2chaitanya/amdgpu-version-probe-20260917
+    paths:
+      - .github/workflows/amdgpu-version-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    name: Read versions on an available Strix Halo runner
+    runs-on: linux-gfx1151-gpu-rocm
+    timeout-minutes: 5
+    steps:
+      - name: Read current kernel, driver, packages, and GPU activity
+        shell: 'python3 {0}'
+        run: |
+          from datetime import datetime, timezone
+          import glob
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import shutil
+          import socket
+          import subprocess
+
+          def read(path):
+              try:
+                  return Path(path).read_text().strip()
+              except (OSError, UnicodeError):
+                  return None
+
+          def command(args):
+              if not shutil.which(args[0]):
+                  return {'available': False}
+              try:
+                  result = subprocess.run(args, text=True, capture_output=True, timeout=20)
+                  return {'returncode': result.returncode, 'stdout': result.stdout.strip(),
+                          'stderr': result.stderr.strip()}
+              except subprocess.TimeoutExpired:
+                  return {'error': 'timed out'}
+
+          os_release = {}
+          for line in (read('/etc/os-release') or '').splitlines():
+              if '=' in line:
+                  key, value = line.split('=', 1)
+                  if key in ('ID', 'VERSION_ID', 'PRETTY_NAME'):
+                      os_release[key] = value.strip('"')
+
+          cards = []
+          for card in sorted(Path('/sys/class/drm').glob('card[0-9]*')):
+              if '-' in card.name or read(card / 'device/vendor') != '0x1002':
+                  continue
+              cards.append({'card': card.name, 'pci_device_id': read(card / 'device/device'),
+                            'gpu_busy_percent': read(card / 'device/gpu_busy_percent'),
+                            'vram_used_bytes': read(card / 'device/mem_info_vram_used')})
+
+          versions = {}
+          for filename in sorted(glob.glob('/opt/rocm*/.info/version*')):
+              if Path(filename).is_file():
+                  versions[filename] = read(filename)
+
+          result = {
+              'checked_at_utc': datetime.now(timezone.utc).isoformat(),
+              'runner_name': os.environ.get('RUNNER_NAME'),
+              'hostname': socket.gethostname(),
+              'os_release': os_release,
+              'kernel': platform.release(),
+              'container_marker_present': Path('/.dockerenv').exists() or Path('/run/.containerenv').exists(),
+              'pid1': read('/proc/1/comm'),
+              'loaded_amdgpu': {'version': read('/sys/module/amdgpu/version'),
+                                'srcversion': read('/sys/module/amdgpu/srcversion')},
+              'disk_amdgpu_version': command(['modinfo', '-F', 'version', 'amdgpu']),
+              'disk_amdgpu_file': command(['modinfo', '-F', 'filename', 'amdgpu']),
+              'dkms': command(['dkms', 'status']),
+              'packages_in_runner_environment': command([
+                  'dpkg-query', '-W', '-f=${binary:Package}\t${Version}\t${db:Status-Abbrev}\n',
+                  'amdgpu-dkms', 'amdgpu-dkms-firmware', 'amdgpu-install', 'rocm-core', 'hip-runtime-amd']),
+              'rocm_version_files_in_runner_environment': versions,
+              'gpu_activity': cards,
+              'kfd_present': Path('/dev/kfd').exists(),
+              'render_devices': sorted(glob.glob('/dev/dri/renderD*')),
+          }
+          output = json.dumps(result, indent=2)
+          Path('version-probe.json').write_text(output + '\n')
+          print(output)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('### Existing AMDGPU versions\n\n```json\n' + output + '\n```\n')
+
+      - name: Upload version snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: amdgpu-version-snapshot-${{ github.run_attempt }}
+          path: version-probe.json
+          retention-days: 3
