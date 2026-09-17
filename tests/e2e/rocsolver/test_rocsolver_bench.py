@@ -38,6 +38,8 @@ _BENCH_CMD_ARGS = [
 
 _PASS_MARKERS = ("cpu_time_us", "gpu_time_us")
 
+_DEFAULT_DURATION_MIN = 120
+
 _FAIL_PATTERNS = (
     "Error",
     "error",
@@ -61,11 +63,10 @@ _FAIL_PATTERNS = (
 
 
 def _fail_lines(text: str) -> list[str]:
-    """Return the lines of *text* matching any failure pattern.
+    """Return the lines of *text* matching any bench failure pattern.
 
-    One pattern list qualifies both the bench output and the dmesg window, as
-    in the original test where a single ``fail_data`` set was passed to the
-    output parser and to the dmesg validator.
+    Broad substrings suit rocsolver-bench's own output; the dmesg window is
+    qualified by ``_DMESG_FAIL_RE`` instead.
     """
     matched = []
     for line in text.splitlines():
@@ -106,6 +107,16 @@ _DMESG_SOURCES = (
 # auditd records the cwd and argv of every command run on the box, so these
 # lines carry arbitrary text — including this test's own paths — into the window.
 _AUDIT_RE = re.compile(r"\baudit(?:\[\d+\])?:")
+
+# dmesg covers every subsystem on the box, where _FAIL_PATTERNS' "error",
+# "interrupt" and "Fault" match routine kernel chatter. Only unambiguous kernel
+# or GPU faults fail the run; the whole window still reaches the artifact.
+_DMESG_FAIL_RE = re.compile(
+    r"Kernel panic|watchdog: BUG|soft lockup|hard lockup|\bBUG:|Oops:|Call Trace|"
+    r"hung task|blocked for more than|gpu reset|amdgpu.*reset|ring .*timeout|"
+    r"GPU fault|Memory access fault|(?:IOMMU|DMAR).*fault|segfault|segmentation fault",
+    re.IGNORECASE,
+)
 
 
 def _capture_dmesg(executor) -> str | None:
@@ -156,7 +167,9 @@ def _dmesg_delta(before: str, after: str) -> list[str]:
     return [line for line in after_lines if line not in seen]
 
 
-@pytest.mark.runtime.medium
+# Declared to override the ci.nightly the rocsolver profile injects.
+@pytest.mark.ci.weekly
+@pytest.mark.runtime.soak
 def test_rocsolver_bench(
     target_executor,
     rocsolver_bench_binary: str,
@@ -183,7 +196,13 @@ def test_rocsolver_bench(
         ]
     )
 
-    duration_min = int(os.environ.get("ROCSOLVER_BENCH_DURATION_MIN", "1"))
+    raw_duration = os.environ.get("ROCSOLVER_BENCH_DURATION_MIN", str(_DEFAULT_DURATION_MIN))
+    try:
+        duration_min = int(raw_duration)
+    except ValueError:
+        pytest.fail(f"ROCSOLVER_BENCH_DURATION_MIN must be an integer number of minutes, got {raw_duration!r}")
+    if duration_min < 1:
+        pytest.fail(f"ROCSOLVER_BENCH_DURATION_MIN must be >= 1, got {duration_min}")
     duration_sec = duration_min * 60
 
     logger.info(
@@ -231,6 +250,8 @@ def test_rocsolver_bench(
         duration_sec,
     )
 
+    assert iteration > 0, f"rocsolver-bench never ran: the {duration_sec}s window elapsed before the first iteration"
+
     # Check dmesg for kernel-level issues
     dmesg_after = _capture_dmesg(target_executor)
     dmesg_available = dmesg_before is not None and dmesg_after is not None
@@ -238,7 +259,9 @@ def test_rocsolver_bench(
 
     if dmesg_available:
         new_lines = _dmesg_delta(dmesg_before, dmesg_after)
-        dmesg_fail_lines = _fail_lines("\n".join(_kernel_health_lines(new_lines)))
+        dmesg_fail_lines = [
+            line.strip()[:150] for line in _kernel_health_lines(new_lines) if _DMESG_FAIL_RE.search(line)
+        ]
         (run_dir / f"{artifact_stem}_dmesg_pretest.log").write_text(dmesg_before)
         if new_lines:
             (run_dir / f"{artifact_stem}_dmesg.log").write_text("\n".join(new_lines) + "\n")
