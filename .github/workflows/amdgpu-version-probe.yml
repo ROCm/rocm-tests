@@ -14,9 +14,67 @@ permissions:
   contents: read
 
 jobs:
+  pick_runner:
+    name: Find an idle GPU runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      label: ${{ steps.pick.outputs.label }}
+    steps:
+      - name: Read runner inventory with the existing health app
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.RUNNER_HEALTH_APP_ID }}
+          private-key: ${{ secrets.RUNNER_HEALTH_PRIVATE_KEY }}
+          owner: ROCm
+      - name: Select an idle persistent runner or request an ARC GPU
+        id: pick
+        env:
+          RUNNER_TOKEN: ${{ steps.app.outputs.token }}
+        shell: 'python3 {0}'
+        run: |
+          import json, os
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+          wanted = {'linux-gfx1151-gpu-rocm', 'linux-gfx1100-gpu-rocm-devops-qa',
+                    'linux-gfx1101-gpu-rocm-devops-qa'}
+          chosen = None
+          for scope in ('repos/ROCm/rocm-tests', 'orgs/ROCm'):
+              for page in range(1, 21):
+                  req = Request(f'https://api.github.com/{scope}/actions/runners?per_page=100&page={page}',
+                                headers={'Authorization': 'Bearer ' + os.environ['RUNNER_TOKEN'],
+                                         'Accept': 'application/vnd.github+json'})
+                  try:
+                      with urlopen(req, timeout=15) as response:
+                          runners = json.load(response)['runners']
+                  except HTTPError as exc:
+                      print(f'{scope}: runner inventory returned HTTP {exc.code}')
+                      break
+                  for runner in runners:
+                      labels = {label['name'] for label in runner['labels']}
+                      matches = sorted(labels & wanted)
+                      if matches:
+                          print(json.dumps({'runner': runner['name'], 'labels': matches,
+                                            'status': runner['status'], 'busy': runner['busy']}))
+                          if runner['status'] == 'online' and not runner['busy']:
+                              chosen = matches[0]
+                              break
+                  if chosen or len(runners) < 100:
+                      break
+              if chosen:
+                  break
+          if not chosen:
+              chosen = 'linux-mi355-1gpu-ossci-rocm'
+              print('No idle persistent target found; requesting one GPU from the ARC runner pool')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'label={chosen}\n')
+          print(f'Selected runner label: {chosen}')
+
   versions:
-    name: Read versions on an available Strix Halo runner
-    runs-on: linux-gfx1151-gpu-rocm
+    name: Read versions on an available GPU runner
+    needs: pick_runner
+    runs-on: ${{ needs.pick_runner.outputs.label }}
     timeout-minutes: 5
     steps:
       - name: Read current kernel, driver, packages, and GPU activity
