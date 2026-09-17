@@ -126,16 +126,37 @@ jobs:
               if Path(filename).is_file():
                   versions[filename] = read(filename)
 
+          module_tree = Path('/lib/modules') / platform.release()
+          visible_module_files = []
+          if module_tree.is_dir():
+              for directory, _, filenames in os.walk(module_tree):
+                  for filename in filenames:
+                      if filename == 'amdgpu.ko' or filename.startswith('amdgpu.ko.'):
+                          visible_module_files.append(str(Path(directory) / filename))
+          driver_links = {}
+          for card in cards:
+              path = Path('/sys/class/drm') / card['card'] / 'device/driver/module'
+              driver_links[card['card']] = str(path.resolve()) if path.exists() else None
+
           result = {
               'checked_at_utc': datetime.now(timezone.utc).isoformat(),
               'runner_name': os.environ.get('RUNNER_NAME'),
               'hostname': socket.gethostname(),
               'os_release': os_release,
               'kernel': platform.release(),
+              'kernel_version_signature': read('/proc/version_signature'),
+              'kernel_version': read('/proc/version'),
               'container_marker_present': Path('/.dockerenv').exists() or Path('/run/.containerenv').exists(),
               'pid1': read('/proc/1/comm'),
               'loaded_amdgpu': {'version': read('/sys/module/amdgpu/version'),
-                                'srcversion': read('/sys/module/amdgpu/srcversion')},
+                                'srcversion': read('/sys/module/amdgpu/srcversion'),
+                                'taint': read('/sys/module/amdgpu/taint'),
+                                'initstate': read('/sys/module/amdgpu/initstate'),
+                                'proc_modules_entry': [line for line in (read('/proc/modules') or '').splitlines()
+                                                       if line.startswith('amdgpu ')]},
+              'kernel_module_tree_visible': module_tree.is_dir(),
+              'amdgpu_module_files_in_runner_environment': sorted(visible_module_files),
+              'gpu_driver_module_links': driver_links,
               'disk_amdgpu_version': command(['modinfo', '-F', 'version', 'amdgpu']),
               'disk_amdgpu_file': command(['modinfo', '-F', 'filename', 'amdgpu']),
               'dkms': command(['dkms', 'status']),
