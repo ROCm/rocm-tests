@@ -19,6 +19,7 @@ Environment: Bare Metal, Docker Container. Single GPU / Single Node.
 
 from __future__ import annotations
 
+import base64
 import pathlib
 import re
 import shlex
@@ -108,6 +109,31 @@ def _tunableop_inline_script(workload_script: str, enabled: bool) -> str:
         """)
 
 
+def _run_script_in_tmpdir(
+    target_executor,
+    script: str,
+    env_prefix: str,
+    python: str,
+    timeout: int = 300,
+) -> object:
+    """Write script via base64 into a tmpdir and run it — avoids all shell quoting conflicts.
+
+    Encodes the script as base64, decodes it on the remote side into a temp file,
+    then runs the file. The trace/output files land in the same tmpdir.
+    """
+    b64 = base64.b64encode(script.encode()).decode()
+    cmd = (
+        f"sh -c '"
+        f"D=$(mktemp -d) && "
+        f"echo {b64} | base64 -d > $D/_script.py && "
+        f"cd $D && "
+        f"{env_prefix} {python} $D/_script.py && "
+        f"ls trace_forward_matmul_*.json 2>/dev/null | wc -l"
+        f"'"
+    )
+    return target_executor.run(cmd, timeout=timeout)
+
+
 # ---------------------------------------------------------------------------
 # TestTF32LinearForward
 # ---------------------------------------------------------------------------
@@ -128,23 +154,22 @@ class TestTF32LinearForward:
         """Run tf32_matmul_workload.py and verify exactly one Chrome trace file is written."""
         _check_arch(gpu_arch)
         script_path = _stage_workload(target_executor)
+        workload_script = pathlib.Path(script_path).read_text()
 
         ld = shlex.quote(ld_path["LD_LIBRARY_PATH"])
         python = shlex.quote(torch_python)
-        src = shlex.quote(script_path)
 
-        # Run workload in a temporary working directory so the trace file lands there.
-        result = target_executor.run(
-            f"sh -c 'cd $(mktemp -d) && env LD_LIBRARY_PATH={ld} {python} {src}"
-            f" && ls trace_forward_matmul_*.json 2>/dev/null | wc -l'",
-            timeout=300,
+        result = _run_script_in_tmpdir(
+            target_executor,
+            script=workload_script,
+            env_prefix=f"env LD_LIBRARY_PATH={ld}",
+            python=python,
         )
         detail = workload_failure_detail(result, "tf32_linear_forward_generates_profiler_trace")
         assert result.ok, (
             f"tf32_matmul_workload failed (exit={result.exit_code}):{detail}\n"
             f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
         )
-        # The last line of the combined stdout is the wc -l count.
         trace_count = result.stdout.strip().splitlines()[-1].strip()
         assert trace_count == "1", (
             f"Expected exactly 1 trace file, got count={trace_count!r}\n" f"stdout: {result.stdout[:1000]}"
@@ -324,18 +349,18 @@ class TestTunableOpLinearMatmul:
         script = _tunableop_inline_script(script_path, tunableop_enabled)
 
         tunableop_val = "1" if tunableop_enabled else "0"
-        tuning_val = "1" if tunableop_enabled else "0"
         ld = shlex.quote(ld_path["LD_LIBRARY_PATH"])
         python = shlex.quote(torch_python)
 
-        result = target_executor.run(
-            f"sh -c 'cd $(mktemp -d)"
-            f" && env PYTORCH_TUNABLEOP_ENABLED={tunableop_val}"
-            f" PYTORCH_TUNABLEOP_TUNING={tuning_val}"
-            f" LD_LIBRARY_PATH={ld}"
-            f" {python} -c {shlex.quote(script)}"
-            f" && ls trace_forward_matmul_*.json 2>/dev/null | wc -l'",
-            timeout=300,
+        result = _run_script_in_tmpdir(
+            target_executor,
+            script=script,
+            env_prefix=(
+                f"env PYTORCH_TUNABLEOP_ENABLED={tunableop_val}"
+                f" PYTORCH_TUNABLEOP_TUNING={tunableop_val}"
+                f" LD_LIBRARY_PATH={ld}"
+            ),
+            python=python,
         )
         detail = workload_failure_detail(result, f"tunableop_trace enabled={tunableop_enabled}")
         assert result.ok, (
