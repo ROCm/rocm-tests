@@ -38,13 +38,13 @@ logger = logging.getLogger(__name__)
 _AUTO_BUILD = os.environ.get("ROCM_TEST_UCC_AUTO_BUILD", "1").strip().lower() not in ("0", "false", "no")
 
 # --- source repositories (ucc_scatter_gather.sh steps 1, 3 and 4) -----------
-UCX_REPO = os.environ.get("ROCM_TEST_UCX_REPO", "https://github.com/ROCmSoftwarePlatform/ucx")
+UCX_REPO = os.environ.get("ROCM_TEST_UCX_REPO", "https://github.com/ROCm/ucx")
 UCX_REF = os.environ.get("ROCM_TEST_UCX_REF", "develop")
 
 OMPI_REPO = os.environ.get("ROCM_TEST_OMPI_REPO", "https://github.com/open-mpi/ompi")
 OMPI_REF = os.environ.get("ROCM_TEST_OMPI_REF", "v5.0.x")
 
-UCC_REPO = os.environ.get("ROCM_TEST_UCC_REPO", "https://github.com/ROCmSoftwarePlatform/ucc")
+UCC_REPO = os.environ.get("ROCM_TEST_UCC_REPO", "https://github.com/ROCm/ucc")
 UCC_REF = os.environ.get("ROCM_TEST_UCC_REF", "develop")
 
 
@@ -204,7 +204,11 @@ def _prebuilt_stack(rocm_prefix: str) -> UccStack | None:
 
 
 def _require_rccl(rock_dir: str, cmake_executor) -> None:
-    """Skip when RCCL is missing, since ``--with-rccl`` could not be satisfied.
+    """Fail when RCCL is missing, since ``--with-rccl`` could not be satisfied.
+
+    RCCL ships with the ROCm install under test, so its absence is a broken stack
+    rather than an unsupported configuration: skipping would report a pass on a
+    node where the collectives were never exercised.
 
     UCC's ``config/m4/rccl.m4`` probes ``rccl/rccl.h`` before ``rccl.h``, so both
     layouts are accepted here; ROCm ships the former.
@@ -214,12 +218,12 @@ def _require_rccl(rock_dir: str, cmake_executor) -> None:
         header_test = " || ".join(f"test -f {header}" for header in headers)
         probe = cmake_executor.run(f'bash -c "({header_test}) && ls {rock_dir}/lib/librccl.so*"', timeout=15.0)
         if not probe.ok:
-            pytest.skip(f"RCCL not found under {rock_dir} on the build node — UCC cannot be configured")
+            pytest.fail(f"RCCL not found under {rock_dir} on the build node — UCC cannot be configured")
         return
     has_header = any(os.path.isfile(header) for header in headers)
     has_lib = any(pathlib.Path(rock_dir, "lib").glob("librccl.so*"))
     if not (has_header and has_lib):
-        pytest.skip(f"RCCL not found under {rock_dir} — UCC cannot be configured")
+        pytest.fail(f"RCCL not found under {rock_dir} — UCC cannot be configured")
 
 
 def _clone_sources(external_build, root: pathlib.Path, timeout: float) -> dict[str, str]:
