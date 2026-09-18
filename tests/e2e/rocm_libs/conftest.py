@@ -32,6 +32,43 @@ logger = logging.getLogger(__name__)
 _CORE_SRC = "tests/e2e/rocm_libs/src"
 
 
+# Per-test ci.* / runtime.* markers and library guard for the rocBLAS coverage
+# suite (test_rocblas.py), kept here instead of on the test functions so the
+# coverage-tier policy lives in one place. The rocm_libs CATEGORY_PROFILE injects
+# hw.gpu / layer.math_lib / ci.nightly / e2e.stack / os.linux; this hook adds the
+# per-test ci.* overrides, runtime.* durations, and the rocblas_library_guard
+# fixture. Keyed on the test function name.
+_ROCBLAS_TEST_MARKERS: dict[str, tuple[str, ...]] = {
+    "test_rocblas_pr_quick": ("ci.pr", "runtime.medium"),
+    "test_rocblas_nightly": ("runtime.medium",),
+    "test_rocblas_weekly_stress": ("ci.weekly", "runtime.soak"),
+    "test_rocblas_hmm": ("runtime.medium",),
+}
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):  # pylint: disable=unused-argument
+    """Attach the rocBLAS suite's per-test markers and library-guard fixture.
+
+    Runs before ``markers_plugin`` (``tryfirst``) so that a ci.* override applied
+    here is already present when profile injection checks covered dimensions —
+    ``markers_plugin`` only fills dimensions not already covered, so the profile's
+    ci.nightly is suppressed on the PR and weekly tests.
+
+    Args:
+        config: Active pytest config (unused; required by the hook spec).
+        items:  Collected test items, modified in place.
+    """
+    for item in items:
+        name = getattr(item, "originalname", None) or item.name
+        markers = _ROCBLAS_TEST_MARKERS.get(name)
+        if markers is None:
+            continue
+        for marker_str in markers:
+            item.add_marker(getattr(pytest.mark, marker_str))
+        item.add_marker(pytest.mark.usefixtures("rocblas_library_guard"))
+
+
 def check_rocblas_library(rock_dir: str, remote: bool = False, cmake_executor=None) -> None:
     """Fail with an actionable message if ``librocblas.so`` is absent from the ROCm install.
 
@@ -65,11 +102,41 @@ def rocblas_library_guard(rock_dir: str, cmake_executor) -> None:
     check_rocblas_library(rock_dir, remote=cmake_executor is not None, cmake_executor=cmake_executor)
 
 
-_COMMON_BUILD_KWARGS = dict(
-    src=_CORE_SRC,
-    compiler_mode="optional_cxx_hip",
-    sync_dirs=[_CORE_SRC],
-)
+@pytest.fixture(scope="session")
+def rocblas_test_binary(rock_dir: str, cmake_executor) -> str:
+    """Locate the prebuilt ``rocblas-test`` GTest client shipped with ROCm/TheRock.
+
+    rocBLAS ships a prebuilt ``rocblas-test`` binary (with its ``rocblas_gtest.data``
+    / ``rocblas_gtest.yaml`` data files alongside it) under ``<rock_dir>/bin``.  The
+    binary locates its data files relative to its own path, so it runs correctly from
+    any working directory.
+
+    We run the *installed* binary directly rather than rebuilding rocBLAS from source
+    (the legacy ``git clone`` + ``./install.sh -cd`` path): the framework consumes a
+    prebuilt TheRock/ROCm artifact, so the client is already present when the rocBLAS
+    test package was installed.  When the test client is not part of the install the
+    whole rocBLAS suite is skipped (not failed) — the client is an optional artifact.
+
+    Works both locally and against a remote fleet node (via ``cmake_executor``).
+    """
+    binary = os.path.join(rock_dir, "bin", "rocblas-test")
+    if cmake_executor is not None:
+        result = cmake_executor.run(f"test -x {binary} && echo FOUND")
+        if "FOUND" not in (result.stdout or ""):
+            pytest.skip(f"rocblas-test client not found at {binary} on the remote node")
+    elif not os.path.isfile(binary):
+        pytest.skip(
+            f"rocblas-test client not found at {binary} — install the rocBLAS test "
+            "package (rocblas-test) into the ROCm/TheRock artifact to enable this suite."
+        )
+    return binary
+
+
+_COMMON_BUILD_KWARGS = {
+    "src": _CORE_SRC,
+    "compiler_mode": "optional_cxx_hip",
+    "sync_dirs": [_CORE_SRC],
+}
 
 
 @pytest.fixture(scope="session")
@@ -177,7 +244,9 @@ def _hip_mempool_env_cache() -> dict[str, str]:
 
 
 @pytest.fixture
-def hip_mempool_env(target_executor, ld_path: dict, hip_mempool_probe_binary: str, _hip_mempool_env_cache: dict) -> str:
+def hip_mempool_env(  # pylint: disable=redefined-outer-name
+    target_executor, ld_path: dict, hip_mempool_probe_binary: str, _hip_mempool_env_cache: dict
+) -> str:
     """Return the env-var prefix needed for the HIP stream-ordered memory pool.
 
     The probe runs on the node selected by ``target_executor``.  If VM-backed
