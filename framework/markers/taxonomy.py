@@ -172,10 +172,29 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # TorchVision P1 image-transform correctness UT suite (ML frameworks):
+    # builds the torchvision ops in-tree and runs the cuda-tagged functional /
+    # transforms tensor UTs, validating the transform-op compute against CPU/PIL.
+    "tests/e2e/ml_frameworks/torchvision": [
+        "hw.multi_gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/rocm_examples": [
         "hw.gpu",
         "layer.runtime",
         "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # amd-smi event tests: GPU reset event correctness and concurrency.
+    # Weekly cadence (destructive reset); runtime.* is per test function.
+    "tests/e2e/system_tools/amd_smi/events": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
