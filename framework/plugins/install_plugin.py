@@ -85,9 +85,11 @@ def _run_pre_install(config, pool, specs: list[dict[str, Any]]) -> None:
     """Execute pre-install specs across all pool nodes in parallel."""
     print(f"\n[pre-install] Running on {len(pool.node_specs)} node(s): {specs}")
 
-    from framework.config.loader import load_config
+    framework_config = getattr(config, "_framework_config", None)
+    if framework_config is None:
+        from framework.config.loader import load_config  # pylint: disable=import-outside-toplevel
 
-    framework_config = load_config(config_path=config.getoption("--rocm-config", default=None))
+        framework_config = load_config(config_path=config.getoption("--rocm-config", default=None))
 
     failed_nodes: list[str] = []
     nonfatal_failures: list[str] = []

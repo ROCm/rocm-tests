@@ -2,11 +2,21 @@
 # SPDX-License-Identifier: MIT
 
 """
-detector.py -- AMD GPU detection via lspci and amd-smi.
+detector.py -- AMD GPU detection via lspci, KFD sysfs, and amd-smi.
 
-Primary detection: lspci -d 1002: -nn (no driver required, works over SSH).
-Diagnostics only: amd-smi list runs once when GPUs are found — output written
-to output/artifacts/gpu-info-<node>.log. Use MockGpuDetector for --mock-gpu.
+Detection strategy (layered enrichment):
+  1. lspci -d 1002: -nn  — counts AMD GPUs; no driver required, works over SSH.
+                           Returns arch="unknown", vram_mb=0 (lspci cannot read VRAM).
+  2. KFD sysfs enrichment — run after lspci to populate arch and vram_mb per GPU.
+                           On discrete GPUs (MI308X, etc.) local_mem_size is correct.
+                           On APUs (MI300A), local_mem_size is 0 (kernel driver TODO).
+  3. amd-smi enrichment  — run for any GPU whose vram_mb is still 0 after KFD,
+                           covering MI300A unified-memory and any other APU variant.
+  Fallback (no lspci):   KFD sysfs → system amd-smi → rock_dir amd-smi, in order.
+
+Diagnostics: amd-smi list runs once when GPUs are detected and its output is
+captured to output/artifacts/gpu-info-<node>.log for human inspection only.
+Use MockGpuDetector for --mock-gpu.
 """
 
 from __future__ import annotations
@@ -21,7 +31,7 @@ import subprocess
 from typing import TYPE_CHECKING
 
 from framework.config.loader import FrameworkSection
-from framework.rocm.libs.amd_smi import _get
+from framework.rocm.libs.amd_smi import _to_mb, _unwrap_entries
 
 if TYPE_CHECKING:
     from framework.executors.ssh_executor import SshExecutor
@@ -47,8 +57,8 @@ class GpuInfo:
     """
 
     index: int
-    arch: str  # "unknown" when detected via lspci only; populated by KFD/amd-smi when re-enabled
-    vram_mb: int  # 0 when detected via lspci only; populated by KFD/amd-smi when re-enabled
+    arch: str  # "unknown" until enriched by KFD/amd-smi; gfx-arch string after enrichment
+    vram_mb: int  # 0 until enriched; populated by KFD (discrete GPUs) or amd-smi (APUs like MI300A)
     numa_node: int = -1
 
 
@@ -88,16 +98,19 @@ def _kfd_gfx_version(raw: str) -> str:
 class GpuDetector(AbstractGpuDetector):
     """Detect AMD GPUs from the host system (local) or a remote node (SSH).
 
-    Detection strategy:
-        Primary: ``lspci -d 1002: -nn`` — kernel PCI bus enumeration; requires no
-        AMD driver; works locally and over SSH.
+    Detection strategy (layered enrichment):
+        1. ``lspci -d 1002: -nn`` — counts AMD GPUs; no driver required; works
+           locally and over SSH.  Returns ``arch="unknown"``, ``vram_mb=0``.
+        2. KFD sysfs enrichment — run after lspci to populate ``arch`` and
+           ``vram_mb`` from ``/sys/class/kfd/kfd/topology/nodes``.  Correct for
+           discrete GPUs; returns ``vram_mb=0`` for APUs (MI300A) because the
+           Linux KFD driver does not implement ``local_mem_size`` for APU nodes.
+        3. ``amd-smi`` enrichment — run for any GPU with ``vram_mb=0`` after KFD,
+           resolving unified-memory APUs like MI300A.  Tries system ``amd-smi``
+           first, then ``rock_dir/bin/amd-smi`` if configured.
 
-        Fallback: KFD sysfs (``/sys/class/kfd/kfd/topology/nodes``) — activated
-        when ``lspci`` is absent (e.g. containers without pciutils installed).
-        Requires no binary and no elevated permissions; also returns ``arch``
-        and ``vram_mb``.
-
-        amd-smi detection is disabled (commented out in ``detect()``).
+        Fallback (when lspci finds 0 GPUs): KFD sysfs → system amd-smi →
+        rock_dir amd-smi, in order.
 
         Diagnostics: ``amd-smi list`` runs once when GPUs are detected and its
         output is captured to ``output/artifacts/gpu-info-<node>.log`` for
@@ -106,7 +119,8 @@ class GpuDetector(AbstractGpuDetector):
     The detection result is cached after the first ``detect()`` call.
 
     Args:
-        rock_dir:     Unused in this phase (reserved for amd-smi re-enablement).
+        rock_dir:     Path to TheRock/ROCm install; used as fallback amd-smi
+                      location (``<rock_dir>/bin/amd-smi``) during enrichment.
         ssh_executor: When set, detection runs on the remote host via SSH.
                       When ``None`` (default), detection runs locally.
     """
@@ -131,11 +145,20 @@ class GpuDetector(AbstractGpuDetector):
         during a pytest session so subsequent calls return the cached list
         without repeating detection commands.
 
-        Primary: ``lspci -d 1002: -nn`` (works locally and over SSH; requires no
-        AMD driver).  Fallback: KFD sysfs when ``lspci`` is absent (e.g. inside
-        containers without pciutils).  When GPUs are detected by either method,
-        ``amd-smi list`` runs once for diagnostic output only (never used for
-        scheduling/allocation).  amd-smi detection is disabled below.
+        Detection uses a layered enrichment strategy:
+
+        1. ``lspci -d 1002: -nn`` counts AMD GPUs (works locally and over SSH,
+           no driver required).  Returns ``arch="unknown"`` and ``vram_mb=0``
+           because lspci cannot read VRAM.
+        2. KFD sysfs enrichment runs after lspci to populate ``arch`` and
+           ``vram_mb`` using ``local_mem_size``.  Correct for discrete GPUs
+           (MI308X, etc.); returns ``vram_mb=0`` for APUs (MI300A) because the
+           Linux KFD driver does not implement ``local_mem_size`` for APU nodes.
+        3. ``amd-smi`` enrichment runs for any GPU whose ``vram_mb`` is still 0
+           after KFD, covering MI300A unified-memory and any other APU variant.
+
+        Fallback (when lspci finds 0 GPUs): KFD sysfs → system amd-smi →
+        rock_dir amd-smi, in order.
 
         Returns:
             List of ``GpuInfo``.  Empty list if no AMD GPUs are found.
@@ -146,35 +169,45 @@ class GpuDetector(AbstractGpuDetector):
         target = f"remote({self._ssh.session_key})" if self._ssh else "local"
         node_label = self._ssh.session_key if self._ssh else "localhost"
 
-        # PRIMARY: lspci hardware enumeration (local or SSH)
+        # PRIMARY: lspci hardware enumeration (local or SSH).
+        # Returns GpuInfo with arch="unknown", vram_mb=0 — enriched below.
         logger.info("GPU detection [%s]: trying lspci", target)
+        lspci_gpus: list[GpuInfo] = []
         try:
-            gpus = self._detect_via_lspci()
-            if gpus:
-                self._cached = gpus
-                self._run_amd_smi_diagnostic(node_label=node_label)
-                return list(gpus)
-            logger.warning("GPU detection [%s]: lspci returned 0 AMD GPUs", target)
-            # Print raw lspci output so engineers can see what PCI class names are present.
-            try:
-                raw = self._run_command("lspci -d 1002: -nn")
-                if raw.strip():
-                    print(f"\n[rocm-test] lspci AMD devices (all classes, unfiltered):\n{raw.strip()}")
-                else:
-                    print(
-                        "\n[rocm-test] lspci found NO AMD PCI devices (vendor 1002). "
-                        "Check that the GPU is passed through to this container "
-                        "(--device /dev/kfd --device /dev/dri)."
-                    )
-            except Exception:  # pylint: disable=broad-exception-caught
-                pass
+            lspci_gpus = self._detect_via_lspci()
+            if not lspci_gpus:
+                logger.warning("GPU detection [%s]: lspci returned 0 AMD GPUs", target)
+                # Print raw lspci output so engineers can see what PCI class names are present.
+                try:
+                    raw = self._run_command("lspci -d 1002: -nn")
+                    if raw.strip():
+                        print(f"\n[rocm-test] lspci AMD devices (all classes, unfiltered):\n{raw.strip()}")
+                    else:
+                        print(
+                            "\n[rocm-test] lspci found NO AMD PCI devices (vendor 1002). "
+                            "Check that the GPU is passed through to this container "
+                            "(--device /dev/kfd --device /dev/dri)."
+                        )
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("GPU detection [%s]: lspci failed: %s", target, exc)
 
+        if lspci_gpus:
+            # lspci found GPUs — enrich arch and vram_mb via KFD, then amd-smi.
+            gpus = self._enrich_via_kfd(lspci_gpus, target)
+            gpus = self._enrich_via_amd_smi(gpus, target)
+            self._cached = gpus
+            self._run_amd_smi_diagnostic(node_label=node_label)
+            return list(gpus)
+
         # FALLBACK: KFD sysfs — no binary required, works when lspci is absent
+        # (e.g. containers without pciutils). Also enriches arch and vram_mb.
         try:
             gpus = self._detect_via_kfd()
             if gpus:
+                # KFD returns vram_mb=0 for APU nodes — still try amd-smi enrichment.
+                gpus = self._enrich_via_amd_smi(gpus, target)
                 self._cached = gpus
                 self._run_amd_smi_diagnostic(node_label=node_label)
                 return list(gpus)
@@ -201,7 +234,6 @@ class GpuDetector(AbstractGpuDetector):
 
         # FOURTH FALLBACK: amd-smi from TheRock rock_dir.
         # Activated when lspci/KFD/system amd-smi all return 0.
-        # Returns real arch and VRAM (unlike lspci which yields arch="unknown").
         if self._rock_dir:
             rock_amd_smi = os.path.join(self._rock_dir, "bin", "amd-smi")
             try:
@@ -255,7 +287,7 @@ class GpuDetector(AbstractGpuDetector):
         "Display controller" to identify GPU entries (same method as nodelib.py).
 
         Returns GpuInfo with ``arch="unknown"`` and ``vram_mb=0`` — these fields
-        will be populated when KFD/amd-smi detection is re-enabled in a future phase.
+        are enriched by ``_enrich_via_kfd()`` and ``_enrich_via_amd_smi()`` in ``detect()``.
 
         Returns:
             List of GpuInfo with sequential indices 0..N-1.
@@ -283,6 +315,195 @@ class GpuDetector(AbstractGpuDetector):
             len(all_amd_lines),
         )
         return [GpuInfo(index=i, arch="unknown", vram_mb=0) for i, _ in enumerate(gpu_lines)]
+
+    def _enrich_via_kfd(self, gpus: list[GpuInfo], target: str) -> list[GpuInfo]:
+        """Enrich *gpus* (from lspci) with ``arch`` and ``vram_mb`` from KFD sysfs.
+
+        lspci returns ``arch="unknown"`` and ``vram_mb=0``.  KFD sysfs provides
+        real arch and VRAM for discrete GPUs.  For APUs (e.g. MI300A), the Linux
+        KFD driver does not implement ``local_mem_size`` so ``vram_mb`` stays 0;
+        ``_enrich_via_amd_smi`` handles those cases afterwards.
+
+        GPU count from lspci is authoritative.  If KFD returns a different count
+        (e.g. topology nodes include CPU nodes filtered by gpu_id) the KFD data
+        is used only when counts match; otherwise the original lspci list is
+        returned unchanged and a warning is logged.
+
+        Args:
+            gpus:   GpuInfo list produced by ``_detect_via_lspci()``.
+            target: Human-readable target label for log messages.
+
+        Returns:
+            Enriched list with the same length as *gpus*.  Individual GPUs that
+            could not be matched retain their original ``arch`` and ``vram_mb``.
+        """
+        try:
+            kfd_gpus = self._detect_via_kfd()
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.info("GPU detection [%s]: KFD enrichment skipped (%s)", target, exc)
+            return gpus
+
+        if not kfd_gpus:
+            logger.info("GPU detection [%s]: KFD returned 0 nodes — skipping enrichment", target)
+            return gpus
+
+        if len(kfd_gpus) != len(gpus):
+            logger.warning(
+                "GPU detection [%s]: lspci found %d GPU(s) but KFD found %d — "
+                "skipping KFD enrichment to avoid index mismatch",
+                target,
+                len(gpus),
+                len(kfd_gpus),
+            )
+            return gpus
+
+        enriched = [
+            GpuInfo(
+                index=lspci_gpu.index,
+                arch=kfd_gpu.arch if kfd_gpu.arch != "unknown" else lspci_gpu.arch,
+                vram_mb=kfd_gpu.vram_mb,
+                numa_node=kfd_gpu.numa_node if kfd_gpu.numa_node != -1 else lspci_gpu.numa_node,
+            )
+            for lspci_gpu, kfd_gpu in zip(gpus, kfd_gpus, strict=True)
+        ]
+        vram_populated = sum(1 for g in enriched if g.vram_mb > 0)
+        logger.info(
+            "GPU detection [%s]: KFD enriched %d/%d GPU(s) with VRAM data",
+            target,
+            vram_populated,
+            len(enriched),
+        )
+        return enriched
+
+    def _enrich_via_amd_smi(self, gpus: list[GpuInfo], target: str) -> list[GpuInfo]:
+        """Enrich any GPU in *gpus* that still has ``vram_mb=0`` using ``amd-smi``.
+
+        Called after lspci+KFD enrichment.  Targets APU variants (e.g. MI300A)
+        where the KFD driver does not populate ``local_mem_size``.  If all GPUs
+        already have ``vram_mb > 0`` this method is a no-op.
+
+        Tries system ``amd-smi`` first; falls back to ``rock_dir/bin/amd-smi``
+        when ``rock_dir`` is configured.
+
+        Two merge strategies, tried in order:
+
+        1. **1:1 match** — ``amd-smi`` returns the same number of entries as
+           *gpus*.  Each SMI entry is matched to the corresponding GPU by index.
+           This is the common case for discrete multi-GPU systems.
+
+        2. **1:N partition broadcast** — ``amd-smi`` returns 1 physical device
+           entry while *gpus* contains N logical partitions (e.g. MI300A with
+           CPX/DPX/QPX, MI308X with 8 partitions).  In this layout the physical
+           device's total VRAM is divided equally across all partitions — each
+           partition receives ``physical_vram_mb // N`` MB.  The arch string from
+           the single SMI entry is applied to all partitions.
+
+        Args:
+            gpus:   GpuInfo list (may have ``vram_mb=0`` for some entries).
+            target: Human-readable target label for log messages.
+
+        Returns:
+            List with the same length as *gpus*.  GPUs that already had
+            ``vram_mb > 0`` are returned unchanged.  APU GPUs with
+            ``vram_mb=0`` are updated with ``amd-smi`` data where available.
+        """
+        if all(g.vram_mb > 0 for g in gpus):
+            return gpus
+
+        zero_count = sum(1 for g in gpus if g.vram_mb == 0)
+        logger.info(
+            "GPU detection [%s]: %d/%d GPU(s) have vram_mb=0 after KFD — attempting amd-smi enrichment",
+            target,
+            zero_count,
+            len(gpus),
+        )
+
+        smi_candidates: list[str] = ["amd-smi"]
+        if self._rock_dir:
+            smi_candidates.append(os.path.join(self._rock_dir, "bin", "amd-smi"))
+
+        for smi_path in smi_candidates:
+            try:
+                smi_gpus = self._detect_via_amd_smi_at(smi_path)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.info("GPU detection [%s]: amd-smi enrichment (%s) failed: %s", target, smi_path, exc)
+                continue
+
+            if not smi_gpus:
+                logger.warning("GPU detection [%s]: amd-smi enrichment (%s) returned 0 GPU(s)", target, smi_path)
+                continue
+
+            n_partitions = len(gpus)
+            n_smi = len(smi_gpus)
+
+            if n_smi == n_partitions:
+                # Strategy 1: 1:1 index match — standard discrete multi-GPU system.
+                enriched = [
+                    GpuInfo(
+                        index=g.index,
+                        arch=smi_gpu.arch if smi_gpu.arch != "unknown" else g.arch,
+                        vram_mb=smi_gpu.vram_mb if g.vram_mb == 0 else g.vram_mb,
+                        numa_node=g.numa_node,
+                    )
+                    for g, smi_gpu in zip(gpus, smi_gpus, strict=True)
+                ]
+                vram_populated = sum(1 for g in enriched if g.vram_mb > 0)
+                logger.info(
+                    "GPU detection [%s]: amd-smi enrichment via '%s' resolved %d/%d GPU(s) with VRAM data",
+                    target,
+                    smi_path,
+                    vram_populated,
+                    len(enriched),
+                )
+                return enriched
+
+            if n_smi == 1 and n_partitions > 1:
+                # Strategy 2: 1:N partition broadcast — APU with compute partitioning.
+                # amd-smi sees one physical device; lspci/KFD see N logical partitions.
+                # Each partition receives an equal share of the physical VRAM total.
+                physical = smi_gpus[0]
+                per_partition_vram_mb = physical.vram_mb // n_partitions if physical.vram_mb > 0 else 0
+                logger.info(
+                    "GPU detection [%s]: amd-smi 1-device / %d-partition layout detected "
+                    "(physical vram=%d MB → %d MB per partition) — applying broadcast enrichment",
+                    target,
+                    n_partitions,
+                    physical.vram_mb,
+                    per_partition_vram_mb,
+                )
+                enriched = [
+                    GpuInfo(
+                        index=g.index,
+                        arch=physical.arch if physical.arch != "unknown" else g.arch,
+                        vram_mb=per_partition_vram_mb if g.vram_mb == 0 else g.vram_mb,
+                        numa_node=g.numa_node,
+                    )
+                    for g in gpus
+                ]
+                vram_populated = sum(1 for g in enriched if g.vram_mb > 0)
+                logger.info(
+                    "GPU detection [%s]: partition broadcast via '%s' resolved %d/%d GPU(s) with VRAM data",
+                    target,
+                    smi_path,
+                    vram_populated,
+                    len(enriched),
+                )
+                return enriched
+
+            logger.warning(
+                "GPU detection [%s]: amd-smi returned %d GPU(s) but pool has %d — "
+                "no merge strategy applies; skipping this candidate",
+                target,
+                n_smi,
+                n_partitions,
+            )
+
+        logger.warning(
+            "GPU detection [%s]: amd-smi enrichment exhausted all candidates — %d GPU(s) retain vram_mb=0",
+            target,
+            zero_count,
+        )
+        return gpus
 
     def _print_kfd_dri_diagnostics(self) -> None:
         """Print KFD sysfs and /dev/dri state to the console when local detection returns 0.
@@ -415,49 +636,49 @@ class GpuDetector(AbstractGpuDetector):
         return gpus
 
     def _detect_via_amd_smi(self) -> list[GpuInfo]:
-        """Detect GPUs using ``amd-smi list`` from system PATH."""
+        """Detect GPUs using ``amd-smi static`` from system PATH."""
         return self._detect_via_amd_smi_at("amd-smi")
 
     def _detect_via_amd_smi_at(self, amd_smi_path: str) -> list[GpuInfo]:
-        """Detect GPUs using ``amd-smi list`` at an explicit binary path.
+        """Detect GPUs using ``amd-smi static --json`` at an explicit binary path.
 
-        Works for both local and remote execution — the command is run through
-        ``_run_command()`` which delegates to SSH when ``ssh_executor`` is set.
+        Uses ``amd-smi static`` (not ``amd-smi list``) because only ``static``
+        exposes VRAM size and ASIC architecture in its JSON output.
+        ``amd-smi list`` returns only identifiers (BDF, UUID) with no VRAM/arch fields.
+
+        On APU systems with compute partitioning (MI300A, MI308X, MI355X) this
+        method returns **one** GpuInfo representing the physical device.  The
+        caller (``_enrich_via_amd_smi``) is responsible for distributing the
+        physical VRAM across the logical partitions visible to lspci/KFD.
+
+        ROCm 7.1.0+ / amd-smi 26+ schema:
+          - Top-level wrapper: ``{"gpu_data": [...]}``
+          - VRAM total:        ``vram.size`` → ``{"value": N, "unit": "MB"}``
+          - Architecture:      ``asic.target_graphics_version`` → ``"gfx942"``
+
+        Works identically for local and remote execution — the command is run
+        through ``_run_command()`` which delegates to SSH when ``ssh_executor``
+        is set.
 
         Args:
             amd_smi_path: Absolute or resolvable path to the ``amd-smi`` binary.
                           Pass ``"amd-smi"`` to use the system PATH entry.
 
         Returns:
-            List of GpuInfo parsed from ``amd-smi list --json`` output.
+            List of GpuInfo parsed from ``amd-smi static --json`` output.
+            For APU systems this is typically a single-element list.
 
         Raises:
             RuntimeError: If ``amd-smi`` exits non-zero.
             FileNotFoundError: If the binary is not found at *amd_smi_path*.
         """
-        raw = self._run_command(f"{amd_smi_path} list --json")
-        devices = json.loads(raw)
+        raw = self._run_command(f"{amd_smi_path} static --json")
+        entries = _unwrap_entries(json.loads(raw))
         gpus: list[GpuInfo] = []
-        for i, dev in enumerate(devices):
-            total_raw = _get(
-                dev,
-                ("vram", "total"),  # 6.x nested {"value": N, "unit": "MB"}
-                ("vram_total_mb",),  # 5.x flat MB int
-                ("vram_info", "vram_total_mb"),
-                default=0,
-            )
-            if isinstance(total_raw, dict):
-                vram_mb = total_raw.get("value", 0)
-            elif isinstance(total_raw, int):
-                vram_mb = total_raw // (1024 * 1024) if total_raw > 1024 * 1024 else total_raw
-            else:
-                vram_mb = 0
-            arch = _get(
-                dev,
-                ("asic", "target_graphics_version"),
-                ("asic", "arch"),
-                default="unknown",
-            )
+        for i, dev in enumerate(entries):
+            asic = dev.get("asic", {})
+            vram_mb = _to_mb(dev.get("vram", {}).get("size", 0))
+            arch = asic.get("target_graphics_version", "unknown")
             gpus.append(GpuInfo(index=i, arch=arch, vram_mb=vram_mb))
         return gpus
 
