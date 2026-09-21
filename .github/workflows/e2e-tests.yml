@@ -264,7 +264,7 @@ jobs:
             "--tests" "--blas" "--fft" "--hipdnn" "--miopen" "--miopenprovider"
             "--rocdecode" "--rocjpeg" "--rocprofiler-compute" "--rocprofiler-sdk"
             "--rocprofiler-systems" "--prim" "--rand" "--rocwmma" "--hipblasltprovider"
-            "--libhipcxx" "--rccl" "--solver"
+            "--libhipcxx" "--rccl" "--solver" "--sparse"
             "--output-dir" "../therock_build"
           )
 
