@@ -15,10 +15,13 @@ Build output layout::
     output/test-binaries/rocm_libs/async_mixed_precision_workflow/async_mixed_precision_workflow
     output/test-binaries/rocm_libs/sparse_csrrf_analysis_reuse/sparse_csrrf_analysis_reuse
     output/test-binaries/rocm_libs/hip_mempool_probe/hip_mempool_probe
+    output/test-binaries/rocm_libs/hip_complex_her2/hip_complex_her2
+    output/test-binaries/rocm_libs/miopen_np_nts_tensors/miopen_np_nts_tensors
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import pathlib
@@ -167,6 +170,44 @@ def hip_mempool_probe_binary(gpu_arch: str | None, cmake_build_dir, require_gpu_
 
 
 @pytest.fixture(scope="session")
+def hip_complex_her2_binary(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for, built_binary) -> str:
+    """Compile and return the HIP complex API header workload (rocblas_cher2 via hipFloatComplex)."""
+    require_gpu_arch_for("rocm_libs")
+    build_dir = cmake_build_dir(
+        **_COMMON_BUILD_KWARGS,
+        subdir="rocm_libs/hip_complex_her2",
+        gpu_arch=gpu_arch,
+        label="rocm_libs/hip_complex_her2",
+        artifact="hip_complex_her2",
+        target="hip_complex_her2",
+    )
+    return built_binary(os.path.join(build_dir, "hip_complex_her2"), "hip_complex_her2")
+
+
+@pytest.fixture(scope="session")
+def miopen_np_nts_tensors_binary(
+    gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for, built_binary, node_pool
+) -> str:
+    """Compile and return the MIOpen NP-NTS tensor convolution binary."""
+    # If gpu_arch is not provided via CLI, try to detect from the GPU pool.
+    resolved_gpu_arch = gpu_arch
+    if not resolved_gpu_arch and node_pool:
+        with contextlib.suppress(StopIteration, AttributeError):
+            resolved_gpu_arch = next(iter(node_pool.gpus)).arch
+    if not resolved_gpu_arch:
+        require_gpu_arch_for("rocm_libs")
+    build_dir = cmake_build_dir(
+        **_COMMON_BUILD_KWARGS,
+        subdir="rocm_libs/miopen_np_nts_tensors",
+        gpu_arch=resolved_gpu_arch,
+        label="rocm_libs/miopen_np_nts_tensors",
+        artifact="miopen_np_nts_tensors",
+        target="miopen_np_nts_tensors",
+    )
+    return built_binary(os.path.join(build_dir, "miopen_np_nts_tensors"), "miopen_np_nts_tensors")
+
+
+@pytest.fixture(scope="session")
 def _hip_mempool_env_cache() -> dict[str, str]:
     """Session cache: host identity -> extra env prefix for the solver run command.
 
@@ -215,119 +256,3 @@ def hip_mempool_env(target_executor, ld_path: dict, hip_mempool_probe_binary: st
 
 
 # requested_gpu_count is provided by the shared suite-level conftest (tests/conftest.py).
-
-
-# ============================================================================
-# AMD SMI Library Benchmark Suite Fixtures
-# ============================================================================
-
-# Full test list for amd-smi-lib benchmark suite.
-# Each test name maps to a callable in the imported amd-smi-lib test module.
-AMDSMI_FULL_TESTS = [
-    "AMDSMI_power",
-    "AMDSMI_temperature",
-    "AMDSMI_memory",
-    "AMDSMI_gpu_metrics_info",
-    "AMDSMI_gpu_busy",
-    "AMDSMI_throttle",
-    "AMDSMI_thermal_throttle",
-    "AMDSMI_voltage",
-    "AMDSMI_frequency",
-    "AMDSMI_process_info",
-    "AMDSMI_device_state",
-    "AMDSMI_clock_throttle_status",
-    "AMDSMI_od_volt_info",
-    "AMDSMI_version",
-    "AMDSMI_dev_drm",
-    "AMDSMI_drm_info",
-    "AMDSMI_available_governor",
-    "AMDSMI_smu_firmware_info",
-    "AMDSMI_pcie_bandwidth",
-    "AMDSMI_pcie_link_width",
-    "AMDSMI_pcie_link_rate",
-    "AMDSMI_pcie_event_counter_control",
-    "AMDSMI_pcie_event_counter_read",
-    "AMDSMI_ecc_enabled",
-    "AMDSMI_ecc_status",
-    "AMDSMI_ecc_count",
-    "AMDSMI_set_power_limit",
-    "AMDSMI_get_power_limit",
-    "AMDSMI_set_gpu_clocks_state",
-    "AMDSMI_get_gpu_clocks_state",
-    "AMDSMI_set_od_clk_info",
-    "AMDSMI_get_od_clk_info",
-    "AMDSMI_get_max_power",
-    "AMDSMI_set_power_ovdrv",
-    "AMDSMI_get_power_ovdrv",
-    "AMDSMI_get_soc_pstate",
-    "AMDSMI_set_soc_pstate",
-    "AMDSMI_gpu_reset",
-    "AMDSMI_get_pcie_info",
-    "AMDSMI_set_pcie_lanewidth",
-    "AMDSMI_get_pcie_lanewidth",
-    "AMDSMI_set_pcie_link_rate",
-    "AMDSMI_get_pcie_link_rate",
-    "AMDSMI_monitor_temperature",
-    "AMDSMI_monitor_power",
-    "AMDSMI_monitor_throttle",
-    "AMDSMI_monitor_qt_gpu_workload",
-    "AMDSMI_monitor_qt_gpu_file_workload",
-    "AMDSMI_node_power_management",
-    "AMDSMI_ubb_power_default",
-    "AMDSMI_ubb_power_workload",
-    "AMDSMI_ubb_threshold",
-]
-
-
-def _install_amdsmi() -> None:
-    """Install amd-smi-lib package via pip.
-
-    Logs the installation and raises on failure.
-    """
-    import subprocess  # pylint: disable=import-outside-toplevel
-
-    logger.info("Installing amd-smi-lib...")
-    result = subprocess.run(
-        ["pip", "install", "amd-smi-lib"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=300,
-    )
-    if result.returncode != 0:
-        logger.error("amd-smi-lib installation failed: %s", result.stderr)
-        raise RuntimeError(f"Failed to install amd-smi-lib: {result.stderr}")
-    logger.info("amd-smi-lib installed successfully.")
-
-
-@pytest.fixture(scope="session")
-def amdsmi_installed() -> None:
-    """Session-scoped fixture: install amd-smi-lib once at the start of the test suite."""
-    _install_amdsmi()
-
-
-@pytest.fixture(scope="session")
-def amdsmi_testlist() -> list[str]:
-    """Session-scoped fixture: return the full amd-smi-lib benchmark test list."""
-    return AMDSMI_FULL_TESTS.copy()
-
-
-@pytest.fixture(scope="session")
-def amdsmi_app_version(amdsmi_installed) -> str | None:
-    """Session-scoped fixture: fetch the installed amd-smi-lib version string.
-
-    Returns:
-        Version string (e.g. "1.0.0"), or None if not available.
-    """
-    del amdsmi_installed
-    try:
-        # Import SystemInfo from amd-smi-lib to fetch the app version
-        from amdsmi_lib import SystemInfo  # pylint: disable=import-outside-toplevel
-
-        sys_info = SystemInfo(password=None)
-        version = sys_info.get_app_version(packages=["amd-smi-lib"]).get("amd-smi-lib")
-        logger.info("amd-smi-lib version: %s", version)
-        return version
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("Failed to retrieve amd-smi-lib version: %s", exc)
-        return None
