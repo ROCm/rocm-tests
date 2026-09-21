@@ -376,7 +376,7 @@ def babelstream_repo(external_build, compiler_build_dir: str) -> str:
     return str(repo_path)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def babelstream_binary(
     target_executor, babelstream_repo: str, require_gpu_arch_for, rock_dir: str
 ) -> str:
