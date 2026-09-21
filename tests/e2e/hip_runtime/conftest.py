@@ -65,6 +65,11 @@ _PARTITION_ISO_SUBDIR = "hip_runtime/partition_isolation"
 _HIP_TESTS_URL = "https://github.com/ROCm/hip-tests.git"
 _HIP_TESTS_REF = os.environ.get("ROCM_TEST_HIP_TESTS_REF", "develop")
 
+# BabelStream HIP benchmark suite (UoB-HPC/BabelStream).
+# Cloned at runtime; pin via env override. License: custom permissive (similar to BSD-3-Clause).
+_BABELSTREAM_URL = "https://github.com/UoB-HPC/BabelStream.git"
+_BABELSTREAM_REF = os.environ.get("ROCM_TEST_BABELSTREAM_REF", "main")
+
 
 @pytest.fixture(scope="session")
 def _hip_host_cmake_build_dir(cmake_build_dir) -> str:
@@ -355,3 +360,47 @@ def hip_device_count_binary(compile_binary) -> str:
         opt="-O0",
         subdir=_PARTITION_ISO_SUBDIR,
     )
+
+
+@pytest.fixture(scope="session")
+def babelstream_repo(external_build, compiler_build_dir: str) -> str:
+    """Clone the UoB-HPC/BabelStream repository once per session; return its path.
+
+    BabelStream is a memory bandwidth benchmark suite maintained by the University
+    of Bristol HPC group. Licensed under a custom permissive license compatible with
+    commercial and academic use.
+    """
+    dest = pathlib.Path(compiler_build_dir) / "hip_runtime" / "babelstream"
+    repo_path = external_build.clone_repo(_BABELSTREAM_URL, dest, ref=_BABELSTREAM_REF)
+    external_build.assert_license_present(repo_path)
+    return str(repo_path)
+
+
+@pytest.fixture(scope="session")
+def babelstream_binary(
+    target_executor, babelstream_repo: str, require_gpu_arch_for, rock_dir: str
+) -> str:
+    """Build BabelStream HIP backend via Makefile and return the hip-stream binary path.
+
+    The hip-stream binary supports both double (default) and float precision modes
+    via the ``--float`` runtime flag. Build is GPU-arch agnostic (Makefile auto-detects).
+    """
+    require_gpu_arch_for("hip_runtime/babelstream")
+
+    # Build via Makefile; output binary is at $(repo)/HIP-Stream
+    result = target_executor.run(
+        f"cd {babelstream_repo} && make -f Makefile.hip ROCM_PATH={rock_dir}",
+        timeout=300.0,
+    )
+    if not result.ok:
+        raise RuntimeError(
+            f"BabelStream build failed (exit={result.exit_code}):\n"
+            f"stdout: {result.stdout[:1000]}\nstderr: {result.stderr[:1000]}"
+        )
+
+    hip_stream_binary = os.path.join(babelstream_repo, "HIP-Stream")
+    if not os.path.exists(hip_stream_binary):
+        raise RuntimeError(f"BabelStream build succeeded but binary not found at {hip_stream_binary}")
+
+    logger.info(f"BabelStream HIP-Stream binary ready: {hip_stream_binary}")
+    return hip_stream_binary
