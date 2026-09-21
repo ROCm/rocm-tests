@@ -25,11 +25,13 @@ from framework.builder.binary_builder import (
     BinaryBuilder,
     assert_binary_exists,
     assert_license_present,
+    autotools_make,
     build_artifact_exists,
     build_cache_action,
     clone_repo,
     cmake_build,
     detect_mpi_runtime,
+    external_build_lock,
     find_rocm_clangpp,
     make_build,
     provision_openmpi_runtime,
@@ -268,6 +270,7 @@ def cmake_build_dir(
         artifact: str | None = None,
         compiler_mode: str = "auto",
         target: str | None = None,
+        tolerate_build_failure: bool = False,
     ) -> str:
         """Configure/build a CMake project and return the node-local build dir."""
         _label = label or subdir
@@ -342,6 +345,8 @@ def cmake_build_dir(
             remote_executor=cmake_executor,
             sync_dirs=effective_sync_dirs if cmake_executor is not None else sync_dirs,
             target=target,
+            tolerate_build_failure=tolerate_build_failure,
+            build_artifact=artifact,
         )
 
         if artifact is not None:
@@ -404,6 +409,25 @@ def external_build(compiler_build_dir: str, framework_config, cmake_executor):
                 timeout=timeout if timeout is not None else build_timeout,
                 remote_executor=cmake_executor,
             )
+
+        def autotools_make(
+            self,
+            source_dir: str,
+            build_dir: str,
+            **kwargs,
+        ) -> str:
+            """Run an autotools configure/make/[install] build (local or remote)."""
+            kwargs.setdefault("timeout", build_timeout)
+            return autotools_make(
+                source_dir,
+                build_dir,
+                remote_executor=cmake_executor,
+                **kwargs,
+            )
+
+        def build_lock(self, key: str, *, timeout: float | None = None):
+            """Cross-worker lock for a whole clone+build section (pair with use_lock=False)."""
+            return external_build_lock(key, timeout=timeout if timeout is not None else build_timeout)
 
         def assert_license_present(self, path) -> None:
             """Verify a cloned third-party tree carries a recognizable license."""

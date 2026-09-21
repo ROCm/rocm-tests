@@ -66,6 +66,13 @@ class TheRockSection:
     rock_dir: Path to the TheRock/ROCm install tree (contains bin/hipcc, lib/).
               Also settable via CLI --rock-dir or env ROCK_DIR /
               ROCM_TEST_THEROCK_ROCK_DIR.
+    rocm_version: Optional explicit ROCm version hint in nightly date format
+              (e.g. "7.14.0a20260624").  Used by the PyTorch provisioner to
+              select a matching wheel when auto-detection only resolves the
+              build-number format (e.g. "7.14.60850" from hipconfig) and
+              exact date-proximity matching would otherwise be unavailable.
+              Leave empty to rely on auto-detection.
+              Also settable via env ROCM_TEST_THEROCK_ROCM_VERSION.
     build_dir: Output directory for compiled test binaries.
     build_timeout_secs: Wall-clock timeout for a single hipcc compilation (default 2 h).
                         Also settable via ROCM_TEST_THEROCK_BUILD_TIMEOUT_SECS.
@@ -75,9 +82,29 @@ class TheRockSection:
     """
 
     rock_dir: str = ""
+    rocm_version: str = ""
     build_dir: str = "output/test-binaries/"
     build_timeout_secs: float = 7200.0
     build_inactivity_timeout_secs: float = 600.0
+
+
+@dataclass
+class FrameworksSection:
+    """[frameworks] config section — PyTorch provisioning defaults.
+
+    Moves install-channel defaults out of test/provisioner code. ``default_mode``
+    ``auto`` walks the production wheel path (multiarch -> family), installing
+    the latest wheel matching the node's Python version. Explicit
+    ``--pre-install pytorch=mode=...,index=...`` bypasses the order.
+    Baseline bucket: Nightly. Others shall be enabled in sync with workflow.
+    """
+
+    default_mode: str = "auto"
+    multiarch_index: str = "https://rocm.nightlies.amd.com/whl-multi-arch/"
+    family_index_base: str = "https://rocm.nightlies.amd.com/v2"
+    staging_index: str = "https://rocm.nightlies.amd.com/whl-staging-multi-arch/"
+    # Ancillary (non-torch) deps installed after the framework wheels.
+    requirements_pytorch: str = "tests/common/ml_provisioning/requirements-pytorch.txt"
 
 
 @dataclass
@@ -103,6 +130,7 @@ class FrameworkConfig:
     gpu: GpuSection = field(default_factory=GpuSection)
     reporting: ReportingSection = field(default_factory=ReportingSection)
     therock: TheRockSection = field(default_factory=TheRockSection)
+    frameworks: FrameworksSection = field(default_factory=FrameworksSection)
 
     def new_run_context(self) -> RunContext:
         """Create a unique run context for the current test session.
@@ -200,6 +228,7 @@ def _build_config(raw: dict) -> FrameworkConfig:
         gpu=_merge(GpuSection, "gpu"),
         reporting=_merge(ReportingSection, "reporting"),
         therock=_merge(TheRockSection, "therock"),
+        frameworks=_merge(FrameworksSection, "frameworks"),
     )
 
 
@@ -218,6 +247,7 @@ def _apply_env_overrides(cfg: FrameworkConfig) -> None:
         "GPU": cfg.gpu,
         "REPORTING": cfg.reporting,
         "THEROCK": cfg.therock,
+        "FRAMEWORKS": cfg.frameworks,
     }
 
     for section_key, section_obj in section_map.items():

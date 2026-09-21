@@ -347,6 +347,40 @@ class NodePool:
         )
         gpus = detector.detect()
 
+        # Filter by the NodeSpec arch when set.  This handles heterogeneous runners
+        # that expose multiple GPU architectures (e.g. gfx1030 + gfx1201) so that
+        # each CI job only allocates slots for its target GPU.  Only applied when
+        # the detected arch is known (not "unknown") to avoid discarding GPUs on
+        # setups where KFD/amd-smi enrichment is unavailable.
+        if spec.gpu_arch and any(g.arch != "unknown" for g in gpus):
+            filtered = [g for g in gpus if g.arch == spec.gpu_arch]
+            if filtered:
+                logger.info(
+                    "NodePool: %s — arch filter '%s' applied: %d/%d GPU(s) retained",
+                    spec.label,
+                    spec.gpu_arch,
+                    len(filtered),
+                    len(gpus),
+                )
+                gpus = filtered
+            else:
+                detected_arches = sorted({g.arch for g in gpus})
+                logger.error(
+                    "NodePool: %s — arch filter '%s' matched no GPU.\n"
+                    "  Detected GPU(s) on this node: %s\n"
+                    "  Available arch(es): %s\n"
+                    "  Hint: verify --gpu-arch (local) or GPU_ARCH: (host.yaml) matches one "
+                    "of the above. Check output/artifacts/%s_gpu_info.log for full amd-smi output.\n"
+                    "  Falling back to all %d GPU(s) to avoid an empty pool — "
+                    "tests may run on the wrong device.",
+                    spec.label,
+                    spec.gpu_arch,
+                    [f"GPU-{g.index}({g.arch}, {g.vram_mb}MB)" for g in gpus],
+                    detected_arches,
+                    spec.label.replace(" ", "_").replace("/", "_").replace(":", "_"),
+                    len(gpus),
+                )
+
         class _StaticDetector:
             """Wrap a pre-detected list so GpuAllocator can call detect()."""
 
