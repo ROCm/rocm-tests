@@ -222,4 +222,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # CMake packaging path verifier: checks that ROCm packages ship cmake config
+    # files under lib/cmake/<package>/ without hardcoded /opt/rocm paths.
+    # cpu_only because no GPU computation is needed — pure filesystem inspection.
+    "tests/e2e/system_tools/cmake_path_verifier": [
+        "hw.cpu_only",
+        "layer.runtime",
+        "ci.nightly",
+        "os.linux",
+    ],
 }
