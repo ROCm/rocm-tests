@@ -12,6 +12,27 @@ special: the HIP-permitted fallback pattern (HINTS ${ROCM_PATH} PATHS
 
 from __future__ import annotations
 
+# Packages installed by the session fixture before verification runs.
+# On RHEL/SLES the -devel variant is installed; on Ubuntu the plain name is used.
+PACKAGES_TO_INSTALL: list[str] = [
+    "rocblas",
+    "rocsparse",
+    "rocfft",
+    "rocalution",
+    "hipblas",
+    "hipsparse",
+    "hipfft",
+    "hipcub",
+    "rocthrust",
+    "hiprand",
+    "rocprim",
+    "rccl",
+    "rocrand",
+    "hsakmt",
+    "miopengemm",
+    "rocm-opencl",
+]
+
 # Packages whose cmake config directories must exist and must not contain
 # any line that hardcodes /opt/rocm (other than the hip-permitted fallback).
 PACKAGES_TO_VERIFY: list[str] = [

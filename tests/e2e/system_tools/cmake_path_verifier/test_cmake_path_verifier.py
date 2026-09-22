@@ -4,17 +4,15 @@
 """
 test_cmake_path_verifier.py -- ROCm cmake packaging path compliance check.
 
-Ported from: cmake_path_verifier.py (ROCr test area, AMD internal framework).
-
 Validates:
     For each ROCm package under {rock_dir}/lib/cmake/<package>/:
     1. The cmake config directory exists (mandatory — missing dir is a fail).
     2. No cmake file in the tree contains a hardcoded /opt/rocm path outside
        the permitted HIP fallback pattern (HINTS ${ROCM_PATH} PATHS "/opt/rocm").
 
-Packages must resolve their build-time dependencies via CMAKE_PREFIX_PATH and
-find_package() rather than assuming /opt/rocm is the install prefix. A
-hardcoded prefix causes silent build failures when ROCm is installed elsewhere.
+Required packages are auto-installed by the session fixture in conftest.py
+before any test runs. Packages must resolve their build-time dependencies via
+CMAKE_PREFIX_PATH and find_package() — never assume /opt/rocm is the install prefix.
 
 Markers auto-injected by CATEGORY_PROFILES for tests/e2e/system_tools/cmake_path_verifier/:
     hw.cpu_only, layer.runtime, ci.nightly, os.linux
@@ -76,7 +74,7 @@ def test_cmake_package_path_verifier(
 
     logger.info("verifying cmake config dir for package=%s at %s", package, package_dir)
 
-    # Rule 27: missing cmake dir is a hard fail — cmake config is mandatory.
+    # Missing cmake dir is a hard fail — all ROCm packages must ship cmake config files.
     dir_check = target_executor.run(f"test -d {package_dir} && echo EXISTS || echo MISSING")
     if "MISSING" in (dir_check.stdout or ""):
         pytest.fail(
