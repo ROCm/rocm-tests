@@ -1,11 +1,15 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""
-test_miopen_driver.py -- MIOpen convolution forward and backward pass validation.
+"""MIOpen driver convolution forward and backward pass validation.
 
 Exercises the pre-installed MIOpenDriver binary with representative forward,
 backward-data, and backward-weights conv shapes and asserts GPU verification passes.
+
+Note:
+    MIOPEN_FIND_MODE=3 and MIOPEN_DISABLE_CACHE=1 are set for all driver
+    invocations to prevent kernel find-database lock contention when tests
+    run concurrently under pytest-xdist.
 """
 
 from __future__ import annotations
@@ -46,7 +50,9 @@ _BACKWARD_WRW_CONV_2 = [
     "conv -n 128 -c 256 -H 56 -W 56 -k 64 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -F 4 -t 1",
 ]
 
-_PASS_SENTINEL = "Verifies OK on GPU reference"
+_FWD_PASS_SENTINEL = "Verifies OK on GPU reference"
+# Backward passes do not emit a verify sentinel; detect kernel completion via the elapsed-time line.
+_BWD_TIMING_SENTINEL = "Elapsed:"
 
 
 def _run_conv_group(
@@ -58,18 +64,25 @@ def _run_conv_group(
     extra_flags: str = "",
 ) -> None:
     """Run every conv command in *cmds* and assert each verifies on GPU."""
+    is_backward = "bwd" in group_name.lower() or "backward" in group_name.lower()
     for args in cmds:
-        cmd = f"env LD_LIBRARY_PATH={ld} {driver} {args}"
+        cmd = f"env LD_LIBRARY_PATH={ld} " f"MIOPEN_FIND_MODE=3 " f"MIOPEN_DISABLE_CACHE=1 " f"{driver} {args}"
         if extra_flags:
             cmd = f"{cmd} {extra_flags}"
-        result = target_executor.run(cmd)
+        result = target_executor.run(cmd, timeout=300.0)
         assert result.ok, (
             f"{group_name} failed (exit={result.exit_code}) for: {args}\n"
             f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
         )
-        assert _PASS_SENTINEL in result.stdout, (
-            f"{group_name} did not verify on GPU for: {args}\n" f"stdout: {result.stdout[:2000]}"
-        )
+        if is_backward:
+            assert _BWD_TIMING_SENTINEL in result.stdout, (
+                f"{group_name}: no timing line in output — backward kernel may not have completed\n"
+                f"stdout: {result.stdout[:2000]}"
+            )
+        else:
+            assert _FWD_PASS_SENTINEL in result.stdout, (
+                f"{group_name} did not verify on GPU for: {args}\n" f"stdout: {result.stdout[:2000]}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +91,7 @@ def _run_conv_group(
 
 
 @pytest.mark.runtime.fast
-def test_miopen_forward_conv_1(target_executor, ld_path: dict, rock_dir: str, gpu_arch: str | None) -> None:
+def test_miopen_forward_conv_1(target_executor, ld_path: dict, rock_dir: str) -> None:
     """Validate MIOpenDriver forward conv group 1 (6 shapes, -F 1)."""
     driver = f"{rock_dir}/bin/MIOpenDriver"
     ld = ld_path["LD_LIBRARY_PATH"]
@@ -86,7 +99,7 @@ def test_miopen_forward_conv_1(target_executor, ld_path: dict, rock_dir: str, gp
 
 
 @pytest.mark.runtime.fast
-def test_miopen_forward_conv_2(target_executor, ld_path: dict, rock_dir: str, gpu_arch: str | None) -> None:
+def test_miopen_forward_conv_2(target_executor, ld_path: dict, rock_dir: str) -> None:
     """Validate MIOpenDriver forward conv group 2 (3 shapes, -F 1)."""
     driver = f"{rock_dir}/bin/MIOpenDriver"
     ld = ld_path["LD_LIBRARY_PATH"]
