@@ -63,6 +63,10 @@ def ck_fmha_build(
         pytest.skip(f"CK FMHA dropout requires gfx942 or gfx950; detected arch: {arch}")
 
     # Build fwd target first (also runs cmake configure).
+    # Both calls share the same subdir (same cmake build directory is intentional —
+    # cmake configure runs once, then each target is built separately). Distinct
+    # `label` values ensure the fingerprint cache treats them independently and
+    # does not short-circuit the backward build when the forward artifact exists.
     build_dir = cmake_build_dir(
         src=str(ck_repo),
         subdir=_SUBDIR,
@@ -74,7 +78,7 @@ def ck_fmha_build(
         label="ck_fmha_fwd",
     )
 
-    # Build bwd target in the same already-configured build directory.
+    # Build bwd target reusing the same configured build tree.
     cmake_build_dir(
         src=str(ck_repo),
         subdir=_SUBDIR,
