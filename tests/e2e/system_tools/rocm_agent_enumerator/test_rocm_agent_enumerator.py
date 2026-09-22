@@ -13,8 +13,8 @@ Validates:
        ``amdgcn-amd-amdhsa--<gfx_name>`` triple, confirming consistency between
        the two ROCm discovery tools.
 
-Markers auto-injected by CATEGORY_PROFILES for tests/e2e/hip_runtime/:
-    hw.gpu, layer.runtime, ci.nightly, e2e.stack, os.linux
+Markers auto-injected by CATEGORY_PROFILES for tests/e2e/system_tools/rocm_agent_enumerator/:
+    hw.gpu, layer.runtime, ci.nightly, os.linux
 
 Explicit markers:
     runtime.fast
