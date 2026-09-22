@@ -102,14 +102,8 @@ target_include_directories(sparse_csrrf_analysis_reuse PRIVATE "${ROCM_PATH}/inc
 target_link_libraries(sparse_csrrf_analysis_reuse PRIVATE hip::host ${ROCBLAS_LIBS} ${ROCSOLVER_LIBS})
 
 # Binary 6: MIOpen non-packed / non-trivially-strided (NP-NTS) tensor convolution test.
-find_package(miopen CONFIG QUIET PATHS "${ROCM_PATH}")
-if(miopen_FOUND)
-  set(MIOPEN_LIBS MIOpen)
-else()
-  set(MIOPEN_LIBS MIOpen)
-endif()
 add_executable(miopen_np_nts_tensors miopen_np_nts_tensors.cpp)
 target_compile_options(miopen_np_nts_tensors PRIVATE -O2 "--offload-arch=${GPU_ARCH}")
 target_include_directories(miopen_np_nts_tensors PRIVATE "${ROCM_PATH}/include")
 target_link_directories(miopen_np_nts_tensors PRIVATE "${ROCM_PATH}/lib")
-target_link_libraries(miopen_np_nts_tensors PRIVATE hip::host ${MIOPEN_LIBS})
+target_link_libraries(miopen_np_nts_tensors PRIVATE hip::host MIOpen)

@@ -178,7 +178,8 @@ def miopen_np_nts_tensors_binary(
     if not resolved_gpu_arch and node_pool:
         with contextlib.suppress(StopIteration, AttributeError):
             resolved_gpu_arch = next(iter(node_pool.gpus)).arch
-    require_gpu_arch_for("rocm_libs")
+    if not resolved_gpu_arch:
+        require_gpu_arch_for("rocm_libs")
     build_dir = cmake_build_dir(
         **_COMMON_BUILD_KWARGS,
         subdir="rocm_libs/miopen_np_nts_tensors",
