@@ -5,14 +5,14 @@
 test_cmake_path_verifier.py -- ROCm cmake packaging path compliance check.
 
 Validates:
-    For each ROCm package under {rock_dir}/lib/cmake/<package>/:
-    1. The cmake config directory exists (mandatory — missing dir is a fail).
-    2. No cmake file in the tree contains a hardcoded /opt/rocm path outside
-       the permitted HIP fallback pattern (HINTS ${ROCM_PATH} PATHS "/opt/rocm").
+    1. cmake config directories exist for hip, amd_comgr, and amd-dbgapi (mandatory).
+    2. All cmake config directories found under {rocm_dir}/lib/cmake/ are scanned
+       and must not contain any hardcoded /opt/rocm path outside the permitted HIP
+       fallback pattern (HINTS ${ROCM_PATH} PATHS "/opt/rocm").
 
-Required packages are auto-installed by the session fixture in conftest.py
-before any test runs. Packages must resolve their build-time dependencies via
-CMAKE_PREFIX_PATH and find_package() — never assume /opt/rocm is the install prefix.
+Packages are installed by the session fixture in conftest.py before scanning.
+The scan is dynamic — whatever cmake subdirectories exist after installation
+are all verified, with no hardcoded expected list beyond the three mandatory ones.
 
 Markers auto-injected by CATEGORY_PROFILES for tests/e2e/system_tools/cmake_path_verifier/:
     hw.cpu_only, layer.runtime, ci.nightly, os.linux
@@ -29,9 +29,9 @@ import re
 import pytest
 
 from tests.e2e.system_tools.cmake_path_verifier._constants import (
-    HIP_ALLOWED_PATTERN,
     HARDCODE_PATTERN,
-    PACKAGES_TO_VERIFY,
+    HIP_ALLOWED_PATTERN,
+    PACKAGES_ALWAYS_VERIFY,
 )
 
 logger = logging.getLogger("rocm.test")
@@ -41,11 +41,7 @@ _RE_HIP_ALLOWED = re.compile(HIP_ALLOWED_PATTERN)
 
 
 def _check_file_for_hardcode(content: str, is_hip: bool) -> list[str]:
-    """Return lines that violate the hardcode rule.
-
-    For hip cmake files the HIP-permitted fallback line is skipped before
-    the general hardcode check is applied.
-    """
+    """Return lines that violate the hardcode rule."""
     violations: list[str] = []
     for line in content.splitlines():
         if is_hip and _RE_HIP_ALLOWED.search(line):
@@ -55,85 +51,91 @@ def _check_file_for_hardcode(content: str, is_hip: bool) -> list[str]:
     return violations
 
 
-@pytest.mark.runtime.fast
-@pytest.mark.parametrize("package", PACKAGES_TO_VERIFY)
-def test_cmake_package_path_verifier(
-    target_executor,
-    rock_dir: str,
-    package: str,
-) -> None:
-    """Assert that the cmake config directory for *package* exists and contains no hardcoded /opt/rocm paths.
+def _verify_package(executor, package_dir: str, package: str) -> list[str]:
+    """Check all cmake files under *package_dir* for hardcoded /opt/rocm paths.
 
-    Fails hard when the cmake directory is absent (it must be present in a correctly
-    installed ROCm build). Fails hard when any cmake file contains a line that hardcodes
-    /opt/rocm outside the permitted HIP fallback pattern.
+    Returns a list of human-readable violation strings (empty means clean).
     """
-    rocm_root = rock_dir or "/opt/rocm"
-    cmake_root = f"{rocm_root}/lib/cmake"
-    package_dir = f"{cmake_root}/{package}"
-
-    logger.info("verifying cmake config dir for package=%s at %s", package, package_dir)
-
-    # Missing cmake dir is a hard fail — all ROCm packages must ship cmake config files.
-    dir_check = target_executor.run(f"test -d {package_dir} && echo EXISTS || echo MISSING")
-    if "MISSING" in (dir_check.stdout or ""):
-        pytest.fail(
-            f"cmake config directory missing for package '{package}': {package_dir}\n"
-            f"Expected the package to be installed with its cmake config files under "
-            f"{cmake_root}/<package>/. Install the package (or its -devel variant) and retry."
-        )
-
-    logger.info("cmake dir found for package=%s — listing cmake files", package)
-
-    # List all files recursively; use find to avoid shell glob limitations on large trees.
-    find_result = target_executor.run(f"find {package_dir} -type f")
+    find_result = executor.run(f"find {package_dir} -type f")
     if not find_result.ok:
-        pytest.fail(
-            f"'find {package_dir} -type f' failed (exit={find_result.exit_code}):\n"
-            f"stderr: {find_result.stderr[:500]}"
-        )
+        return [f"find failed (exit={find_result.exit_code}): {(find_result.stderr or '')[:300]}"]
 
     cmake_files = [p.strip() for p in (find_result.stdout or "").splitlines() if p.strip()]
     if not cmake_files:
-        pytest.fail(
-            f"cmake config directory exists but contains no files: {package_dir}\n"
-            f"A correctly packaged ROCm component must ship at least one "
-            f"*-config.cmake or *Targets.cmake file."
-        )
-
-    logger.info("package=%s — found %d cmake file(s); scanning for hardcoded /opt/rocm", package, len(cmake_files))
+        return [f"cmake directory exists but contains no files: {package_dir}"]
 
     is_hip = package == "hip"
-    all_violations: dict[str, list[str]] = {}
-
+    violations: list[str] = []
     for filepath in cmake_files:
-        cat_result = target_executor.run(f"cat {filepath}")
+        cat_result = executor.run(f"cat {filepath}")
         if not cat_result.ok:
-            # Non-readable file (e.g. permissions) — report as a violation so the
-            # suite does not silently pass on unreadable cmake files.
-            all_violations[filepath] = [f"<unreadable: exit={cat_result.exit_code}>"]
+            violations.append(f"{filepath}: <unreadable: exit={cat_result.exit_code}>")
             continue
+        for line in _check_file_for_hardcode(cat_result.stdout or "", is_hip):
+            violations.append(f"{filepath}: {line}")
+    return violations
 
-        violations = _check_file_for_hardcode(cat_result.stdout or "", is_hip)
+
+@pytest.mark.runtime.fast
+def test_cmake_mandatory_packages_present(target_executor, rock_dir: str) -> None:
+    """Fail if hip, amd_comgr, or amd-dbgapi are missing their cmake config directories."""
+    rocm_root = rock_dir or "/opt/rocm"
+    cmake_root = f"{rocm_root}/lib/cmake"
+    missing = []
+    for package in PACKAGES_ALWAYS_VERIFY:
+        result = target_executor.run(f"test -d {cmake_root}/{package} && echo EXISTS || echo MISSING")
+        if "MISSING" in (result.stdout or ""):
+            missing.append(f"{cmake_root}/{package}")
+    if missing:
+        pytest.fail(
+            "Mandatory cmake config directories missing:\n"
+            + "\n".join(f"  {p}" for p in missing)
+        )
+
+
+@pytest.mark.runtime.fast
+def test_cmake_no_hardcoded_paths(target_executor, rock_dir: str) -> None:
+    """Scan all cmake config directories under {rocm_dir}/lib/cmake/ and fail on hardcoded /opt/rocm paths.
+
+    The list of packages is discovered dynamically from the filesystem — no hardcoded expected list.
+    """
+    rocm_root = rock_dir or "/opt/rocm"
+    cmake_root = f"{rocm_root}/lib/cmake"
+
+    # Discover all cmake package subdirectories present after installation.
+    list_result = target_executor.run(f"find {cmake_root} -maxdepth 1 -mindepth 1 -type d")
+    if not list_result.ok:
+        pytest.fail(
+            f"Failed to list cmake directories under {cmake_root} "
+            f"(exit={list_result.exit_code}):\n{(list_result.stderr or '')[:300]}"
+        )
+
+    package_dirs = [p.strip() for p in (list_result.stdout or "").splitlines() if p.strip()]
+    if not package_dirs:
+        pytest.fail(f"No cmake package directories found under {cmake_root}")
+
+    logger.info("found %d cmake package(s) to verify under %s", len(package_dirs), cmake_root)
+
+    all_violations: dict[str, list[str]] = {}
+    for package_dir in sorted(package_dirs):
+        package = package_dir.rsplit("/", 1)[-1]
+        logger.info("checking package=%s", package)
+        violations = _verify_package(target_executor, package_dir, package)
         if violations:
-            all_violations[filepath] = violations
+            all_violations[package] = violations
 
     if all_violations:
-        summary_lines = [
-            f"package '{package}': hardcoded /opt/rocm found in {len(all_violations)} file(s).",
+        lines = [
+            f"{len(all_violations)} package(s) contain hardcoded /opt/rocm paths.",
             "Packages must use CMAKE_PREFIX_PATH + find_package() — never assume /opt/rocm.",
             "",
         ]
-        for filepath, lines in all_violations.items():
-            summary_lines.append(f"  {filepath}:")
-            for line in lines[:5]:  # cap per-file output to keep assertion readable
-                summary_lines.append(f"    {line}")
-            if len(lines) > 5:
-                summary_lines.append(f"    ... and {len(lines) - 5} more line(s)")
-        pytest.fail("\n".join(summary_lines))
+        for pkg, viols in all_violations.items():
+            lines.append(f"  {pkg}:")
+            for v in viols[:5]:
+                lines.append(f"    {v}")
+            if len(viols) > 5:
+                lines.append(f"    ... and {len(viols) - 5} more")
+        pytest.fail("\n".join(lines))
 
-    logger.info(
-        "package=%s PASSED — %d cmake file(s) verified, no hardcoded /opt/rocm paths found",
-        package,
-        len(cmake_files),
-    )
+    logger.info("all %d cmake package(s) passed — no hardcoded /opt/rocm paths found", len(package_dirs))
