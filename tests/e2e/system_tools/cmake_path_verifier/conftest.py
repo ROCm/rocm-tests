@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.common.prereqs import install_packages
+from tests.common.os_packages import install_packages
 from tests.e2e.system_tools.cmake_path_verifier._constants import PACKAGES_TO_INSTALL
 
 # Guard so package installation runs only once per pytest session even though

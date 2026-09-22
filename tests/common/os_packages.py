@@ -1,11 +1,11 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""prereqs.py -- Generic OS package pre-installation helper for rocm-tests.
+"""os_packages.py -- Generic OS package pre-installation helper for rocm-tests.
 
 Usage in any test area's conftest.py::
 
-    from tests.common.prereqs import install_packages
+    from tests.common.os_packages import install_packages
 
     _installed = False
 
