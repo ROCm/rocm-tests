@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _PASS_MARKER = "Finished!"
 
 
-@pytest.mark.runtime.fast
+@pytest.mark.runtime.medium
 def test_rocwmma_hiprtc(
     target_executor,
     hiprtc_gemm_binary: str,
@@ -39,6 +39,16 @@ def test_rocwmma_hiprtc(
 
     logger.info("Running rocWMMA hipRTC sample: %s", cmd)
     result = target_executor.run(cmd, timeout=600.0)
+
+    # Checked before the marker, because the sample prints it and only then
+    # tears down the hipRTC module and the HIP runtime. A crash in that teardown
+    # leaves the marker on stdout, so asserting on the marker alone passes; and
+    # reporting such a run as "did not report Finished!" would point at the
+    # wrong thing.
+    assert result.ok, (
+        f"{binary.name} exited {result.exit_code}:\n"
+        f"stdout: {result.stdout[-2000:]}\nstderr: {result.stderr[-500:]}"
+    )
 
     assert _PASS_MARKER in result.stdout, (
         f"{binary.name} did not report '{_PASS_MARKER}' (exit={result.exit_code}):\n"

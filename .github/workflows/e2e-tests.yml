@@ -360,6 +360,7 @@ jobs:
               "tests/e2e/rocprim/"
               "tests/e2e/rocm_examples/"
               "tests/e2e/hip_directed/"
+              "tests/e2e/rocwmma/"
             )
           fi
 
