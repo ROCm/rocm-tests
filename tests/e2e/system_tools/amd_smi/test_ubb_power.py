@@ -134,7 +134,7 @@ def test_ubb_power_workload(
     ), f"GPU {gpu_id} (OAM_ID 0): UBB_POWER absent or N/A at idle:\n{(idle_result.stdout or '')[:500]}"
     logger.info("test_ubb_power_workload: idle UBB_POWER = %.1f W", idle_watts)
 
-    rocm_path = rock_dir or "/opt/rocm"
+    rocm_path = rock_dir
     gemm_abs = str(pathlib.Path(coral_gemm_binary).resolve())
     gemm_dir = str(pathlib.Path(gemm_abs).parent)
     workload_cmd = (
@@ -155,7 +155,6 @@ def test_ubb_power_workload(
         assert workload.is_alive, "CoralGemm workload exited before measurement began"
         logger.info("test_ubb_power_workload: workload running — polling UBB_POWER (5 attempts)")
 
-        any_exceeded = False
         for attempt in range(5):
             if not workload.is_alive:
                 logger.info("test_ubb_power_workload: workload finished at attempt %d", attempt)
@@ -179,26 +178,19 @@ def test_ubb_power_workload(
                 idle_watts,
                 load_watts,
             )
-            if load_watts > idle_watts:
-                any_exceeded = True
-                logger.info(
-                    "test_ubb_power_workload: attempt %d PASS — load %.1f W > idle %.1f W",
-                    attempt,
-                    load_watts,
-                    idle_watts,
-                )
-            else:
-                logger.warning(
-                    "test_ubb_power_workload: attempt %d — load %.1f W not yet above idle %.1f W",
-                    attempt,
-                    load_watts,
-                    idle_watts,
-                )
+            assert load_watts > idle_watts, (
+                f"GPU {gpu_id}: poll {attempt} — load {load_watts:.1f} W did not exceed "
+                f"idle baseline {idle_watts:.1f} W"
+            )
+            logger.info(
+                "test_ubb_power_workload: attempt %d PASS — load %.1f W > idle %.1f W",
+                attempt,
+                load_watts,
+                idle_watts,
+            )
 
             time.sleep(2)  # allow power to stabilise between samples
-
-    assert any_exceeded, f"GPU {gpu_id}: UBB_POWER never exceeded idle baseline of {idle_watts:.1f} W across 5 polls"
-    logger.info("test_ubb_power_workload: PASS — load UBB_POWER exceeded idle on GPU %s", gpu_id)
+    logger.info("test_ubb_power_workload: PASS — all valid polls exceeded idle UBB_POWER on GPU %s", gpu_id)
 
 
 @pytest.mark.runtime.fast

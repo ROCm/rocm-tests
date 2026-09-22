@@ -88,7 +88,7 @@ def coral_gemm_binary(external_build, cmake_build_dir, compiler_build_dir: str, 
     repo_path = external_build.clone_repo(_CORAL_GEMM_URL, dest, ref=_CORAL_GEMM_REF)
     external_build.assert_license_present(repo_path)
 
-    rocm_path = rock_dir or "/opt/rocm"
+    rocm_path = rock_dir
     logger.info("coral_gemm_binary: running cmake build in %s", repo_path)
     build_dir = cmake_build_dir(
         src=str(repo_path),
