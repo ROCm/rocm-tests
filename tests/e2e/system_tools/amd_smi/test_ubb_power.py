@@ -27,12 +27,12 @@ logger = logging.getLogger("rocm.test")
 # GPU architectures known to report the UBB_POWER and THRESHOLD fields via amd-smi.
 _UBB_SUPPORTED_ARCHS: frozenset[str] = frozenset({"gfx950"})
 
-# CoralGemm workload args matching the original test invocation.
-# Override via ROCM_TEST_CORAL_GEMM_ARGS env var to increase iteration count on fast systems
-# where the default 3000 iterations complete too quickly for a power measurement window.
+# CoralGemm workload args: batch=1 so the workload runs on a single visible GPU
+# (the framework exposes only the allocated GPU via ROCR_VISIBLE_DEVICES).
+# Override via ROCM_TEST_CORAL_GEMM_ARGS for multi-GPU or different shape needs.
 _CORAL_GEMM_ARGS = os.environ.get(
     "ROCM_TEST_CORAL_GEMM_ARGS",
-    "R_64F R_64F R_64F R_64F OP_N OP_T 8640 8640 8640 8640 8640 8640 12 3000",
+    "R_64F R_64F R_64F R_64F OP_N OP_T 8640 8640 8640 8640 8640 8640 1 3000",
 )
 
 
@@ -151,7 +151,7 @@ def test_ubb_power_workload(
         f"HIP_PLATFORM=amd ROCM_PATH={rocm_path} "
         f"LD_LIBRARY_PATH={rocm_path}/lib:${{LD_LIBRARY_PATH:-}} "
         f"PATH={rocm_path}/bin:$PATH "
-        f"while true; do {gemm_abs} {_CORAL_GEMM_ARGS} || break; done"
+        f"while true; do {gemm_abs} {_CORAL_GEMM_ARGS}; done"
     )
     logger.info("test_ubb_power_workload: launching CoralGemm loop from %s", gemm_dir)
 
@@ -163,8 +163,8 @@ def test_ubb_power_workload(
         time.sleep(2)  # ramp-up: let the GPU reach operating power before polling
         if not workload.is_alive:
             pytest.fail(
-                "CoralGemm exited within 2 s — likely a binary or environment error. "
-                "Check the executor log for details."
+                "CoralGemm shell loop exited within 2 s — likely a launch or library error. "
+                "Check: output/artifacts/executor-logs/test_ubb_power_workload__coral_gemm.log"
             )
         logger.info("test_ubb_power_workload: workload running — polling UBB_POWER (5 attempts)")
 
