@@ -27,12 +27,15 @@ logger = logging.getLogger("rocm.test")
 # GPU architectures known to report the UBB_POWER and THRESHOLD fields via amd-smi.
 _UBB_SUPPORTED_ARCHS: frozenset[str] = frozenset({"gfx950"})
 
-# CoralGemm workload args: batch=1 so the workload runs on a single visible GPU
-# (the framework exposes only the allocated GPU via ROCR_VISIBLE_DEVICES).
-# Override via ROCM_TEST_CORAL_GEMM_ARGS for multi-GPU or different shape needs.
+# CoralGemm workload args: batch=8 stresses all node GPUs to produce a
+# measurable UBB_POWER increase (UBB_POWER is node-level; single-GPU load
+# is too small relative to the ~3400W idle baseline to reliably exceed it).
+# ROCR_VISIBLE_DEVICES is unset in the workload command so CoralGemm can
+# access all GPUs — this is intentional for a node-level power measurement.
+# Override via ROCM_TEST_CORAL_GEMM_ARGS if needed.
 _CORAL_GEMM_ARGS = os.environ.get(
     "ROCM_TEST_CORAL_GEMM_ARGS",
-    "R_64F R_64F R_64F R_64F OP_N OP_T 8640 8640 8640 8640 8640 8640 1 3000",
+    "R_64F R_64F R_64F R_64F OP_N OP_T 8640 8640 8640 8640 8640 8640 8 3000",
 )
 
 
@@ -143,11 +146,13 @@ def test_ubb_power_workload(
     rocm_path = rock_dir
     gemm_abs = str(pathlib.Path(coral_gemm_binary).resolve())
     gemm_dir = str(pathlib.Path(gemm_abs).parent)
-    # VAR=val prefix syntax is only valid for simple commands, not compound statements
-    # like 'while'. Export vars first, then start the continuous loop so the workload
-    # runs until the context manager kills it after power polling completes.
+    # Unset ROCR_VISIBLE_DEVICES so CoralGemm can stress all node GPUs.
+    # UBB_POWER is a node-level metric — a single-GPU load (~200W) is too
+    # small to reliably exceed the ~3400W idle baseline; all GPUs must run.
+    # Export vars explicitly because VAR=val prefix is invalid before 'while'.
     workload_cmd = (
         f"cd {gemm_dir} && "
+        f"unset ROCR_VISIBLE_DEVICES && "
         f"export HIP_PLATFORM=amd && "
         f"export ROCM_PATH={rocm_path} && "
         f"export LD_LIBRARY_PATH={rocm_path}/lib:${{LD_LIBRARY_PATH:-}} && "
