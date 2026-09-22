@@ -9,7 +9,7 @@ test fixtures at runtime (not vendored into this repository).
 
 - **Repository:** https://github.com/AMD-HPC/CoralGemm
 - **License:** MIT
-- **Used by:** `tests/e2e/amd_smi/system_tools/test_ubb_power.py`
+- **Used by:** `tests/e2e/system_tools/amd_smi/test_ubb_power.py`
   (`test_ubb_power_workload` — cloned at test runtime as a GPU workload generator)
 
 The MIT License text is reproduced at the repository link above.

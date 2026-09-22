@@ -537,8 +537,13 @@ def pytest_configure(config: pytest.Config) -> None:
         node_specs = HostConfigLoader.load(remote_node_path)
         logger.info("NodePool: REMOTE mode — %d node(s) from %s", len(node_specs), remote_node_path)
     else:
-        node_specs = [NodeSpec(hostname="localhost", label="localhost")]
-        logger.info("NodePool: LOCAL mode — detecting GPUs on localhost")
+        # Carry the --gpu-arch value into the local NodeSpec so that _detect_node
+        # can filter the GPU pool to only the matching device.  This is needed on
+        # machines with multiple heterogeneous GPUs (e.g. a dual-GPU runner hosting
+        # both gfx1030 and gfx1201) where each CI job should see only its target GPU.
+        _local_gpu_arch = config.getoption("--gpu-arch", default=None) or None
+        node_specs = [NodeSpec(hostname="localhost", label="localhost", gpu_arch=_local_gpu_arch)]
+        logger.info("NodePool: LOCAL mode — detecting GPUs on localhost (arch filter: %s)", _local_gpu_arch or "none")
 
     detector_override = None
     if config.getoption("--mock-gpu", default=False) or not remote_node_path:
