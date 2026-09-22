@@ -143,25 +143,28 @@ def test_ubb_power_workload(
     rocm_path = rock_dir
     gemm_abs = str(pathlib.Path(coral_gemm_binary).resolve())
     gemm_dir = str(pathlib.Path(gemm_abs).parent)
+    # Wrap in a shell loop so the workload runs continuously regardless of how fast
+    # each iteration completes on the target GPU — the loop is killed when the
+    # context manager exits after power polling finishes.
     workload_cmd = (
         f"cd {gemm_dir} && "
         f"HIP_PLATFORM=amd ROCM_PATH={rocm_path} "
         f"LD_LIBRARY_PATH={rocm_path}/lib:${{LD_LIBRARY_PATH:-}} "
         f"PATH={rocm_path}/bin:$PATH "
-        f"{gemm_abs} {_CORAL_GEMM_ARGS}"
+        f"while true; do {gemm_abs} {_CORAL_GEMM_ARGS} || break; done"
     )
-    logger.info("test_ubb_power_workload: launching CoralGemm workload from %s", gemm_dir)
+    logger.info("test_ubb_power_workload: launching CoralGemm loop from %s", gemm_dir)
 
     with target_executor.start_background(
         workload_cmd,
         log_path="output/artifacts/executor-logs/test_ubb_power_workload__coral_gemm.log",
         console_label="coral-gemm",
     ) as workload:
-        time.sleep(1)  # short ramp-up: let the GPU spin up before first poll
+        time.sleep(2)  # ramp-up: let the GPU reach operating power before polling
         if not workload.is_alive:
-            pytest.skip(
-                "CoralGemm finished in under 1 s — workload too short for power measurement on this system. "
-                "Set ROCM_TEST_CORAL_GEMM_ARGS to increase the iteration count (last argument)."
+            pytest.fail(
+                "CoralGemm exited within 2 s — likely a binary or environment error. "
+                "Check the executor log for details."
             )
         logger.info("test_ubb_power_workload: workload running — polling UBB_POWER (5 attempts)")
 
