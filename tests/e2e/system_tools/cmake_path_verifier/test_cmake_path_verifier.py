@@ -87,10 +87,7 @@ def test_cmake_mandatory_packages_present(target_executor, rock_dir: str) -> Non
         if "MISSING" in (result.stdout or ""):
             missing.append(f"{cmake_root}/{package}")
     if missing:
-        pytest.fail(
-            "Mandatory cmake config directories missing:\n"
-            + "\n".join(f"  {p}" for p in missing)
-        )
+        pytest.fail("Mandatory cmake config directories missing:\n" + "\n".join(f"  {p}" for p in missing))
 
 
 @pytest.mark.runtime.fast

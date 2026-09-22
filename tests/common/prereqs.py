@@ -37,9 +37,7 @@ def detect_os(executor) -> str:
         return "rhel"
     if "sles" in os_id:
         return "sles"
-    raise RuntimeError(
-        f"Unsupported OS '{os_id}'. Supported: ubuntu 24.04, rhel 10.1, sles 15.7."
-    )
+    raise RuntimeError(f"Unsupported OS '{os_id}'. Supported: ubuntu 24.04, rhel 10.1, sles 15.7.")
 
 
 def install_packages(executor, packages: list[str]) -> None:
@@ -51,10 +49,7 @@ def install_packages(executor, packages: list[str]) -> None:
     """
     os_family = detect_os(executor)
 
-    if os_family in ("rhel", "sles"):
-        pkg_names = [f"{p}-devel" for p in packages]
-    else:
-        pkg_names = list(packages)
+    pkg_names = [f"{p}-devel" for p in packages] if os_family in ("rhel", "sles") else list(packages)
 
     pkg_str = " ".join(pkg_names)
 
