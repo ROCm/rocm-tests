@@ -17,8 +17,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 // SPDX-License-Identifier: MIT
-#ifndef CUST_DEFECT_TEST_UTILS_H
-#define CUST_DEFECT_TEST_UTILS_H
+#ifndef HWQ_TEST_UTILS_H
+#define HWQ_TEST_UTILS_H
 
 #include <hip/hip_runtime.h>
 #include <chrono>

@@ -1,0 +1,8 @@
+# requirements-results.txt — dependencies for the ClickHouse results upload job.
+#
+# Install in the upload_results GitHub Actions job:
+#   python -m pip install -r requirements-results.txt
+
+clickhouse-connect>=0.8
+certifi>=2024.0.0
+pytest-json-report>=1.5

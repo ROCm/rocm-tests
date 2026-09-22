@@ -563,6 +563,24 @@ class SshExecutor(AbstractExecutor):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
+    def _transport_alive(self) -> bool:
+        """Return True only when the transport is active *and* can open a new channel.
+
+        ``transport.is_active()`` returns True for stale connections that have not
+        seen a clean EOF — e.g. after the server's ClientAliveInterval expires and
+        silently drops the TCP session.  Sending a keepalive probe via
+        ``global_request`` is the cheapest way to detect a dead socket without
+        opening a full exec channel.
+        """
+        transport = self._client.get_transport() if self._client is not None else None
+        if transport is None or not transport.is_active():
+            return False
+        try:
+            transport.send_ignore()
+            return True
+        except Exception:  # pylint: disable=broad-except
+            return False
+
     def _connect(self) -> paramiko.SSHClient:
         """Return an active Paramiko client, opening a new connection if needed.
 
@@ -572,12 +590,14 @@ class SshExecutor(AbstractExecutor):
         if not _PARAMIKO_OK:
             raise RuntimeError("paramiko is not installed — run: pip install paramiko")
 
-        if (
-            self._client is not None
-            and self._client.get_transport() is not None
-            and self._client.get_transport().is_active()
-        ):
+        if self._client is not None and self._transport_alive():
             return self._client
+
+        if self._client is not None:
+            logger.info("SshExecutor: stale transport detected, reconnecting to %s", self.session_key)
+            with contextlib.suppress(Exception):
+                self._client.close()
+            self._client = None
 
         logger.info("SshExecutor: opening connection host=%s", self.session_key)
         client = paramiko.SSHClient()
@@ -751,8 +771,9 @@ class SshExecutor(AbstractExecutor):
         self,
         command: str,
         timeout: float | None = None,
-        env_overrides: dict | None = None,
+        *,
         stream: bool = False,
+        env_overrides: dict | None = None,
     ) -> ExecutionResult:
         """Execute *command* on the remote host and return the result.
 
@@ -768,6 +789,8 @@ class SshExecutor(AbstractExecutor):
             command:       Shell command string to execute on the remote host.
             timeout:       Maximum seconds to wait for the command to finish
                            (default 300 s).
+            stream:        When True, stream stdout/stderr and emit periodic
+                           heartbeat lines while the command is still running.
             env_overrides: Additional environment variables to export on the
                            remote shell before running *command*.
 
