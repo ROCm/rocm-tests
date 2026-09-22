@@ -13,7 +13,7 @@ Usage in any test area's conftest.py::
     def my_packages(target_executor):
         global _installed
         if not _installed:
-            install_packages(target_executor.primary, ["rocblas", "hipblas"])
+            install_packages(target_executor, ["rocblas", "hipblas"])
             _installed = True
 
 Supported OS: Ubuntu 24.04, RHEL 10.1, SLES 15.7.
@@ -45,8 +45,9 @@ def detect_os(executor) -> str:
 def install_packages(executor, packages: list[str]) -> None:
     """Install *packages* on the target node using the OS-appropriate package manager.
 
-    On RHEL and SLES each name is suffixed with -devel. Non-zero exit is logged
-    as a warning because packages may already be installed (idempotent).
+    *executor* is a NodeExecutorGroup (as returned by target_executor). On RHEL
+    and SLES each name is suffixed with -devel. Non-zero exit is logged as a
+    warning because packages may already be installed (idempotent).
     """
     os_family = detect_os(executor)
 

@@ -24,5 +24,5 @@ def cmake_packages_installed(target_executor) -> None:
     """
     global _packages_installed
     if not _packages_installed:
-        install_packages(target_executor.primary, PACKAGES_TO_INSTALL)
+        install_packages(target_executor, PACKAGES_TO_INSTALL)
         _packages_installed = True
