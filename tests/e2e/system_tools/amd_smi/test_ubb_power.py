@@ -114,6 +114,8 @@ def test_ubb_power_default(target_executor, ubb_env, gpu_arch: str | None) -> No
     logger.info("test_ubb_power_default: PASS — GPU %s (OAM_ID 0) UBB_POWER = %.1f W", gpu_id, watts)
 
 
+@pytest.mark.hw.multi_gpu
+@pytest.mark.gpu_count(8)
 @pytest.mark.runtime.medium
 def test_ubb_power_workload(
     target_executor,
@@ -124,8 +126,10 @@ def test_ubb_power_workload(
 ) -> None:
     """Verify amd-smi UBB_POWER under CoralGemm load exceeds the idle baseline.
 
-    Resolves the GPU with OAM_ID 0, captures idle UBB_POWER, launches CoralGemm,
-    then polls five times asserting load > idle on every reading.
+    Requests all 8 GPUs via hw.multi_gpu + gpu_count(8) so the framework sets
+    ROCR_VISIBLE_DEVICES=0,1,...,7 and CoralGemm can stress all GPUs simultaneously.
+    UBB_POWER is a node-level metric — a single-GPU workload (~200W) is too small
+    relative to the ~3400W idle baseline to detect reliably; all GPUs are required.
     """
     _skip_unsupported_arch(gpu_arch)
 
@@ -146,13 +150,10 @@ def test_ubb_power_workload(
     rocm_path = rock_dir
     gemm_abs = str(pathlib.Path(coral_gemm_binary).resolve())
     gemm_dir = str(pathlib.Path(gemm_abs).parent)
-    # Unset ROCR_VISIBLE_DEVICES so CoralGemm can stress all node GPUs.
-    # UBB_POWER is a node-level metric — a single-GPU load (~200W) is too
-    # small to reliably exceed the ~3400W idle baseline; all GPUs must run.
-    # Export vars explicitly because VAR=val prefix is invalid before 'while'.
+    # Framework sets ROCR_VISIBLE_DEVICES=0,1,...,7 via hw.multi_gpu+gpu_count(8).
+    # Export vars explicitly — VAR=val prefix syntax is invalid before 'while'.
     workload_cmd = (
         f"cd {gemm_dir} && "
-        f"unset ROCR_VISIBLE_DEVICES && "
         f"export HIP_PLATFORM=amd && "
         f"export ROCM_PATH={rocm_path} && "
         f"export LD_LIBRARY_PATH={rocm_path}/lib:${{LD_LIBRARY_PATH:-}} && "
