@@ -10,12 +10,19 @@ import pytest
 from tests.common.prereqs import install_packages
 from tests.e2e.system_tools.cmake_path_verifier._constants import PACKAGES_TO_INSTALL
 
+# Guard so package installation runs only once per pytest session even though
+# the fixture is function-scoped (target_executor cannot be session-scoped).
+_packages_installed = False
 
-@pytest.fixture(scope="session", autouse=True)
+
+@pytest.fixture(autouse=True)
 def cmake_packages_installed(target_executor) -> None:
     """Install ROCm devel packages required by cmake_path_verifier tests.
 
-    Runs once per session before any test in this area. Requires passwordless
-    sudo on the test node for the OS package manager.
+    Runs once per session (guarded by module-level flag). target_executor is
+    function-scoped so this fixture must be too; the flag prevents repeated installs.
     """
-    install_packages(target_executor.primary, PACKAGES_TO_INSTALL)
+    global _packages_installed
+    if not _packages_installed:
+        install_packages(target_executor.primary, PACKAGES_TO_INSTALL)
+        _packages_installed = True

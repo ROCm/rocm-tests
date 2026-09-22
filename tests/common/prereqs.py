@@ -7,9 +7,14 @@ Usage in any test area's conftest.py::
 
     from tests.common.prereqs import install_packages
 
-    @pytest.fixture(scope="session", autouse=True)
+    _installed = False
+
+    @pytest.fixture(autouse=True)   # function-scoped; target_executor cannot be session-scoped
     def my_packages(target_executor):
-        install_packages(target_executor.primary, ["rocblas", "hipblas"])
+        global _installed
+        if not _installed:
+            install_packages(target_executor.primary, ["rocblas", "hipblas"])
+            _installed = True
 
 Supported OS: Ubuntu 24.04, RHEL 10.1, SLES 15.7.
 On RHEL and SLES the -devel variant of each package name is installed.
