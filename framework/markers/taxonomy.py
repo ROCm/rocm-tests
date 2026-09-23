@@ -236,11 +236,4 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
-    "tests/e2e/rvs": [
-        "hw.multi_gpu",
-        "layer.runtime",
-        "ci.nightly",
-        "e2e.stack",
-        "os.linux",
-    ],
 }
