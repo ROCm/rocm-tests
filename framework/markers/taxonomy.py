@@ -170,6 +170,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    "tests/e2e/rocwmma": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # CRIU checkpoint/restore suite: GPU workloads checkpointed and restored with CRIU +
     # amdgpu_plugin. Weekly cadence (happy path is a soak run); runtime.* is per test function.
     "tests/e2e/recovery/criu": [
@@ -232,6 +239,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     # UCX HPC communication library: configure/make build + filtered *rocm* gtest suite.
     "tests/e2e/hpc/ucx": [
         "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/ucc": [
+        "hw.multi_gpu",
         "layer.math_lib",
         "ci.nightly",
         "e2e.stack",
