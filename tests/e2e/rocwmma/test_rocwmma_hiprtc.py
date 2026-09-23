@@ -46,8 +46,7 @@ def test_rocwmma_hiprtc(
     # reporting such a run as "did not report Finished!" would point at the
     # wrong thing.
     assert result.ok, (
-        f"{binary.name} exited {result.exit_code}:\n"
-        f"stdout: {result.stdout[-2000:]}\nstderr: {result.stderr[-500:]}"
+        f"{binary.name} exited {result.exit_code}:\n" f"stdout: {result.stdout[-2000:]}\nstderr: {result.stderr[-500:]}"
     )
 
     assert _PASS_MARKER in result.stdout, (
