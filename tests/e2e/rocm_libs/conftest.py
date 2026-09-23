@@ -15,6 +15,7 @@ Build output layout::
     output/test-binaries/rocm_libs/async_mixed_precision_workflow/async_mixed_precision_workflow
     output/test-binaries/rocm_libs/sparse_csrrf_analysis_reuse/sparse_csrrf_analysis_reuse
     output/test-binaries/rocm_libs/hip_mempool_probe/hip_mempool_probe
+    output/test-binaries/rocm_libs/hip_complex_her2/hip_complex_her2
 """
 
 from __future__ import annotations
@@ -164,6 +165,21 @@ def hip_mempool_probe_binary(gpu_arch: str | None, cmake_build_dir, require_gpu_
         target="hip_mempool_probe",
     )
     return built_binary(os.path.join(build_dir, "hip_mempool_probe"), "hip_mempool_probe")
+
+
+@pytest.fixture(scope="session")
+def hip_complex_her2_binary(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for, built_binary) -> str:
+    """Compile and return the HIP complex API header workload (rocblas_cher2 via hipFloatComplex)."""
+    require_gpu_arch_for("rocm_libs")
+    build_dir = cmake_build_dir(
+        **_COMMON_BUILD_KWARGS,
+        subdir="rocm_libs/hip_complex_her2",
+        gpu_arch=gpu_arch,
+        label="rocm_libs/hip_complex_her2",
+        artifact="hip_complex_her2",
+        target="hip_complex_her2",
+    )
+    return built_binary(os.path.join(build_dir, "hip_complex_her2"), "hip_complex_her2")
 
 
 @pytest.fixture(scope="session")
