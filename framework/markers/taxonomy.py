@@ -229,4 +229,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # ROCm Validation Suite modules: each test drives one RVS module against its
+    # own conf and asserts on the verdicts RVS reports.
+    "tests/e2e/rvs": [
+        "hw.multi_gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
 }
