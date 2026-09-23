@@ -11,8 +11,6 @@ output with five checks, in order:
     4. Every device ``Name`` starts with ``gfx``.
     5. Every device ``Vendor`` is ``Advanced Micro Devices, Inc.``.
 
-tests/e2e/opencl/ has no category profile, so every required marker is declared
-explicitly on the test function.
 """
 
 import pytest
