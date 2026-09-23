@@ -5,7 +5,7 @@
 
 Validates that HIP complex number types (``hipFloatComplex``) interoperate correctly
 with the rocBLAS public API when the ``ROCM_MATHLIBS_API_USE_HIP_COMPLEX`` API path is
-active.  The workload allocates a 267×267 Hermitian matrix and two complex vectors on
+active.  The workload allocates a 267x267 Hermitian matrix and two complex vectors on
 the GPU, calls ``rocblas_cher2()`` (Hermitian rank-2 update), retrieves the result, and
 verifies every upper-triangular element against the expected formula.  A "PASS" token on
 stdout confirms success; any "FAIL" token or non-zero exit indicates a regression.
@@ -24,7 +24,7 @@ def test_hip_complex_her2(
     """Run the HIP complex API header workload and assert correctness.
 
     Exercises ``rocblas_cher2()`` through the ``hipFloatComplex``-typed API surface
-    (``ROCM_MATHLIBS_API_USE_HIP_COMPLEX``) on a 267×267 upper-triangular system.
+    (``ROCM_MATHLIBS_API_USE_HIP_COMPLEX``) on a 267x267 upper-triangular system.
     The binary prints "PASS" on success and "FAIL" on any element mismatch.
 
     Args:
