@@ -11,7 +11,6 @@ make them requestable from this suite.
 from __future__ import annotations
 
 from tests.e2e.rvs.conftest import (  # noqa: F401
-    gpu_conf_dir,
     rvs_binary as _rvs_binary,
     rvs_env,
     rvs_find_conf,

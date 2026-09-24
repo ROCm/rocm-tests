@@ -156,7 +156,6 @@ def test_amdsmi_gfx_clock_violation(
     target_executor,
     rvs_binary,
     rvs_find_conf,
-    gpu_conf_dir,
     rvs_env,
     rock_dir,
     run_ctx,
@@ -165,7 +164,7 @@ def test_amdsmi_gfx_clock_violation(
     """GFX clock-violation percentages must be available from both amd-smi views."""
     _skip_if_unsupported(target_executor, rock_dir)
 
-    conf = rvs_find_conf(_IET_CONF, gpu_conf_dir=gpu_conf_dir)
+    conf = rvs_find_conf(_IET_CONF)
     rvs_cmd = (
         f"exec env {rvs_env} {shlex.quote(str(pathlib.Path(rvs_binary).resolve()))} "
         f"-c {shlex.quote(str(pathlib.Path(conf).resolve()))} -d 3"
