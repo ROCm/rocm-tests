@@ -160,6 +160,27 @@ def _to_scalar(node: Any) -> int | None:
     return None
 
 
+
+# ---------------------------------------------------------------------------
+# Binary resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_amd_smi_bin(rock_dir: str) -> str:
+    """Return the ``amd-smi`` command path from the rock installation.
+
+    TheRock installs ``amd-smi`` under ``<rock_dir>/bin/amd-smi`` and tests
+    should always use the installation binary for predictability.
+
+    Args:
+        rock_dir: TheRock/ROCm install root.
+
+    Returns:
+        The absolute path to ``<rock_dir>/bin/amd-smi``.
+    """
+    return f"{rock_dir.rstrip('/')}/bin/amd-smi"
+
+
 # ---------------------------------------------------------------------------
 # Version helpers
 # ---------------------------------------------------------------------------
