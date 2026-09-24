@@ -32,7 +32,35 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <setjmp.h>
+#include <signal.h>
 #include <unistd.h>
+
+// ---------------------------------------------------------------------------
+// Signal handling for GPU fault delivery
+//
+// On some AMD GPU architectures the ROCm runtime delivers GPU memory faults
+// as SIGABRT to the owning process rather than returning a non-success code
+// from hipDeviceSynchronize().  Without a handler the process terminates with
+// exit 134 (128 + SIGABRT) before it can print the success sentinel and exit
+// cleanly.
+//
+// Install a longjmp-based handler so that each scenario's synchronize call
+// is wrapped in a sigsetjmp guard.  If the signal fires, we treat it as "fault
+// observed" (equivalent to hipDeviceSynchronize returning non-success) and
+// perform a safe hipDeviceReset() before returning true.
+// ---------------------------------------------------------------------------
+static volatile sig_atomic_t g_fault_signal = 0;
+static sigjmp_buf g_fault_jmp;
+static volatile sig_atomic_t g_in_sync = 0;  // set only while inside the guarded sync
+
+static void fault_signal_handler(int sig)
+{
+    if (!g_in_sync)
+        return;  // unexpected signal outside the guarded region — let default handler run
+    g_fault_signal = sig;
+    siglongjmp(g_fault_jmp, 1);
+}
 
 static void hip_check(hipError_t e, const char *what)
 {
@@ -98,9 +126,25 @@ static bool run_oob_write()
     float *d = nullptr;
     hip_check(hipMalloc(&d, n * sizeof(float)), "hipMalloc");
     k_oob_write<<<1, 1>>>(d, n, bad_index);
-    hipError_t s = hipDeviceSynchronize();
+
+    // Guard: on gfx94x the runtime may deliver SIGABRT instead of returning
+    // a non-success error from hipDeviceSynchronize().
+    hipError_t s;
+    g_in_sync = 1;
+    if (sigsetjmp(g_fault_jmp, 1) == 0) {
+        s = hipDeviceSynchronize();
+        g_in_sync = 0;
+    } else {
+        g_in_sync = 0;
+        fprintf(stderr, "    fault signal caught (sig=%d) during oob-write — treating as fault observed\n",
+                g_fault_signal);
+        fflush(stderr);
+        (void)hipDeviceReset();
+        return true;
+    }
     bool ok = check_fault_sync(s, "oob-write");
-    (void)hipFree(d);
+    // hipDeviceReset() releases all device allocations; call it before hipFree()
+    // to avoid abort() on a poisoned HIP context (observed on gfx94x).
     (void)hipDeviceReset();
     return ok;
 }
@@ -116,10 +160,21 @@ static bool run_oob_read()
     hip_check(hipMalloc(&d, n * sizeof(float)), "hipMalloc buf");
     hip_check(hipMalloc(&d_out, sizeof(float)), "hipMalloc out");
     k_oob_read<<<1, 1>>>(d, n, bad_index, d_out);
-    hipError_t s = hipDeviceSynchronize();
+
+    hipError_t s;
+    g_in_sync = 1;
+    if (sigsetjmp(g_fault_jmp, 1) == 0) {
+        s = hipDeviceSynchronize();
+        g_in_sync = 0;
+    } else {
+        g_in_sync = 0;
+        fprintf(stderr, "    fault signal caught (sig=%d) during oob-read — treating as fault observed\n",
+                g_fault_signal);
+        fflush(stderr);
+        (void)hipDeviceReset();
+        return true;
+    }
     bool ok = check_fault_sync(s, "oob-read");
-    (void)hipFree(d_out);
-    (void)hipFree(d);
     (void)hipDeviceReset();
     return ok;
 }
@@ -129,7 +184,23 @@ static bool run_null_deref()
     fprintf(stderr, ">>> scenario: null-deref\n");
     fflush(stderr);
     k_null_deref<<<1, 1>>>();
-    hipError_t s = hipDeviceSynchronize();
+
+    hipError_t s;
+    g_in_sync = 1;
+    if (sigsetjmp(g_fault_jmp, 1) == 0) {
+        s = hipDeviceSynchronize();
+        g_in_sync = 0;
+    } else {
+        g_in_sync = 0;
+        fprintf(stderr, "    fault signal caught (sig=%d) during null-deref — treating as fault observed\n",
+                g_fault_signal);
+        fflush(stderr);
+        // Skip hipDeviceReset() here: on gfx942 calling hipDeviceReset()
+        // after a null-deref SIGABRT triggers a secondary SIGSEGV inside the HIP
+        // runtime fault-handler thread.  We return true unconditionally; main() will
+        // call _exit(0) which bypasses all destructors and atexit handlers safely.
+        return true;
+    }
     bool ok = check_fault_sync(s, "null-deref");
     (void)hipDeviceReset();
     return ok;
@@ -201,6 +272,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // Install signal handlers before touching the GPU.
+    // runtime may deliver GPU memory faults as SIGABRT rather than returning a
+    // non-success code from hipDeviceSynchronize().
+    signal(SIGABRT, fault_signal_handler);
+    signal(SIGBUS,  fault_signal_handler);
+
     hip_check(hipSetDevice(device), "hipSetDevice");
     hipDeviceProp_t prop{};
     hip_check(hipGetDeviceProperties(&prop, device), "hipGetDeviceProperties");
@@ -231,5 +308,14 @@ int main(int argc, char **argv)
     printf("[BUGGY] SUITE_MARKER success scenario=%s pid=%d\n",
            only_mode_label(only), static_cast<int>(getpid()));
     fflush(stdout);
-    return 0;
+    // Use _exit(0) rather than return/exit so that C++ destructors and HIP
+    // runtime atexit handlers do not run after the device has been reset.
+    // On gfx94x the siglongjmp fault-recovery path resets the device, but
+    // the runtime's background fault-handler thread may still be live; the
+    // normal exit sequence triggers a secondary SIGSEGV (exit 139).  On other
+    // architectures hipDeviceReset() is called inside the normal sync path
+    // (above) so the context is already clean — _exit(0) is equally safe
+    // there and keeps the behaviour consistent across all architectures.
+    // stdout/stderr are explicitly flushed above so no output is lost.
+    _exit(0);
 }

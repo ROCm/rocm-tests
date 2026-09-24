@@ -15,12 +15,20 @@ only the required target rather than compiling unrelated HIP runtime binaries:
 - ``_ipc_module_load_build_dir``  — builds ``ipc_alltoall_module_load``,
   ``ipc_dup_import_module_load``, and ``noop.hsaco`` (HIP IPC regression tests;
   requires ``--gpu-arch``).
+- ``_device_alloc_build_dir``     — builds ``device_side_alloc`` (in-kernel
+  ``malloc``/``free`` from device code; requires ``--gpu-arch``).
+- ``_multi_instance_build_dir``   — builds ``hip_multi_instance_app`` (self-
+  verifying vector-add run as concurrent processes to exercise
+  ``HIP_VISIBLE_DEVICES`` placement; requires ``--gpu-arch``).
 - ``golden_workload_binary``  — builds ``golden_workload`` (SAXPY loop for
   partition isolation; requires ``--gpu-arch`` for HIP kernel offload).
 - ``buggy_workload_binary``   — builds ``buggy_workload`` (fault-injection
   binary for partition isolation; requires ``--gpu-arch``).
 - ``hip_device_count_binary`` — builds ``hip_device_count`` (driver-API only;
   prints ``hipGetDeviceCount()`` to stdout; does not require ``--gpu-arch``).
+- ``mixbench_hip_binary`` — clones ekondis/mixbench and builds ``mixbench-hip``
+  (mixed compute/memory throughput microbenchmark; the upstream CMake project
+  selects the HIP compiler itself, so no ``--gpu-arch`` is forwarded).
 
 Build output layout::
 
@@ -30,10 +38,13 @@ Build output layout::
     output/test-binaries/hip_runtime/ipc_module_load/ipc_alltoall_module_load
     output/test-binaries/hip_runtime/ipc_module_load/ipc_dup_import_module_load
     output/test-binaries/hip_runtime/ipc_module_load/noop.hsaco
+    output/test-binaries/hip_runtime/device_alloc_build/device_side_alloc
+    output/test-binaries/hip_runtime/multi_instance_build/hip_multi_instance_app
     output/test-binaries/hip_runtime/partition_isolation/golden_workload
     output/test-binaries/hip_runtime/partition_isolation/buggy_workload
     output/test-binaries/hip_runtime/partition_isolation/hip_device_count
     output/test-binaries/hip_runtime/mps/rock_mps_test
+    output/test-binaries/hip_runtime/mixbench/build/mixbench-hip
 """
 
 from __future__ import annotations
@@ -57,6 +68,11 @@ _PARTITION_ISO_SUBDIR = "hip_runtime/partition_isolation"
 # Cloned at runtime (never vendored); pin via env override.
 _HIP_TESTS_URL = "https://github.com/ROCm/hip-tests.git"
 _HIP_TESTS_REF = os.environ.get("ROCM_TEST_HIP_TESTS_REF", "develop")
+
+# ekondis/mixbench mixed compute/memory throughput microbenchmark.
+# Cloned at runtime (never vendored); pin the ref via env override.
+_MIXBENCH_URL = "https://github.com/ekondis/mixbench.git"
+_MIXBENCH_REF = os.environ.get("ROCM_TEST_MIXBENCH_REF", "master")
 
 
 @pytest.fixture(scope="session")
@@ -193,6 +209,60 @@ def ipc_dup_import_module_load_binary(_ipc_module_load_build_dir: str, built_bin
     )
 
 
+@pytest.fixture(scope="session")
+def _device_alloc_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build ``device_side_alloc`` (HIP in-kernel allocation; pass ``--gpu-arch``)."""
+    require_gpu_arch_for("hip_runtime/device_side_alloc")
+    return cmake_build_dir(
+        src=_SRC_DIR,
+        subdir="hip_runtime/device_alloc_build",
+        gpu_arch=gpu_arch,
+        extra_cmake_args=[
+            "-DBUILD_HOST_ONLY_TESTS=OFF",
+            "-DBUILD_HIP_KERNEL_TESTS=OFF",
+            "-DBUILD_DEVICE_ALLOC_TEST=ON",
+        ],
+        compiler_mode="optional_cxx_hip",
+        label="hip_runtime/device_side_alloc",
+        sync_dirs=[_SRC_DIR],
+        artifact="device_side_alloc",
+        target="device_side_alloc",
+    )
+
+
+@pytest.fixture(scope="session")
+def device_side_alloc_binary(_device_alloc_build_dir: str, built_binary) -> str:
+    """Compiled ``device_side_alloc`` binary path."""
+    return built_binary(os.path.join(_device_alloc_build_dir, "device_side_alloc"), "device_side_alloc")
+
+
+@pytest.fixture(scope="session")
+def _multi_instance_build_dir(gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for) -> str:
+    """Build ``hip_multi_instance_app`` (HIP kernel workload; pass ``--gpu-arch``)."""
+    require_gpu_arch_for("hip_runtime/multi_instance")
+    return cmake_build_dir(
+        src=_SRC_DIR,
+        subdir="hip_runtime/multi_instance_build",
+        gpu_arch=gpu_arch,
+        extra_cmake_args=[
+            "-DBUILD_HOST_ONLY_TESTS=OFF",
+            "-DBUILD_HIP_KERNEL_TESTS=OFF",
+            "-DBUILD_MULTI_INSTANCE_TEST=ON",
+        ],
+        compiler_mode="optional_cxx_hip",
+        label="hip_runtime/multi_instance",
+        sync_dirs=[_SRC_DIR],
+        artifact="hip_multi_instance_app",
+        target="hip_multi_instance_app",
+    )
+
+
+@pytest.fixture(scope="session")
+def hip_multi_instance_app_binary(_multi_instance_build_dir: str, built_binary) -> str:
+    """Compiled ``hip_multi_instance_app`` binary path."""
+    return built_binary(os.path.join(_multi_instance_build_dir, "hip_multi_instance_app"), "hip_multi_instance_app")
+
+
 # HIP samples are cloned from ROCm/hip-tests rather than vendored.
 # The legacy suite built each installed sample in its own CMake directory with
 # CMAKE_PREFIX_PATH pointing at ROCm. Inject the HIP compiler as well so CMake
@@ -294,3 +364,31 @@ def hip_device_count_binary(compile_binary) -> str:
         opt="-O0",
         subdir=_PARTITION_ISO_SUBDIR,
     )
+
+
+@pytest.fixture(scope="session")
+def _mixbench_repo(external_build, compiler_build_dir: str) -> str:
+    """Clone ekondis/mixbench once per session; return the checkout path."""
+    dest = pathlib.Path(compiler_build_dir) / "hip_runtime" / "mixbench"
+    repo = external_build.clone_repo(_MIXBENCH_URL, dest, ref=_MIXBENCH_REF)
+    external_build.assert_license_present(repo)
+    return str(repo)
+
+
+@pytest.fixture(scope="session")
+def mixbench_hip_binary(cmake_build_dir, _mixbench_repo: str, built_binary) -> str:
+    """Configure and build ``mixbench-hip``; return the compiled binary path.
+
+    The upstream ``mixbench-hip`` CMake project sets ``CMAKE_CXX_COMPILER`` to the
+    detected HIP compiler itself, so ``compiler_mode="none"`` leaves compiler
+    discovery to the project (``-DCMAKE_PREFIX_PATH`` points ``find_package(HIP)``
+    at the ROCm install).
+    """
+    build_dir = cmake_build_dir(
+        src=os.path.join(_mixbench_repo, "mixbench-hip"),
+        subdir="hip_runtime/mixbench",
+        compiler_mode="none",
+        artifact="mixbench-hip",
+        label="hip_runtime/mixbench",
+    )
+    return built_binary(os.path.join(build_dir, "mixbench-hip"), "mixbench-hip")
