@@ -5,13 +5,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import pathlib
+import subprocess
 
 import pytest
-
-from framework.gpu.detector import GpuDetector
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +53,31 @@ def ck_fmha_build(
     ck_repo: pathlib.Path,
     cmake_build_dir,
     gpu_arch: str | None,
+    rock_dir: str,
+    node_pool,
 ) -> str:
     """Build CK FMHA forward and backward targets; return build directory."""
     arch = gpu_arch
-    if arch is None:
-        gpus = GpuDetector().detect()
-        arch = gpus[0].arch if gpus else None
+    # Follow the same node_pool fallback pattern used across the framework.
+    if not arch and node_pool:
+        with contextlib.suppress(StopIteration, AttributeError):
+            detected = next(iter(node_pool.gpus)).arch
+            if detected and detected not in ("unknown", ""):
+                arch = detected
+    # Last resort: rocm_agent_enumerator (works when KFD/amd-smi enrichment fails).
+    if not arch:
+        with contextlib.suppress(Exception):
+            out = subprocess.run(
+                [f"{rock_dir}/bin/rocm_agent_enumerator"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if out.returncode == 0:
+                arch = next(
+                    (line.strip() for line in out.stdout.splitlines() if line.strip().startswith("gfx")),
+                    None,
+                )
     if arch is None or arch not in _SUPPORTED_ARCHS:
         pytest.skip(f"CK FMHA dropout requires gfx942 or gfx950; detected arch: {arch}")
 
