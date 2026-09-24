@@ -11,6 +11,8 @@ verifies every upper-triangular element against the expected formula.  A "PASS" 
 stdout confirms success; any "FAIL" token or non-zero exit indicates a regression.
 """
 
+import shlex
+
 import pytest
 
 
@@ -35,7 +37,7 @@ def test_hip_complex_her2(
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
-        f"env LD_LIBRARY_PATH={ld} {hip_complex_her2_binary}",
+        f"env LD_LIBRARY_PATH={shlex.quote(ld)} {shlex.quote(hip_complex_her2_binary)}",
         timeout=120.0,
     )
     assert result.ok, f"hip_complex_her2 exited with non-zero status:\n{result.stderr}"
