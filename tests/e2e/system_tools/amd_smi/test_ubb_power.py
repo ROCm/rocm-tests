@@ -112,6 +112,10 @@ def test_ubb_power_default(target_executor, ubb_env, gpu_arch: str | None) -> No
     logger.info("test_ubb_power_default: PASS — GPU %s (OAM_ID 0) UBB_POWER = %.1f W", gpu_id, watts)
 
 
+# MI350 (gfx950) has 8 GPUs. UBB_POWER is a node-level aggregate — a single GPU
+# adds only ~28W to the ~2162W idle baseline, below the metric's update resolution.
+# All 8 GPUs must be loaded to produce a detectable delta (validated: idle=2162W,
+# load=4570-6735W with all GPUs). 8 is tied to _UBB_SUPPORTED_ARCHS = {"gfx950"}.
 @pytest.mark.hw.multi_gpu
 @pytest.mark.gpu_count(8)
 @pytest.mark.runtime.medium
@@ -124,11 +128,9 @@ def test_ubb_power_workload(
 ) -> None:
     """Verify amd-smi UBB_POWER under CoralGemm load exceeds the idle baseline.
 
-    UBB_POWER is a node-level aggregate across all GPUs. The original test runs
-    on baremetal with all GPUs visible — a single-GPU workload adds only ~28W
-    against the ~2162W node baseline, too small for UBB_POWER to register.
-    hw.multi_gpu + gpu_count(8) replicates the original's all-GPUs-visible
-    behaviour so CoralGemm batch=12 stresses all GPUs simultaneously.
+    Resolves the GPU with OAM_ID 0, captures idle UBB_POWER, launches CoralGemm
+    across all 8 GPUs in a continuous loop, then polls five times asserting
+    load > idle on every reading.
     """
     _skip_unsupported_arch(gpu_arch)
 
