@@ -32,6 +32,7 @@ from tests.e2e.system_tools.cmake_path_verifier._constants import (
     HARDCODE_PATTERN,
     HIP_ALLOWED_PATTERN,
     PACKAGES_ALWAYS_VERIFY,
+    PACKAGES_TO_INSTALL,
 )
 
 logger = logging.getLogger("rocm.test")
@@ -79,7 +80,12 @@ def _verify_package(executor, package_dir: str, package: str) -> list[str]:
 @pytest.mark.runtime.fast
 def test_cmake_mandatory_packages_present(target_executor, rock_dir: str) -> None:
     """Fail if hip, amd_comgr, or amd-dbgapi are missing their cmake config directories."""
-    rocm_root = rock_dir or "/opt/rocm"
+    if not rock_dir:
+        pytest.fail(
+            "--rock-dir is required for cmake_path_verifier tests. "
+            "Pass --rock-dir /path/to/rocm to specify the ROCm installation path."
+        )
+    rocm_root = rock_dir
     cmake_root = f"{rocm_root}/lib/cmake"
     missing = []
     for package in PACKAGES_ALWAYS_VERIFY:
@@ -96,7 +102,12 @@ def test_cmake_no_hardcoded_paths(target_executor, rock_dir: str) -> None:
 
     The list of packages is discovered dynamically from the filesystem — no hardcoded expected list.
     """
-    rocm_root = rock_dir or "/opt/rocm"
+    if not rock_dir:
+        pytest.fail(
+            "--rock-dir is required for cmake_path_verifier tests. "
+            "Pass --rock-dir /path/to/rocm to specify the ROCm installation path."
+        )
+    rocm_root = rock_dir
     cmake_root = f"{rocm_root}/lib/cmake"
 
     # Discover all cmake package subdirectories present after installation.
@@ -112,6 +123,15 @@ def test_cmake_no_hardcoded_paths(target_executor, rock_dir: str) -> None:
         pytest.fail(f"No cmake package directories found under {cmake_root}")
 
     logger.info("found %d cmake package(s) to verify under %s", len(package_dirs), cmake_root)
+
+    # Warn about any installed package whose cmake dir was not discovered.
+    found_names = {d.rsplit("/", 1)[-1] for d in package_dirs}
+    for pkg in PACKAGES_TO_INSTALL:
+        if pkg not in found_names:
+            logger.warning(
+                "cmake_path_verifier: cmake dir not found for package '%s' — " "it may not be installed on this node",
+                pkg,
+            )
 
     all_violations: dict[str, list[str]] = {}
     for package_dir in sorted(package_dirs):

@@ -58,7 +58,7 @@ def install_packages(executor, packages: list[str]) -> None:
     elif os_family == "rhel":
         cmd = f"sudo dnf install -y --nogpgcheck {pkg_str}"
     else:  # sles
-        cmd = f"sudo zypper install -y {pkg_str}"
+        cmd = f"sudo zypper install -y --no-gpg-checks {pkg_str}"
 
     logger.info("installing packages [%s]: %s", os_family, pkg_str)
     result = executor.run(cmd)

@@ -31,4 +31,4 @@ PACKAGES_ALWAYS_VERIFY: list[str] = ["hip", "amd_comgr", "amd-dbgapi"]
 # HARDCODE_PATTERN:    non-comment line that references /opt/rocm — hardcoded install prefix.
 # HIP_ALLOWED_PATTERN: permitted HIP exception — HINTS ${ROCM_PATH} PATHS "/opt/rocm".
 HARDCODE_PATTERN: str = r"^\s*[^#\s].*/opt/rocm/*[^-|_|\w]\)?"
-HIP_ALLOWED_PATTERN: str = r'^\s*[^#\s].*HINTS\s+\$\{ROCM_PATH\}\s+PATHS\s+"\/opt\/rocm\/*[^-|_|\w]\)?'
+HIP_ALLOWED_PATTERN: str = r'^\s*[^#\s].*HINTS\s+\$\{ROCM_PATH\}\s+PATHS\s+"\/opt\/rocm"\/*[^-|_|\w]\)?'
