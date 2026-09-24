@@ -40,8 +40,8 @@ Impact rules (evaluated in order; first matching rule for each changed file wins
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path, PurePosixPath
+import sys
 
 # Allow imports from both build_tools/github_actions/ and the repo root.
 _HERE = Path(__file__).resolve().parent
@@ -49,8 +49,9 @@ _REPO_ROOT = _HERE.parent.parent
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_REPO_ROOT))
 
-from framework.markers.taxonomy import CATEGORY_PROFILES  # noqa: E402
 from github_actions_api import gha_set_output  # noqa: E402
+
+from framework.markers.taxonomy import CATEGORY_PROFILES  # noqa: E402
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -104,6 +105,31 @@ def _is_conftest(path: PurePosixPath) -> bool:
 def _is_workload_or_src(path: PurePosixPath) -> bool:
     """True for underscore-prefixed files (e.g. _workload.py) or files under a src/ subtree."""
     return path.name.startswith("_") or "src" in path.parts
+
+
+def _classify_e2e_path(path: PurePosixPath, raw: str) -> str | None:
+    """Return the pytest path to add for a tests/e2e/** changed file, or None to skip.
+
+    Rules 1 & 2 from the module-level docstring:
+    - test_*.py → the file itself (Rule 1)
+    - conftest, underscore helpers, src/ trees, other .py, C/HIP/CMake sources → whole area dir (Rule 2)
+    - anything else (e.g. .md, .txt non-CMake) → None (no test impact)
+    """
+    area = _e2e_area(path)
+    if area is None:
+        return None
+    area_prefix = area + "/"
+    if _is_test_file(path):
+        return raw.strip()
+    if (
+        _is_conftest(path)
+        or _is_workload_or_src(path)
+        or path.suffix == ".py"
+        or path.suffix in (".cpp", ".hip", ".h", ".hpp", ".cu", ".cmake")
+        or path.name == "CMakeLists.txt"
+    ):
+        return area_prefix
+    return None
 
 
 # ── Core detection logic ──────────────────────────────────────────────────────
@@ -160,28 +186,9 @@ def detect_impacted_paths(changed_files: list[str]) -> list[str]:
             continue
 
         # ── Rules 1 & 2: tests/e2e/** ────────────────────────────────────────
-        area = _e2e_area(path)
-        if area is None:
-            continue
-
-        area_prefix = area + "/"
-
-        if _is_test_file(path):
-            # Rule 1: include just this test file.
-            impacted.add(raw.strip())
-        elif _is_conftest(path) or _is_workload_or_src(path):
-            # Rule 2: whole directory — conftest, underscore helpers, src/ trees.
-            impacted.add(area_prefix)
-        elif path.suffix == ".py":
-            # Any other .py in the area (helper module, __init__, etc.) → whole dir.
-            # Note: this branch is intentionally separate from _is_workload_or_src;
-            # removing it would silently drop non-underscore helper modules.
-            impacted.add(area_prefix)
-        elif path.suffix in (".cpp", ".hip", ".h", ".hpp", ".cu", ".cmake") or \
-                path.name == "CMakeLists.txt":
-            # Non-python sources in e2e — whole dir.
-            # path.suffix for "CMakeLists.txt" is ".txt", so check name directly.
-            impacted.add(area_prefix)
+        result = _classify_e2e_path(path, raw)
+        if result is not None:
+            impacted.add(result)
 
     if full_suite:
         return sorted(_ALL_E2E_DIRS)

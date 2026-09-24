@@ -156,7 +156,32 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # rocHPL (High-Performance Linpack) HPC benchmark: third-party CMake/install.sh
+    # build + MPI mpirun_rochpl launch. Weekly by default (a tuned Linpack solve is
+    # a long, GPU-saturating run); hw.multi_gpu is the default, but the test
+    # overrides hw.* to hw.gpu when ROCHPL_NUM_GPUS=1 (single-GPU mode).
+    "tests/e2e/hpc/rochpl": [
+        "hw.multi_gpu",
+        "layer.math_lib",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/rocprim": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/rocsolver": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/rocwmma": [
         "hw.gpu",
         "layer.math_lib",
         "ci.nightly",
@@ -186,6 +211,15 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "hw.gpu",
         "layer.runtime",
         "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # amd-smi event tests: GPU reset event correctness and concurrency.
+    # Weekly cadence (destructive reset); runtime.* is per test function.
+    "tests/e2e/system_tools/amd_smi/events": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
@@ -219,6 +253,22 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "hw.gpu",
         "layer.runtime",
         "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # System tools (rocminfo, amd-smi, etc.): validate ROCm stack enumeration and diagnostics.
+    "tests/e2e/system_tools": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/ucc": [
+        "hw.multi_gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
         "os.linux",
     ],
 }
