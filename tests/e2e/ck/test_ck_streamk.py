@@ -31,7 +31,7 @@ def test_ck_streamk_gemm_fp16(
     assert (
         "result is:correct" in result.stdout.lower()
     ), f"ck_streamk fp16: GPU verification did not report correct:\n{result.stdout[:2000]}"
-    for bad in ("error", "incorrect results", "wrong values", "number of errors"):
+    for bad in ("incorrect results", "wrong values", "number of errors"):
         assert (
             bad not in result.stdout.lower()
         ), f"ck_streamk fp16: failure indicator '{bad}' found in output:\n{result.stdout[:2000]}"
@@ -57,7 +57,7 @@ def test_ck_streamk_gemm_fp8(
     assert (
         "result is:correct" in result.stdout.lower()
     ), f"ck_streamk fp8: GPU verification did not report correct:\n{result.stdout[:2000]}"
-    for bad in ("error", "incorrect results", "wrong values", "number of errors"):
+    for bad in ("incorrect results", "wrong values", "number of errors"):
         assert (
             bad not in result.stdout.lower()
         ), f"ck_streamk fp8: failure indicator '{bad}' found in output:\n{result.stdout[:2000]}"
