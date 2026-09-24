@@ -251,11 +251,16 @@ def _max_power_watts(cmake_executor=None) -> int | None:
     return None
 
 
-def _resolve_power_variant(key: str, *, cmake_executor=None) -> str:
+def resolve_power_variant(key: str, *, cmake_executor=None) -> str:
     """Refine a device key that several board power variants share.
 
     Returns *key* unchanged for devices with a single variant, and raises when a
-    shared device cannot be disambiguated.
+    shared device cannot be disambiguated. Public so callers that detect the
+    device themselves can still reach the variant split.
+
+    Raises:
+        ConfDirUnresolvedError: the device is shared but its board power limit
+            could not be read.
     """
     variants = POWER_VARIANT_LOOKUP_KEYS.get(key)
     if not variants:
@@ -285,7 +290,7 @@ def detect_device_key(*, cmake_executor=None) -> str:
     key = detect_device_revision(cmake_executor=cmake_executor)
     if not key:
         raise ConfDirUnresolvedError("No GPU detected via amd-smi, rocm-smi, lspci or PCI sysfs")
-    return _resolve_power_variant(key, cmake_executor=cmake_executor)
+    return resolve_power_variant(key, cmake_executor=cmake_executor)
 
 
 def detect_gpu_conf_dir(*, cmake_executor=None) -> str:
