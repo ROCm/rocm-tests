@@ -48,6 +48,10 @@ logger = logging.getLogger(__name__)
 _SUBDIR = "hipblaslt"
 _CMAKE_SRC_DIR = "tests/e2e/hipblaslt/src/hipblaslt_heuristic_workspace"
 _CMAKE_BINARY_NAME = "hipblaslt-heuristic-test"
+_ZERO_MAT_SRC_DIR = "tests/e2e/hipblaslt/src/hipblaslt_zero_mat"
+_ZERO_MAT_BINARY = "hipblaslt_zero_mat"
+_HIPBLASLT_TEST_BINARY = "hipblaslt-test"
+_TENSILE_SELECTION_ENV = "TENSILE_SOLUTION_SELECTION_METHOD"
 
 
 # ---------------------------------------------------------------------------
@@ -353,3 +357,92 @@ def hipblaslt_heuristic_workspace_binary(_hip_heuristic_cmake_build_dir: str, cm
             binary
         ), f"hipblaslt_heuristic_workspace: binary not found at {binary} after successful build"
     return binary
+
+
+@pytest.fixture(scope="session")
+def _hip_zero_mat_cmake_build_dir(gpu_arch: str | None, cmake_build_dir, cmake_executor) -> str:
+    """Build hipblaslt_zero_mat via CMake (pins the ROCm HIP toolchain); return build dir."""
+    if cmake_executor is None and not shutil.which("cmake"):
+        pytest.skip("cmake not found in PATH — install cmake to run this test locally")
+    return cmake_build_dir(
+        src=_ZERO_MAT_SRC_DIR,
+        subdir="hipblaslt_zero_mat",
+        gpu_arch=gpu_arch,
+        compiler_mode="optional_auto",
+        label="hipblaslt_zero_mat",
+        sync_dirs=[_ZERO_MAT_SRC_DIR],
+        artifact=_ZERO_MAT_BINARY,
+        target=_ZERO_MAT_BINARY,
+    )
+
+
+@pytest.fixture(scope="session")
+def hipblaslt_zero_mat_binary(_hip_zero_mat_cmake_build_dir: str, cmake_executor) -> str:
+    """Return absolute path to the compiled hipblaslt_zero_mat binary."""
+    binary = os.path.join(_hip_zero_mat_cmake_build_dir, _ZERO_MAT_BINARY)
+    if cmake_executor is None:
+        assert os.path.isfile(binary), f"hipblaslt_zero_mat: binary not found at {binary} after build"
+    return binary
+
+
+# ---------------------------------------------------------------------------
+# Preinstalled hipBLASLt gtest client (hipblaslt-test)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def hipblaslt_test_binary(rock_dir: str, cmake_executor) -> str:
+    """Return the preinstalled ``hipblaslt-test`` gtest client, skipping when absent.
+
+    Unlike the other binaries here this one is not built: it ships in the hipBLASLt
+    clients package alongside its ~450 MB ``hipblaslt_gtest.data``, which the binary
+    locates relative to its own install directory. It is therefore run by absolute
+    path out of ``<rock_dir>/bin`` rather than copied.
+    """
+    binary = pathlib.Path(rock_dir) / "bin" / _HIPBLASLT_TEST_BINARY
+    reason = (
+        f"{_HIPBLASLT_TEST_BINARY} not found at {binary} — install the hipBLASLt "
+        "clients package (pass --blas to install_rocm_from_artifacts.py)"
+    )
+    if cmake_executor is None:
+        if not (binary.is_file() and os.access(binary, os.X_OK)):
+            pytest.skip(reason)
+    elif not cmake_executor.run(f"test -x {shlex.quote(str(binary))}").ok:
+        pytest.skip(reason)
+    return str(binary)
+
+
+@pytest.fixture(scope="session")
+def require_tensile_solution_selection(rock_dir: str, cmake_executor) -> None:
+    """Skip when the installed hipBLASLt does not read the solution-selection knob.
+
+    hipBLASLt accepts ``TENSILE_SOLUTION_SELECTION_METHOD`` silently, emitting no
+    diagnostic even for a nonsense value, so a build that stopped honouring it would
+    still run the unit tests to a clean pass while exercising nothing about StreamK.
+    Probing the shipped library for the name keeps that degradation visible.
+
+    Best effort: when the library cannot be inspected the test proceeds rather than
+    skipping on an inconclusive result.
+    """
+    needle = _TENSILE_SELECTION_ENV
+    library = pathlib.Path(rock_dir) / "lib" / "libhipblaslt.so"
+    reason = (
+        f"installed hipBLASLt ({library}) does not reference {needle}; "
+        "this build cannot exercise StreamK solution selection"
+    )
+
+    if cmake_executor is not None:
+        probe = cmake_executor.run(f"grep -qa {needle} {shlex.quote(str(library))}", timeout=120.0)
+        # A non-zero exit means either "absent" or "could not read"; only treat a
+        # readable-but-absent library as a skip.
+        if not probe.ok and cmake_executor.run(f"test -r {shlex.quote(str(library))}").ok:
+            pytest.skip(reason)
+        return
+
+    try:
+        found = needle.encode() in library.read_bytes()
+    except OSError as exc:
+        logger.warning("Could not inspect %s for %s (%s); continuing", library, needle, exc)
+        return
+    if not found:
+        pytest.skip(reason)
