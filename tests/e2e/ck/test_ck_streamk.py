@@ -28,7 +28,13 @@ def test_ck_streamk_gemm_fp16(
         f"ck_streamk fp16 failed (exit={result.exit_code}):\n"
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     )
-    assert "correct" in result.stdout, f"ck_streamk fp16 did not report correct result:\n{result.stdout[:2000]}"
+    assert (
+        "result is:correct" in result.stdout.lower()
+    ), f"ck_streamk fp16: GPU verification did not report correct:\n{result.stdout[:2000]}"
+    for bad in ("error", "incorrect results", "wrong values", "number of errors"):
+        assert (
+            bad not in result.stdout.lower()
+        ), f"ck_streamk fp16: failure indicator '{bad}' found in output:\n{result.stdout[:2000]}"
 
 
 @pytest.mark.runtime.medium
@@ -48,4 +54,10 @@ def test_ck_streamk_gemm_fp8(
         f"ck_streamk fp8 failed (exit={result.exit_code}):\n"
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     )
-    assert "correct" in result.stdout, f"ck_streamk fp8 did not report correct result:\n{result.stdout[:2000]}"
+    assert (
+        "result is:correct" in result.stdout.lower()
+    ), f"ck_streamk fp8: GPU verification did not report correct:\n{result.stdout[:2000]}"
+    for bad in ("error", "incorrect results", "wrong values", "number of errors"):
+        assert (
+            bad not in result.stdout.lower()
+        ), f"ck_streamk fp8: failure indicator '{bad}' found in output:\n{result.stdout[:2000]}"

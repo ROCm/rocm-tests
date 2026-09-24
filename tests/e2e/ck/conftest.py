@@ -11,8 +11,6 @@ import pathlib
 
 import pytest
 
-from framework.gpu.detector import GpuDetector
-
 logger = logging.getLogger(__name__)
 
 _ROCM_LIBRARIES_URL = "https://github.com/ROCm/rocm-libraries.git"
@@ -43,19 +41,18 @@ def ck_streamk_build(
     ck_repo: pathlib.Path,
     cmake_build_dir,
     gpu_arch: str | None,
+    require_gpu_arch_for,
 ) -> str:
     """Configure and build the CK tile stream-k GEMM example; return build directory."""
-    arch = gpu_arch
-    if arch is None:
-        gpus = GpuDetector().detect()
-        arch = gpus[0].arch if gpus else None
-    if arch is None or arch not in _SUPPORTED_ARCHS:
-        pytest.skip(f"CK stream-k GEMM requires gfx942 or gfx950; detected arch: {arch}")
+    if gpu_arch is None:
+        require_gpu_arch_for("ck")
+    if gpu_arch not in _SUPPORTED_ARCHS:
+        pytest.skip(f"CK stream-k GEMM not supported on {gpu_arch} (supported: {sorted(_SUPPORTED_ARCHS)})")
 
     return cmake_build_dir(
         src=str(ck_repo),
         subdir=_SUBDIR,
-        gpu_arch=arch,
+        gpu_arch=gpu_arch,
         extra_cmake_args=[
             "-DBUILD_DEV=ON",
             "-DCMAKE_BUILD_TYPE=Release",
