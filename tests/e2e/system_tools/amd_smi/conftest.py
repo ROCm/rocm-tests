@@ -13,6 +13,9 @@ from dataclasses import dataclass
 import logging
 import os
 import pathlib
+import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -29,42 +32,63 @@ class UbbEnv:
     amd_smi: str
 
 
-def _resolve_amd_smi(executor, rock_dir: str) -> str | None:
+def _resolve_amd_smi(rock_dir: str) -> str | None:
     """Prefer ``<rock_dir>/bin/amd-smi``; fall back to amd-smi on PATH. Returns None if absent."""
     if rock_dir:
-        probe = executor.run(f"test -x {rock_dir}/bin/amd-smi && echo OK")
-        if (probe.stdout or "").strip() == "OK":
-            return f"{rock_dir}/bin/amd-smi"
-    which = executor.run("command -v amd-smi")
-    if which.ok and (which.stdout or "").strip():
-        return str(which.stdout).strip().splitlines()[-1].strip()
-    return None
+        candidate = f"{rock_dir}/bin/amd-smi"
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return shutil.which("amd-smi")
 
 
-@pytest.fixture
-def ubb_env(target_executor, rock_dir: str) -> UbbEnv:
-    """Verify amd-smi binary, metric --power, and node -p subcommands are available."""
+@pytest.fixture(scope="module")
+def ubb_env(rock_dir: str) -> UbbEnv:
+    """Verify amd-smi binary, metric --power, and node -p subcommands are available.
+
+    Module-scoped so the preflight runs once per test module rather than before
+    each individual test. Uses subprocess.run directly since module-scoped fixtures
+    cannot consume function-scoped fixtures like target_executor.
+    """
     logger.info("ubb_env: resolving amd-smi binary (rock_dir=%s)", rock_dir or "not set")
-    amd_smi = _resolve_amd_smi(target_executor, rock_dir)
+    amd_smi = _resolve_amd_smi(rock_dir)
     if not amd_smi:
         pytest.fail("amd-smi not found under --rock-dir or on PATH — it is required for this test suite")
     logger.info("ubb_env: amd-smi found at %s", amd_smi)
 
     logger.info("ubb_env: checking 'metric --power' subcommand availability")
-    probe = target_executor.run(f"{amd_smi} metric --power --help")
-    assert "power" in (probe.stdout or "").lower(), (
-        f"amd-smi 'metric --power' is not available on this node — it is mandatory for amd-smi power metric tests.\n"
-        f"stdout: {(probe.stdout or '')[:500]}"
+    probe = subprocess.run([amd_smi, "metric", "--power", "--help"], capture_output=True, text=True)
+    assert "power" in probe.stdout.lower(), (
+        f"amd-smi 'metric --power' is not available on this node — it is mandatory.\n" f"stdout: {probe.stdout[:300]}"
     )
     logger.info("ubb_env: 'metric --power' available")
 
     logger.info("ubb_env: checking 'node -p' subcommand availability")
-    probe_node = target_executor.run(f"{amd_smi} node -p --help")
-    assert "power" in (probe_node.stdout or "").lower(), (
-        f"amd-smi 'node -p' is not available on this node — it is mandatory for amd-smi power metric tests.\n"
-        f"stdout: {(probe_node.stdout or '')[:500]}"
+    probe_node = subprocess.run([amd_smi, "node", "-p", "--help"], capture_output=True, text=True)
+    assert "power" in probe_node.stdout.lower(), (
+        f"amd-smi 'node -p' is not available on this node — it is mandatory.\n" f"stdout: {probe_node.stdout[:300]}"
     )
-    logger.info("ubb_env: 'node -p' available — preflight complete")
+    logger.info("ubb_env: 'node -p' available")
+
+    logger.info("ubb_env: checking POWER_MANAGEMENT state for OAM_ID-0 GPU")
+    list_result = subprocess.run([amd_smi, "list", "-e"], capture_output=True, text=True)
+    oam0_gpu: str | None = None
+    if list_result.returncode == 0:
+        current: str | None = None
+        for line in list_result.stdout.splitlines():
+            m = re.search(r"GPU:\s*(\d+)", line)
+            if m:
+                current = m.group(1)
+            if current and re.search(r"OAM_ID:\s*0\b", line):
+                oam0_gpu = current
+                break
+    if oam0_gpu is not None:
+        pwr = subprocess.run([amd_smi, "metric", "--power", "-g", oam0_gpu], capture_output=True, text=True)
+        if "POWER_MANAGEMENT: DISABLED" in pwr.stdout:
+            pytest.skip(
+                f"GPU {oam0_gpu} (OAM_ID 0): POWER_MANAGEMENT is DISABLED — "
+                "UBB_POWER fields return N/A; skipping power metric tests on this node"
+            )
+    logger.info("ubb_env: POWER_MANAGEMENT enabled — preflight complete")
 
     return UbbEnv(amd_smi=amd_smi)
 

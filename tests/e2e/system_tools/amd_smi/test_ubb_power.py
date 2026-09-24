@@ -27,15 +27,13 @@ logger = logging.getLogger("rocm.test")
 # GPU architectures known to report the UBB_POWER and THRESHOLD fields via amd-smi.
 _UBB_SUPPORTED_ARCHS: frozenset[str] = frozenset({"gfx950"})
 
-# CoralGemm workload args: batch=8 stresses all node GPUs to produce a
-# measurable UBB_POWER increase (UBB_POWER is node-level; single-GPU load
-# is too small relative to the ~3400W idle baseline to reliably exceed it).
-# ROCR_VISIBLE_DEVICES is unset in the workload command so CoralGemm can
-# access all GPUs — this is intentional for a node-level power measurement.
+# CoralGemm workload args matching the original test (batch=12, shape 8640³).
+# Iterations increased from 300 to 3000 so the workload outlasts the 2s ramp-up
+# plus five 2s polling intervals on fast hardware (MI350 finishes 300 in <1s).
 # Override via ROCM_TEST_CORAL_GEMM_ARGS if needed.
 _CORAL_GEMM_ARGS = os.environ.get(
     "ROCM_TEST_CORAL_GEMM_ARGS",
-    "R_64F R_64F R_64F R_64F OP_N OP_T 8640 8640 8640 8640 8640 8640 8 3000",
+    "R_64F R_64F R_64F R_64F OP_N OP_T 8640 8640 8640 8640 8640 8640 12 3000",
 )
 
 
@@ -114,8 +112,6 @@ def test_ubb_power_default(target_executor, ubb_env, gpu_arch: str | None) -> No
     logger.info("test_ubb_power_default: PASS — GPU %s (OAM_ID 0) UBB_POWER = %.1f W", gpu_id, watts)
 
 
-@pytest.mark.hw.multi_gpu
-@pytest.mark.gpu_count(8)
 @pytest.mark.runtime.medium
 def test_ubb_power_workload(
     target_executor,
@@ -126,10 +122,9 @@ def test_ubb_power_workload(
 ) -> None:
     """Verify amd-smi UBB_POWER under CoralGemm load exceeds the idle baseline.
 
-    Requests all 8 GPUs via hw.multi_gpu + gpu_count(8) so the framework sets
-    ROCR_VISIBLE_DEVICES=0,1,...,7 and CoralGemm can stress all GPUs simultaneously.
-    UBB_POWER is a node-level metric — a single-GPU workload (~200W) is too small
-    relative to the ~3400W idle baseline to detect reliably; all GPUs are required.
+    Resolves the GPU with OAM_ID 0 (the only GPU that exposes UBB/node power),
+    captures idle UBB_POWER, launches CoralGemm in a continuous loop, then polls
+    five times asserting load > idle on every reading.
     """
     _skip_unsupported_arch(gpu_arch)
 
