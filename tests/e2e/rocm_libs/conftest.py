@@ -182,6 +182,9 @@ def hip_complex_her2_binary(gpu_arch: str | None, cmake_build_dir, require_gpu_a
         target="hip_complex_her2",
     )
     return built_binary(os.path.join(build_dir, "hip_complex_her2"), "hip_complex_her2")
+
+
+@pytest.fixture(scope="session")
 def miopen_np_nts_tensors_binary(
     gpu_arch: str | None, cmake_build_dir, require_gpu_arch_for, built_binary, node_pool
 ) -> str:
