@@ -8,6 +8,7 @@ name its RVS configs live under.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -41,6 +42,9 @@ GPU_DEVICE_MAP: dict[str, str] = {
     "75b0_00": "MI350X",
     "75a3_00": "MI355X",
     "75b3_00": "MI355X",
+    # Keyed by power variant rather than device id; see POWER_VARIANT_LOOKUP_KEYS.
+    "75a8_00_450w": "MI350P-450W",
+    "75a8_00_600w": "MI350P-600W",
     "73a3_00": "nv21",
     "73ae_00": "nv21",
     "7448_00": "nv31",
@@ -90,10 +94,44 @@ GPU_DEVICE_MAP: dict[str, str] = {
     "7551_c0": "gfx1201",
 }
 
+# Device ids shared by several board power variants that ship different RVS
+# configs, mapped to ``{max_power_watts: GPU_DEVICE_MAP key}``. Both MI350P
+# boards report the same device and revision, so the board power limit is the
+# only thing that tells their config trees apart.
+POWER_VARIANT_LOOKUP_KEYS: dict[str, dict[int, str]] = {
+    "75a8_00": {
+        450: "75a8_00_450w",
+        600: "75a8_00_600w",
+    },
+}
+
+# Config directories that ship a module's conf under a name other than the one
+# callers ask for, keyed by directory -> {requested name: name on disk}.
+CONFIG_FILENAME_OVERRIDES: dict[str, dict[str, str]] = {
+    "MI350P-450W": {"babel.conf": "babel_single.conf"},
+    "MI350P-600W": {"babel.conf": "babel_single.conf"},
+}
+
+
+class ConfDirUnresolvedError(RuntimeError):
+    """The GPU could not be resolved to an RVS config directory.
+
+    Raised rather than returning an empty name, which would fall through to the
+    generic config and run settings this GPU was never qualified with.
+    """
+
 
 def short_name_for_device(device_id: str) -> str:
     """Map ``<device>_<revision>`` to RVS config directory short name."""
     return GPU_DEVICE_MAP.get((device_id or "").lower(), "")
+
+
+def conf_filename_for(gpu_conf_dir: str, config_name: str) -> str:
+    """Return the name *config_name* is stored under inside ``gpu_conf_dir``.
+
+    Directories without an override return the requested name unchanged.
+    """
+    return CONFIG_FILENAME_OVERRIDES.get(gpu_conf_dir, {}).get(config_name, config_name)
 
 
 # Vendor 0x1002 is AMD. The classes cover VGA (0300), display controller (0380)
@@ -188,15 +226,80 @@ def detect_device_revision(*, cmake_executor=None) -> str:
     return ""
 
 
-def detect_gpu_conf_dir(*, cmake_executor=None) -> str:
-    """Detect the GPU and map it to its RVS config directory name."""
+def _max_power_watts(cmake_executor=None) -> int | None:
+    """Return the board's max power limit in watts, or ``None`` if unreadable."""
+    output = _run_detection("amd-smi static --limit --json 2>/dev/null", cmake_executor)
+    # amd-smi folds warnings into stdout, so the JSON object has to be cut out of
+    # the surrounding text rather than parsed whole.
+    start, end = output.find("{"), output.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        limit = json.loads(output[start : end + 1])["gpu_data"][0]["limit"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        logger.warning("amd-smi reported no usable power limit")
+        return None
+
+    # MI300 and MI350 report the board limit under ppt0; other parts use max_power.
+    ppt0 = limit.get("ppt0") if isinstance(limit, dict) else None
+    for node in (ppt0.get("max_power_limit") if isinstance(ppt0, dict) else None, limit.get("max_power")):
+        if isinstance(node, dict):
+            try:
+                return int(node["value"])
+            except (KeyError, TypeError, ValueError):
+                continue
+    return None
+
+
+def _resolve_power_variant(key: str, *, cmake_executor=None) -> str:
+    """Refine a device key that several board power variants share.
+
+    Returns *key* unchanged for devices with a single variant, and raises when a
+    shared device cannot be disambiguated.
+    """
+    variants = POWER_VARIANT_LOOKUP_KEYS.get(key)
+    if not variants:
+        return key
+
+    watts = _max_power_watts(cmake_executor)
+    variant = variants.get(watts)
+    if not variant:
+        raise ConfDirUnresolvedError(
+            f"Device {key} ships in {sorted(variants)}W variants with different RVS configs, "
+            f"but amd-smi reported {f'{watts}W' if watts else 'no usable power limit'}"
+        )
+
+    logger.info("Device %s resolved to %s from its %sW power limit", key, variant, watts)
+    return variant
+
+
+def detect_device_key(*, cmake_executor=None) -> str:
+    """Detect the GPU and return its ``<device>_<revision>`` key.
+
+    Shared devices come back as their power-variant key (``75a8_00_450w``).
+
+    Raises:
+        ConfDirUnresolvedError: no GPU was detected, or a shared device's power
+            variant could not be determined.
+    """
     key = detect_device_revision(cmake_executor=cmake_executor)
     if not key:
-        return ""
+        raise ConfDirUnresolvedError("No GPU detected via amd-smi, rocm-smi, lspci or PCI sysfs")
+    return _resolve_power_variant(key, cmake_executor=cmake_executor)
 
+
+def detect_gpu_conf_dir(*, cmake_executor=None) -> str:
+    """Detect the GPU and map it to its RVS config directory name.
+
+    Raises:
+        ConfDirUnresolvedError: no GPU was detected, the detected device has no
+            GPU_DEVICE_MAP entry, or a shared device's power variant could not
+            be determined.
+    """
+    key = detect_device_key(cmake_executor=cmake_executor)
     gpu_name = GPU_DEVICE_MAP.get(key, "")
-    if gpu_name:
-        logger.info("Detected GPU: key=%s -> %s", key, gpu_name)
-    else:
-        logger.warning("GPU detected (key=%s) but no mapping found", key)
+    if not gpu_name:
+        raise ConfDirUnresolvedError(f"GPU {key} has no GPU_DEVICE_MAP entry, so its RVS config directory is unknown")
+
+    logger.info("Detected GPU: key=%s -> %s", key, gpu_name)
     return gpu_name

@@ -22,7 +22,13 @@ import shlex
 import pytest
 
 from framework.executors.local_executor import run_cmd_get_stdout_stderr
-from tests.common.gpu_pci_map import detect_gpu_conf_dir
+from tests.common.gpu_pci_map import (
+    ConfDirUnresolvedError,
+    conf_filename_for,
+    detect_device_key,
+    detect_gpu_conf_dir,
+)
+from tests.common.rvs_config_map import conf_dir_for_module, covers_module, device_name, is_known_device
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +75,94 @@ def _file_exists(path: pathlib.Path, cmake_executor=None) -> bool:
     return cmake_executor.run(f"test -f {path}").ok
 
 
+def _detect_device_key(cmake_executor=None) -> str:
+    """Detect the GPU key the qualification matrix is indexed by.
+
+    A plain function rather than a fixture: ``rvs_find_conf`` is re-exported by
+    sibling suites whose conftests cannot resolve fixtures defined here, so its
+    fixture signature has to stay self-contained.
+    """
+    try:
+        key = detect_device_key(cmake_executor=cmake_executor)
+    except ConfDirUnresolvedError as exc:
+        pytest.fail(str(exc))
+
+    # Reported once here rather than per module, so a GPU the matrix does not
+    # cover does not read as a string of "module not qualified" skips.
+    if not is_known_device(key):
+        pytest.fail(f"GPU {key} has no row in the RVS config mapping, so no module is qualified on it")
+    return key
+
+
+def _conf_dir_from_matrix(config_name: str, device_key: str) -> str:
+    """Return the conf directory the qualification matrix gives for this module.
+
+    Skips when the matrix has no column for the module at all, and when it has
+    one that is empty for this GPU. Both mean the same thing for the run: no
+    config here was ever qualified, so there is nothing meaningful to execute.
+    """
+    module = config_name[: -len(".conf")] if config_name.endswith(".conf") else config_name
+    if not covers_module(module):
+        pytest.skip(f"RVS {module} is not a module in the RVS config mapping")
+
+    conf_dir = conf_dir_for_module(device_key, module)
+    if conf_dir is None:
+        pytest.skip(f"RVS {module} is not qualified on {device_name(device_key)} ({device_key})")
+    return conf_dir
+
+
+def _list_dir_entries(path: pathlib.Path, cmake_executor=None) -> list[str]:
+    """Return the entry names directly under *path*, or [] if it cannot be listed."""
+    if cmake_executor is None:
+        try:
+            return [entry.name for entry in path.iterdir()]
+        except OSError:
+            return []
+    result = cmake_executor.run(f"ls -1 {shlex.quote(str(path))}")
+    return result.stdout.splitlines() if result.ok else []
+
+
+def _resolve_ignoring_case(root: pathlib.Path, parts: tuple[str, ...], cmake_executor=None) -> pathlib.Path | None:
+    """Walk *parts* under *root*, matching each component without regard to case."""
+    current = root
+    for part in parts:
+        entries = _list_dir_entries(current, cmake_executor)
+        match = next((entry for entry in entries if entry.lower() == part.lower()), None)
+        if match is None:
+            return None
+        current = current / match
+    return current
+
+
+def _locate_under_roots(search_roots: list[pathlib.Path], parts: tuple[str, ...], cmake_executor=None) -> str | None:
+    """Return the first root holding ``parts``, preferring an exact-case match.
+
+    Every root is tried exactly before any is tried case-insensitively, so a
+    correctly cased file never loses to a differently cased one in an earlier
+    root.
+    """
+    for root in search_roots:
+        candidate = root.joinpath(*parts)
+        if _file_exists(candidate, cmake_executor):
+            return str(candidate)
+
+    for root in search_roots:
+        candidate = _resolve_ignoring_case(root, parts, cmake_executor)
+        if candidate is not None:
+            logger.debug("Resolved %s case-insensitively to %s", root.joinpath(*parts), candidate)
+            return str(candidate)
+
+    return None
+
+
 def _detect_gpu_conf_dir(cmake_executor=None) -> str:
     """Detect GPU PCI device ID and map to RVS config directory name."""
-    return detect_gpu_conf_dir(cmake_executor=cmake_executor)
+    try:
+        return detect_gpu_conf_dir(cmake_executor=cmake_executor)
+    except ConfDirUnresolvedError as exc:
+        # Carrying on with no directory would resolve the generic config, i.e.
+        # settings this GPU was never qualified with; stop instead.
+        pytest.fail(str(exc))
 
 
 def _collect_conf_roots(
@@ -97,19 +188,28 @@ def _resolve_conf_file(
     cmake_executor=None,
     gpu_conf_dir: str = "",
 ) -> str | None:
-    """Search for a config file across roots, trying GPU-specific path first."""
-    if gpu_conf_dir:
-        for root in search_roots:
-            candidate = root / gpu_conf_dir / config_name
-            if _file_exists(candidate, cmake_executor):
-                logger.info("Resolved config %s -> %s (GPU-specific: %s)", config_name, candidate, gpu_conf_dir)
-                return str(candidate)
+    """Search the roots for the config the qualification matrix named.
 
-    for root in search_roots:
-        candidate = root / config_name
-        if _file_exists(candidate, cmake_executor):
-            logger.info("Resolved config %s -> %s (generic fallback)", config_name, candidate)
-            return str(candidate)
+    *gpu_conf_dir* is the matrix's answer, so an empty one means the top-level
+    conf is the qualified config rather than a fallback, and a named directory
+    missing the file is reported rather than resolved further up the tree.
+    """
+    if gpu_conf_dir:
+        # A few directories ship a module's conf under a different name.
+        gpu_config_name = conf_filename_for(gpu_conf_dir, config_name)
+        resolved = _locate_under_roots(search_roots, (gpu_conf_dir, gpu_config_name), cmake_executor)
+        if resolved:
+            logger.info("Resolved config %s -> %s (GPU-specific: %s)", config_name, resolved, gpu_conf_dir)
+            return resolved
+        # The top-level conf holds settings this GPU was never qualified with,
+        # so a missing mapped config is an install fault, not a path to fall
+        # back to.
+        return None
+
+    resolved = _locate_under_roots(search_roots, (config_name,), cmake_executor)
+    if resolved:
+        logger.info("Resolved config %s -> %s (matrix: top-level conf)", config_name, resolved)
+        return resolved
 
     return None
 
@@ -256,6 +356,7 @@ def rvs_env(rvs_binary: str, rock_dir: str, ld_path: dict) -> str:
 @pytest.fixture(scope="session")
 def rvs_find_conf(rock_dir: str, rvs_source: str, cmake_executor, rvs_binary: str):
     """Return a factory that locates RVS config files with GPU-specific lookup."""
+    device_key = _detect_device_key(cmake_executor)
     rock_dir_path = pathlib.Path(rock_dir)
     install_base = pathlib.Path(rvs_source) / "install"
     install_conf = None
@@ -266,7 +367,15 @@ def rvs_find_conf(rock_dir: str, rvs_source: str, cmake_executor, rvs_binary: st
                 break
     source_conf = pathlib.Path(rvs_source) / "rvs" / "conf"
 
-    def _find_conf(config_name: str, *, gpu_only: bool = False, gpu_conf_dir: str = "") -> str:
+    def _find_conf(config_name: str, *, gpu_conf_dir: str = "") -> str:
+        """Locate the config *config_name* is qualified with on this GPU.
+
+        *gpu_conf_dir* is still accepted so suites that pass a pre-detected
+        directory keep working, but the qualification matrix decides; they can
+        drop the argument once they no longer need to support older checkouts.
+        """
+        del gpu_conf_dir
+        conf_dir = _conf_dir_from_matrix(config_name, device_key)
         installed_conf = rock_dir_path / "share" / "rocm-validation-suite" / "conf"
         search_roots = _collect_conf_roots(
             _binary_conf_root(rvs_binary),
@@ -276,16 +385,15 @@ def rvs_find_conf(rock_dir: str, rvs_source: str, cmake_executor, rvs_binary: st
             cmake_executor=cmake_executor,
         )
 
-        resolved = _resolve_conf_file(config_name, search_roots, cmake_executor, gpu_conf_dir)
+        resolved = _resolve_conf_file(config_name, search_roots, cmake_executor, conf_dir)
         if resolved:
             return resolved
 
-        if gpu_only:
-            pytest.skip(
-                f"GPU-specific config {config_name} not found under {gpu_conf_dir} in {[str(r) for r in search_roots]}"
-            )
-
-        pytest.skip(f"RVS config {config_name} not found in {[str(r) for r in search_roots]}")
+        where = f"{conf_dir}/" if conf_dir else "the top-level conf"
+        pytest.fail(
+            f"RVS {config_name} is qualified on {device_name(device_key)} under {where}, "
+            f"but that config is missing from {[str(r) for r in search_roots]}"
+        )
 
     return _find_conf
 
