@@ -50,7 +50,7 @@ _BACKWARD_WRW_CONV_2 = [
     "conv -n 128 -c 256 -H 56 -W 56 -k 64 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -F 4 -t 1",
 ]
 
-_FWD_PASS_SENTINEL = "Verifies OK on GPU reference"
+_FWD_PASS_SENTINEL = "Forward Convolution Verifies OK"
 # Backward passes do not emit a verify sentinel; detect kernel completion via the elapsed-time line.
 _BWD_TIMING_SENTINEL = "Elapsed:"
 
