@@ -222,6 +222,11 @@ class TestTF32vsF32LinearPerformance:
         assert (
             "Average time taken for matrix multiplication" in result.stdout
         ), f"No timing output in stdout:{detail}\n{result.stdout[:1000]}"
+        # Additional verification: parse the numeric timing to confirm a real value was
+        # produced — the string check above only confirms the print ran.
+        time_ms = _parse_avg_time_ms(result.stdout)
+        assert time_ms is not None, f"No valid numeric timing in stdout:{detail}\n{result.stdout[:1000]}"
+        assert time_ms > 0, f"Timing was zero or negative:{detail}\n{result.stdout[:1000]}"
 
     @pytest.mark.runtime.medium
     def test_tf32_not_slower_than_fp32(
@@ -321,12 +326,17 @@ class TestTunableOpLinearMatmul:
             f"failed (exit={result.exit_code}):{detail}\n"
             f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
         )
-        assert f"TunableOp enabled: {tunableop_enabled}" in result.stdout, (
-            f"Expected 'TunableOp enabled: {tunableop_enabled}' in stdout:{detail}\n" f"{result.stdout[:1000]}"
-        )
+        assert (
+            f"TunableOp enabled: {tunableop_enabled}" in result.stdout
+        ), f"Expected 'TunableOp enabled: {tunableop_enabled}' in stdout:{detail}\n{result.stdout[:1000]}"
         assert (
             "Average time taken for matrix multiplication" in result.stdout
         ), f"No timing output in stdout:{detail}\n{result.stdout[:1000]}"
+        # Additional verification: parse the numeric timing to confirm a real value was
+        # produced — the string check above only confirms the print ran.
+        time_ms = _parse_avg_time_ms(result.stdout)
+        assert time_ms is not None, f"No valid numeric timing in stdout:{detail}\n{result.stdout[:1000]}"
+        assert time_ms > 0, f"Timing was zero or negative:{detail}\n{result.stdout[:1000]}"
 
     @pytest.mark.runtime.medium
     @pytest.mark.parametrize(
