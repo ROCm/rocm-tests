@@ -230,7 +230,7 @@ def require_amd_smi_version(executor: AbstractExecutor, major: int, minor: int =
 # ---------------------------------------------------------------------------
 
 
-def list_devices(executor: AbstractExecutor) -> list[GpuDeviceInfo]:
+def list_devices(executor: AbstractExecutor, amd_smi_bin: str = "amd-smi") -> list[GpuDeviceInfo]:
     """Return device descriptors for all AMD GPUs visible to the executor.
 
     Parses ``amd-smi static --json`` using the ROCm 7.1.0+ schema.
