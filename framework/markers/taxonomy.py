@@ -156,7 +156,32 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # rocHPL (High-Performance Linpack) HPC benchmark: third-party CMake/install.sh
+    # build + MPI mpirun_rochpl launch. Weekly by default (a tuned Linpack solve is
+    # a long, GPU-saturating run); hw.multi_gpu is the default, but the test
+    # overrides hw.* to hw.gpu when ROCHPL_NUM_GPUS=1 (single-GPU mode).
+    "tests/e2e/hpc/rochpl": [
+        "hw.multi_gpu",
+        "layer.math_lib",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/rocprim": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/rocsolver": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/rocwmma": [
         "hw.gpu",
         "layer.math_lib",
         "ci.nightly",
@@ -226,6 +251,30 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     # the CK tile stream-k GEMM example. Nightly; MI3xx (gfx942/gfx950) only.
     "tests/e2e/ck": [
         "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # rocm_agent_enumerator system tool: validates GPU agent discovery and
+    # cross-tool consistency between rocm_agent_enumerator and rocminfo.
+    "tests/e2e/system_tools/rocm_agent_enumerator": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # System tools (rocminfo, amd-smi, etc.): validate ROCm stack enumeration and diagnostics.
+    "tests/e2e/system_tools": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/ucc": [
+        "hw.multi_gpu",
         "layer.math_lib",
         "ci.nightly",
         "e2e.stack",

@@ -264,7 +264,7 @@ jobs:
             "--tests" "--blas" "--fft" "--hipdnn" "--miopen" "--miopenprovider"
             "--rocdecode" "--rocjpeg" "--rocprofiler-compute" "--rocprofiler-sdk"
             "--rocprofiler-systems" "--prim" "--rand" "--rocwmma" "--hipblasltprovider"
-            "--libhipcxx" "--rccl"
+            "--libhipcxx" "--rccl" "--solver" "--sparse"
             "--output-dir" "../therock_build"
           )
 
@@ -360,6 +360,7 @@ jobs:
               "tests/e2e/rocprim/"
               "tests/e2e/rocm_examples/"
               "tests/e2e/hip_directed/"
+              "tests/e2e/rocwmma/"
             )
           fi
 
