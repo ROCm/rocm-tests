@@ -247,6 +247,14 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # CK (Composable Kernel) tile FMHA and other CK-based tests.
+    "tests/e2e/ck": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # rocm_agent_enumerator system tool: validates GPU agent discovery and
     # cross-tool consistency between rocm_agent_enumerator and rocminfo.
     "tests/e2e/system_tools/rocm_agent_enumerator": [
