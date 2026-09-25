@@ -101,6 +101,14 @@ target_compile_definitions(sparse_csrrf_analysis_reuse PRIVATE __HIP_PLATFORM_AM
 target_include_directories(sparse_csrrf_analysis_reuse PRIVATE "${ROCM_PATH}/include")
 target_link_libraries(sparse_csrrf_analysis_reuse PRIVATE hip::host ${ROCBLAS_LIBS} ${ROCSOLVER_LIBS})
 
+# Binary 6: HIP complex API header — rocblas_cher2() via hipFloatComplex public API (rocBLAS)
+# ROCM_MATHLIBS_API_USE_HIP_COMPLEX is defined directly in the source before the rocblas.h
+# include, which is the canonical pattern for this example. No CMake compile definition needed.
+# Upstream source : ROCm/rocm-libraries/blob/develop/projects/rocblas/clients/samples/example_hip_complex_her2.cpp
+add_executable(hip_complex_her2 example_hip_complex_her2.cpp)
+target_compile_options(hip_complex_her2 PRIVATE -O2 "--offload-arch=${GPU_ARCH}")
+target_include_directories(hip_complex_her2 PRIVATE "${ROCM_PATH}/include")
+target_link_libraries(hip_complex_her2 PRIVATE hip::host ${ROCBLAS_LIBS})
 # Binary 6: MIOpen non-packed / non-trivially-strided (NP-NTS) tensor convolution test.
 add_executable(miopen_np_nts_tensors miopen_np_nts_tensors.cpp)
 target_compile_options(miopen_np_nts_tensors PRIVATE -O2 "--offload-arch=${GPU_ARCH}")
