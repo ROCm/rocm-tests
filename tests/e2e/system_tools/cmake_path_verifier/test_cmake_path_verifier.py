@@ -124,14 +124,17 @@ def test_cmake_no_hardcoded_paths(target_executor, rock_dir: str) -> None:
 
     logger.info("found %d cmake package(s) to verify under %s", len(package_dirs), cmake_root)
 
-    # Warn about any installed package whose cmake dir was not discovered.
+    # Fail for any PACKAGES_TO_INSTALL package whose cmake dir is missing after
+    # installation — matching original behaviour where a missing cmake dir is a
+    # test failure, not a warning. PACKAGES_ALWAYS_VERIFY is already covered by
+    # test_cmake_mandatory_packages_present.
     found_names = {d.rsplit("/", 1)[-1] for d in package_dirs}
-    for pkg in PACKAGES_TO_INSTALL:
-        if pkg not in found_names:
-            logger.warning(
-                "cmake_path_verifier: cmake dir not found for package '%s' — " "it may not be installed on this node",
-                pkg,
-            )
+    missing_pkgs = [pkg for pkg in PACKAGES_TO_INSTALL if pkg not in found_names]
+    if missing_pkgs:
+        pytest.fail(
+            "cmake directories missing for installed packages (expected after installation):\n"
+            + "\n".join(f"  {cmake_root}/{p}" for p in missing_pkgs)
+        )
 
     all_violations: dict[str, list[str]] = {}
     for package_dir in sorted(package_dirs):
