@@ -49,7 +49,7 @@ try:
 
     _ALLURE_AVAILABLE = True
 except ImportError:
-    _allure = None  # type: ignore[assignment]
+    _allure = None  # type: ignore[assignment,unused-ignore]
     _ALLURE_AVAILABLE = False
 
 
