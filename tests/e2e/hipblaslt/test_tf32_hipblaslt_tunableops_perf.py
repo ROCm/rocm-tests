@@ -153,8 +153,8 @@ class TestTF32LinearForward:
     ):
         """Run tf32_matmul_workload.py and verify exactly one Chrome trace file is written."""
         _check_arch(gpu_arch)
-        script_path = _stage_workload(target_executor)
-        workload_script = pathlib.Path(script_path).read_text()
+        _stage_workload(target_executor)  # uploads to remote node when executor supports it
+        workload_script = _SRC.read_text()  # always read from local source
 
         ld = shlex.quote(ld_path["LD_LIBRARY_PATH"])
         python = shlex.quote(torch_python)
@@ -224,8 +224,11 @@ class TestTF32vsF32LinearPerformance:
         ), f"No timing output in stdout:{detail}\n{result.stdout[:1000]}"
         # Additional verification: parse the numeric timing to confirm a real value was
         # produced — the string check above only confirms the print ran.
-        time_ms = _parse_avg_time_ms(result.stdout)
-        assert time_ms is not None, f"No valid numeric timing in stdout:{detail}\n{result.stdout[:1000]}"
+        # _parse_avg_time_ms raises ValueError (never returns None) so no None check needed.
+        try:
+            time_ms = _parse_avg_time_ms(result.stdout)
+        except ValueError as exc:
+            raise AssertionError(f"No valid timing in stdout:{detail}\n{result.stdout[:1000]}") from exc
         assert time_ms > 0, f"Timing was zero or negative:{detail}\n{result.stdout[:1000]}"
 
     @pytest.mark.runtime.medium
@@ -309,13 +312,16 @@ class TestTunableOpLinearMatmul:
         script = _tunableop_inline_script(script_path, tunableop_enabled)
 
         tunableop_val = "1" if tunableop_enabled else "0"
-        tuning_val = "1" if tunableop_enabled else "0"
         ld = shlex.quote(ld_path["LD_LIBRARY_PATH"])
         python = shlex.quote(torch_python)
 
+        # Only set PYTORCH_TUNABLEOP_TUNING when enabling — omit the key when
+        # disabling to match the original test's env.pop() behaviour. Setting
+        # it to "0" vs omitting it can trigger different PyTorch code paths.
+        tuning_env = " PYTORCH_TUNABLEOP_TUNING=1" if tunableop_enabled else ""
         result = target_executor.run(
             f"env PYTORCH_TUNABLEOP_ENABLED={tunableop_val}"
-            f" PYTORCH_TUNABLEOP_TUNING={tuning_val}"
+            f"{tuning_env}"
             f" LD_LIBRARY_PATH={ld}"
             f" {python} -c {shlex.quote(script)}",
             timeout=300,
@@ -334,8 +340,11 @@ class TestTunableOpLinearMatmul:
         ), f"No timing output in stdout:{detail}\n{result.stdout[:1000]}"
         # Additional verification: parse the numeric timing to confirm a real value was
         # produced — the string check above only confirms the print ran.
-        time_ms = _parse_avg_time_ms(result.stdout)
-        assert time_ms is not None, f"No valid numeric timing in stdout:{detail}\n{result.stdout[:1000]}"
+        # _parse_avg_time_ms raises ValueError (never returns None) so no None check needed.
+        try:
+            time_ms = _parse_avg_time_ms(result.stdout)
+        except ValueError as exc:
+            raise AssertionError(f"No valid timing in stdout:{detail}\n{result.stdout[:1000]}") from exc
         assert time_ms > 0, f"Timing was zero or negative:{detail}\n{result.stdout[:1000]}"
 
     @pytest.mark.runtime.medium
