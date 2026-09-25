@@ -5,6 +5,16 @@ third-party software that is **downloaded at test runtime** and is **not** vendo
 into this repository. Each such dependency remains under its own license; the
 notices below are provided for attribution.
 
+## CoralGemm
+
+- **Repository:** https://github.com/AMD-HPC/CoralGemm
+- **License:** MIT
+- **Used by:** `tests/e2e/system_tools/amd_smi/test_ubb_power.py`
+  (`test_ubb_power_workload` — cloned at test runtime as a GPU workload generator)
+
+The MIT License text is reproduced at the repository link above.
+No CoralGemm source files are committed to this repository.
+
 ## HeCBench
 
 - Used by: `tests/e2e/compiler/hecbench/` (cloned at runtime; see the
