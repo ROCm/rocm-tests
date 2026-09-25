@@ -49,7 +49,7 @@ architecture-agnostic (no fixed VRAM floor is declared via ``gpu_vram``).
 
 This file defines 7 marker-tagged test functions (18 parametrised cases) spanning:
 
-- Single-GPU full-suite nightly + soak scenarios (``test_hip_multiprocess_app``,
+- Single-GPU full-suite weekly + soak scenarios (``test_hip_multiprocess_app``,
   ``test_hip_multiprocess_app_soak``)
 - Multi-GPU full-suite with cross-GPU peer copy (``test_hip_multiprocess_all_gpus``,
   ``test_hip_multiprocess_all_gpus_soak``)
@@ -342,7 +342,7 @@ def _run_suite(  # noqa: C901  # pylint: disable=too-many-locals,too-many-branch
 
 
 @pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
+@pytest.mark.ci.weekly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.medium
 @pytest.mark.parametrize(("duration", "vram"), [(60, 0), (600, 60)])
@@ -390,7 +390,7 @@ def test_hip_multiprocess_app_soak(
 @pytest.mark.parametrize(
     ("duration", "vram"),
     [
-        pytest.param(600, 0, marks=pytest.mark.ci.nightly),
+        pytest.param(600, 0, marks=pytest.mark.ci.weekly),
         pytest.param(600, 60, marks=pytest.mark.ci.weekly),
     ],
 )
@@ -442,10 +442,10 @@ def test_hip_multiprocess_all_gpus_soak(
 @pytest.mark.parametrize(
     ("role_a", "role_b", "vram"),
     [
-        pytest.param("compute", "compiler", 0, marks=pytest.mark.ci.nightly, id="compute-compiler"),
+        pytest.param("compute", "compiler", 0, marks=pytest.mark.ci.weekly, id="compute-compiler"),
         pytest.param("memory_mover", "library", 60, marks=pytest.mark.ci.weekly, id="memory_mover-library"),
-        pytest.param("compute", "monitor", 0, marks=pytest.mark.ci.nightly, id="compute-monitor"),
-        pytest.param("compute", "profiler", 0, marks=pytest.mark.ci.nightly, id="compute-profiler"),
+        pytest.param("compute", "monitor", 0, marks=pytest.mark.ci.weekly, id="compute-monitor"),
+        pytest.param("compute", "profiler", 0, marks=pytest.mark.ci.weekly, id="compute-profiler"),
     ],
 )
 def test_hip_multiprocess_role_pair(
@@ -468,7 +468,7 @@ def test_hip_multiprocess_role_pair(
 
 
 @pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
+@pytest.mark.ci.weekly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 @pytest.mark.parametrize(("role", "vram"), _SINGLE_ROLES, ids=[r for r, _ in _SINGLE_ROLES])
@@ -490,7 +490,7 @@ def test_hip_multiprocess_single_role(
 
 
 @pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
+@pytest.mark.ci.weekly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_hip_multiprocess_ipc(target_executor, ld_path: dict, rock_mps_binary: str, run_ctx, request):
