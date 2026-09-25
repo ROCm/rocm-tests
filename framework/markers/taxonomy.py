@@ -247,6 +247,23 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # rocm_agent_enumerator system tool: validates GPU agent discovery and
+    # cross-tool consistency between rocm_agent_enumerator and rocminfo.
+    "tests/e2e/system_tools/rocm_agent_enumerator": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # System tools (rocminfo, amd-smi, etc.): validate ROCm stack enumeration and diagnostics.
+    "tests/e2e/system_tools": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/ucc": [
         "hw.multi_gpu",
         "layer.math_lib",
