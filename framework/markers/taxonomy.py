@@ -203,7 +203,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ml_frameworks/torchvision": [
         "hw.multi_gpu",
         "layer.math_lib",
-        "ci.nightly",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
@@ -235,7 +235,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ml_frameworks/apex": [
         "hw.multi_gpu",
         "layer.math_lib",
-        "ci.nightly",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
