@@ -223,6 +223,14 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # amd-smi telemetry sampled while RVS IET loads every GPU on the node.
+    "tests/e2e/system_tools/amd_smi": [
+        "hw.multi_gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/hip_directed": [
         "hw.gpu",
         "layer.runtime",

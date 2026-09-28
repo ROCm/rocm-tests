@@ -361,6 +361,7 @@ jobs:
               "tests/e2e/rocm_examples/"
               "tests/e2e/hip_directed/"
               "tests/e2e/rocwmma/"
+              "tests/e2e/system_tools/amd_smi/"
             )
           fi
 
