@@ -24,10 +24,15 @@ from __future__ import annotations
 
 import logging
 import re
+import shlex
 
 logger = logging.getLogger(__name__)
 
 RVS_DEBUG_LEVEL = 3
+
+# Ceiling for reading a config file. It is a few KB, so anything approaching
+# this means the connection or mount is wedged rather than the read being slow.
+_CONF_READ_TIMEOUT = 30.0
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # Verdict cells are colour-coded, so ANSI is stripped before matching. The module
@@ -105,8 +110,14 @@ def parse_summary(text: str) -> dict[str, bool]:
 
 
 def declared_actions(executor, conf_path: str) -> set[str]:
-    """Return the action names the config declares."""
-    return set(_ACTION_DECL_RE.findall(executor.run(f"cat {conf_path}").stdout or ""))
+    """Return the action names the config declares.
+
+    Bounded because the config may live on a remote node: reading a few KB over
+    a wedged SSH connection or a stalled NFS mount would otherwise hang the
+    runner rather than failing the test.
+    """
+    read = executor.run(f"cat {shlex.quote(conf_path)}", timeout=_CONF_READ_TIMEOUT)
+    return set(_ACTION_DECL_RE.findall(read.stdout or ""))
 
 
 def assert_summary_passed(summary: dict[str, bool], declared: set[str], label: str, conf: str) -> None:

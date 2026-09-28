@@ -39,7 +39,7 @@ import shlex
 import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
-from tests.e2e.rvs._rvs_log import assert_not_crashed, run_rvs, strip_ansi
+from tests.e2e.system_tools.rvs._rvs_log import assert_not_crashed, run_rvs, strip_ansi
 
 logger = logging.getLogger(__name__)
 

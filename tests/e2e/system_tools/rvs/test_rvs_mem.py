@@ -39,7 +39,7 @@ import shlex
 import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
-from tests.e2e.rvs._rvs_log import (
+from tests.e2e.system_tools.rvs._rvs_log import (
     assert_log_sane,
     assert_summary_passed,
     declared_actions,

@@ -256,6 +256,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # ROCm Validation Suite modules: each test drives one RVS module against its
+    # own conf and asserts on the verdicts RVS reports. Every module qualifies
+    # the whole node, hence multi_gpu rather than the system_tools default.
+    "tests/e2e/system_tools/rvs": [
+        "hw.multi_gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # System tools (rocminfo, amd-smi, etc.): validate ROCm stack enumeration and diagnostics.
     "tests/e2e/system_tools": [
         "hw.gpu",
@@ -267,15 +277,6 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ucc": [
         "hw.multi_gpu",
         "layer.math_lib",
-        "ci.nightly",
-        "e2e.stack",
-        "os.linux",
-    ],
-    # ROCm Validation Suite modules: each test drives one RVS module against its
-    # own conf and asserts on the verdicts RVS reports.
-    "tests/e2e/rvs": [
-        "hw.multi_gpu",
-        "layer.runtime",
         "ci.nightly",
         "e2e.stack",
         "os.linux",

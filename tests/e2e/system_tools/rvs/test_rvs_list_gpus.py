@@ -175,10 +175,10 @@ def test_rvs_list_gpus(target_executor, rvs_binary, rvs_env, rock_dir):
         smi_gpus, source = _smi_gpu_map(target_executor, rock_dir)
 
     if not source:
-        pytest.skip(
-            "Neither amd-smi nor rocm-smi is available, so the RVS GPU list has "
-            "nothing to be cross-checked against; passing on RVS's own output "
-            "alone would verify nothing."
+        pytest.fail(
+            "Neither amd-smi nor rocm-smi is available. Both ship with ROCm, so "
+            "a node missing them is misconfigured rather than out of scope, and "
+            "the RVS GPU list has nothing to be cross-checked against."
         )
 
     with step(f"Compare RVS against {source}"):

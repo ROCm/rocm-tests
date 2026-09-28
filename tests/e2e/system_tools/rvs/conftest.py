@@ -72,7 +72,50 @@ def _file_exists(path: pathlib.Path, cmake_executor=None) -> bool:
     """Check if a file exists locally or on remote node."""
     if cmake_executor is None:
         return path.is_file()
-    return cmake_executor.run(f"test -f {path}").ok
+    return cmake_executor.run(f"test -f {shlex.quote(str(path))}").ok
+
+
+def _dir_exists(path: pathlib.Path, cmake_executor=None) -> bool:
+    """Check if a directory exists locally or on remote node."""
+    if cmake_executor is None:
+        return path.is_dir()
+    return cmake_executor.run(f"test -d {shlex.quote(str(path))}").ok
+
+
+def _is_executable(path: pathlib.Path, cmake_executor=None) -> bool:
+    """Check if a path is an executable file locally or on remote node."""
+    if cmake_executor is None:
+        return path.is_file() and os.access(path, os.X_OK)
+    return cmake_executor.run(f"test -x {shlex.quote(str(path))}").ok
+
+
+def _find_first(
+    root: pathlib.Path,
+    pattern: str,
+    cmake_executor=None,
+    *,
+    want_dir: bool = False,
+) -> pathlib.Path | None:
+    """Return the first entry under *root* whose path ends with *pattern*.
+
+    Stands in for ``Path.rglob`` so a build or install tree that lives on the
+    node under test is searched there. Resolved locally the same path names
+    either nothing or a directory belonging to another user, which reads as
+    "not built" or raises outright.
+    """
+    if cmake_executor is None:
+        if not root.exists():
+            return None
+        return next(
+            (c for c in root.rglob(pattern) if (c.is_dir() if want_dir else c.is_file())),
+            None,
+        )
+    probe = (
+        f"find {shlex.quote(str(root))} -path {shlex.quote('*/' + pattern)} "
+        f"-type {'d' if want_dir else 'f'} 2>/dev/null | head -n 1"
+    )
+    found = (cmake_executor.run(probe).stdout or "").strip()
+    return pathlib.Path(found) if found else None
 
 
 def _detect_device_key(cmake_executor=None) -> str:
@@ -177,7 +220,7 @@ def _collect_conf_roots(
         if cmake_executor is None:
             if p.is_dir():
                 roots.append(p)
-        elif cmake_executor.run(f"test -d {p}").ok:
+        elif cmake_executor.run(f"test -d {shlex.quote(str(p))}").ok:
             roots.append(p)
     return roots
 
@@ -222,7 +265,7 @@ def rvs_source(external_build, compiler_build_dir: str, cmake_executor) -> str:
     external_build.assert_license_present(src_dir)
     if cmake_executor is not None:
         cmake_executor.run(
-            f"cd {src_dir} && git submodule update --init --recursive",
+            f"cd {shlex.quote(str(src_dir))} && git submodule update --init --recursive",
             timeout=120.0,
         )
     else:
@@ -265,11 +308,9 @@ def rvs_binary(
         return preinstalled
 
     # 2. Check previously built
-    if install_dir.exists():
-        for candidate in install_dir.rglob("bin/rvs"):
-            if candidate.is_file():
-                logger.info("Using previously built RVS: %s", candidate)
-                return str(candidate)
+    if previous := _find_first(install_dir, "bin/rvs", cmake_executor):
+        logger.info("Using previously built RVS: %s", previous)
+        return str(previous)
 
     # 3. Build from source via framework cmake_build_dir
     logger.info("Building RVS from source: %s", src_dir)
@@ -289,11 +330,14 @@ def rvs_binary(
 
     # 4. Install step using DESTDIR (RVS uses absolute install paths)
     logger.info("Running cmake --install for RVS with DESTDIR=%s", install_dir)
-    install_dir.mkdir(parents=True, exist_ok=True)
+    if cmake_executor is not None:
+        cmake_executor.run(f"mkdir -p {shlex.quote(str(install_dir))}")
+    else:
+        install_dir.mkdir(parents=True, exist_ok=True)
 
     if cmake_executor is not None:
         result = cmake_executor.run(
-            f"DESTDIR={install_dir} cmake --install {build_dir}",
+            f"DESTDIR={shlex.quote(str(install_dir))} cmake --install {shlex.quote(str(build_dir))}",
             timeout=120.0,
         )
         if not result.ok:
@@ -310,15 +354,11 @@ def rvs_binary(
             pytest.fail(f"RVS cmake install failed:\n{stderr[:3000]}")
 
     # 5. Locate installed binary
-    rvs_bin = None
-    for candidate in install_dir.rglob("bin/rvs"):
-        if candidate.is_file():
-            rvs_bin = candidate
-            break
-
+    rvs_bin = _find_first(install_dir, "bin/rvs", cmake_executor)
     if rvs_bin is None:
         pytest.fail(
-            f"RVS binary not found under {install_dir} after install. Contents: {list(install_dir.rglob('*'))[:20]}"
+            f"RVS binary not found under {install_dir} after install. "
+            f"Contents: {_list_dir_entries(install_dir, cmake_executor)[:20]}"
         )
 
     logger.info("RVS binary installed at: %s", rvs_bin)
@@ -358,13 +398,12 @@ def rvs_find_conf(rock_dir: str, rvs_source: str, cmake_executor, rvs_binary: st
     """Return a factory that locates RVS config files with GPU-specific lookup."""
     device_key = _detect_device_key(cmake_executor)
     rock_dir_path = pathlib.Path(rock_dir)
-    install_base = pathlib.Path(rvs_source) / "install"
-    install_conf = None
-    if install_base.exists():
-        for candidate in install_base.rglob("share/rocm-validation-suite/conf"):
-            if candidate.is_dir():
-                install_conf = candidate
-                break
+    install_conf = _find_first(
+        pathlib.Path(rvs_source) / "install",
+        "share/rocm-validation-suite/conf",
+        cmake_executor,
+        want_dir=True,
+    )
     source_conf = pathlib.Path(rvs_source) / "rvs" / "conf"
 
     def _find_conf(config_name: str, *, gpu_conf_dir: str = "") -> str:
@@ -412,12 +451,12 @@ def _binary_conf_root(rvs_binary: str | None) -> pathlib.Path | None:
     return base / "share" / "rocm-validation-suite" / "conf"
 
 
-def _rvs_install_base(rvs_source: str | None) -> pathlib.Path | None:
+def _rvs_install_base(rvs_source: str | None, cmake_executor=None) -> pathlib.Path | None:
     """Return the RVS ``install`` tree when the source checkout has one."""
     if not rvs_source:
         return None
     base = pathlib.Path(rvs_source) / "install"
-    return base if base.exists() else None
+    return base if _dir_exists(base, cmake_executor) else None
 
 
 def _export_rvs_conf_root(
@@ -425,13 +464,16 @@ def _export_rvs_conf_root(
     rock_dir: str,
     install_base: pathlib.Path | None,
     rvs_binary: str | None = None,
+    cmake_executor=None,
 ) -> None:
     """Point workloads at the first readable RVS ``conf`` tree."""
     install_conf = None
     if install_base is not None:
-        install_conf = next(
-            (c for c in install_base.rglob("share/rocm-validation-suite/conf") if c.is_dir()),
-            None,
+        install_conf = _find_first(
+            install_base,
+            "share/rocm-validation-suite/conf",
+            cmake_executor,
+            want_dir=True,
         )
     for root in (
         _binary_conf_root(rvs_binary),
@@ -439,7 +481,7 @@ def _export_rvs_conf_root(
         pathlib.Path(rock_dir) / "share" / "rocm-validation-suite" / "conf",
         pathlib.Path(rvs_source) / "rvs" / "conf",
     ):
-        if root is not None and root.is_dir():
+        if root is not None and _dir_exists(root, cmake_executor):
             os.environ["ROCM_TEST_RVS_CONF_ROOT"] = str(root)
             return
 
@@ -449,6 +491,7 @@ def _export_transferbench_bin(
     rock_dir: str,
     compiler_build_dir: str | None,
     install_base: pathlib.Path | None,
+    cmake_executor=None,
 ) -> None:
     """Publish a prebuilt TransferBench found near ROCm, RVS or the build tree."""
     candidates = [
@@ -459,9 +502,11 @@ def _export_transferbench_bin(
         build_root = pathlib.Path(compiler_build_dir) / "transferbench"
         candidates += [build_root / "TransferBench", build_root / "build" / "TransferBench"]
     if install_base is not None:
-        candidates.extend(install_base.rglob("bin/TransferBench"))
+        installed = _find_first(install_base, "bin/TransferBench", cmake_executor)
+        if installed is not None:
+            candidates.append(installed)
     for candidate in candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        if _is_executable(candidate, cmake_executor):
             os.environ["ROCM_TEST_TRANSFERBENCH_BIN"] = str(candidate)
             return
 
@@ -473,6 +518,7 @@ def export_rvs_env_paths(
     *,
     transferbench_binary: str | None = None,
     compiler_build_dir: str | None = None,
+    cmake_executor=None,
 ) -> None:
     """Publish resolved RVS / TransferBench paths into the environment.
 
@@ -483,16 +529,16 @@ def export_rvs_env_paths(
     if rvs_binary:
         os.environ["ROCM_TEST_RVS_BIN"] = rvs_binary
 
-    install_base = _rvs_install_base(rvs_source)
+    install_base = _rvs_install_base(rvs_source, cmake_executor)
     if rvs_source:
-        _export_rvs_conf_root(rvs_source, rock_dir, install_base, rvs_binary)
+        _export_rvs_conf_root(rvs_source, rock_dir, install_base, rvs_binary, cmake_executor)
 
     if transferbench_binary:
         os.environ["ROCM_TEST_TRANSFERBENCH_BIN"] = transferbench_binary
         return
 
     if rvs_binary:
-        _export_transferbench_bin(rvs_binary, rock_dir, compiler_build_dir, install_base)
+        _export_transferbench_bin(rvs_binary, rock_dir, compiler_build_dir, install_base, cmake_executor)
 
 
 @pytest.fixture(scope="session")
@@ -510,14 +556,14 @@ def transferbench_binary(
         pathlib.Path(compiler_build_dir) / "transferbench" / "TransferBench",
         pathlib.Path(compiler_build_dir) / "transferbench" / "build" / "TransferBench",
     ):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        if _is_executable(candidate, cmake_executor):
             logger.info("Using TransferBench: %s", candidate)
             return str(candidate)
 
     # Only clone/build RVS submodules when TransferBench is not already present.
     rvs_source = request.getfixturevalue("rvs_source")
     tb_src = pathlib.Path(rvs_source) / "external" / "TransferBench"
-    if not (tb_src / "CMakeLists.txt").is_file():
+    if not _file_exists(tb_src / "CMakeLists.txt", cmake_executor):
         pytest.fail(f"TransferBench source not found at {tb_src}. Ensure RVS submodules are initialized.")
 
     logger.info("Building TransferBench from source: %s", tb_src)
