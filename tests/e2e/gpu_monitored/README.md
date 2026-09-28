@@ -10,7 +10,7 @@ analysis, and HTML report generation.
 |------|------|
 | `tests/common/gpu_monitored/` | Shared library (monitoring, validation, orchestrator, workloads) |
 | `tests/e2e/gpu_monitored/` | Pytest entry points (one file per workload) |
-| `tests/e2e/rvs/` | Session fixtures for RVS binary discovery / optional source build |
+| `tests/e2e/system_tools/rvs/` | Session fixtures for RVS binary discovery / optional source build |
 
 Logic lives under `tests/common/gpu_monitored/workloads/` and is orchestrated by
 `MonitoredTestOrchestrator`.

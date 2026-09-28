@@ -7,12 +7,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 import os
+import pathlib
+import posixpath
 import shlex
 import subprocess
 from typing import TYPE_CHECKING
 
+from framework.executors.abstract_executor import AbstractExecutor
+
 if TYPE_CHECKING:
-    from framework.executors.abstract_executor import AbstractExecutor
     from framework.executors.executor_group import NodeExecutorGroup
 
 
@@ -50,8 +53,13 @@ def make_monitor_executor(
     return CpuExecutor(env_overrides=env, suppress_output_log=True)
 
 
-class _UnmaskedSshMonitorExecutor:
-    """Wrap ``SshExecutor`` so monitor commands run without GPU masks."""
+class _UnmaskedSshMonitorExecutor(AbstractExecutor):
+    """Wrap ``SshExecutor`` so monitor commands run without GPU masks.
+
+    Inherits the executor base class so ``make_monitor_executor``'s declared
+    return type holds for this branch too, and callers that check against
+    ``AbstractExecutor`` accept it.
+    """
 
     def __init__(self, ssh: AbstractExecutor) -> None:
         self._ssh = ssh
@@ -76,6 +84,97 @@ class _UnmaskedSshMonitorExecutor:
             console_label=console_label,
             stream=stream,
         )
+
+
+def _connection_executor(executor: AbstractExecutor | None) -> object | None:
+    """Return the executor that owns the connection behind *executor*.
+
+    Workloads are handed a ``NodeExecutorGroup`` and the monitor an unmasked
+    wrapper; both delegate to the executor that knows whether the commands leave
+    this machine and where the node keeps its files.
+    """
+    inner = getattr(executor, "_ssh", executor)
+    group = getattr(inner, "_executors", None)
+    if group:
+        inner = group[0]
+        inner = getattr(inner, "_ssh", inner)
+    return inner
+
+
+def is_remote_executor(executor: AbstractExecutor | None) -> bool:
+    """Return True when *executor* runs its commands on another machine."""
+    from framework.executors.ssh_executor import SshExecutor
+
+    return isinstance(_connection_executor(executor), SshExecutor)
+
+
+def executable_exists(executor: AbstractExecutor | None, path: os.PathLike[str] | str) -> bool:
+    """Return True when *path* is an executable file on the node that will run it.
+
+    Workloads are discovered where they will execute, which is not where pytest
+    is running once a remote node is in play: a binary present under the node's
+    ROCm tree would otherwise be reported missing and the test written off as
+    unbuildable.
+    """
+    if is_remote_executor(executor):
+        return executor.run(f"test -x {shlex.quote(str(path))}").ok
+    local = pathlib.Path(path)
+    return local.is_file() and os.access(local, os.X_OK)
+
+
+def directory_exists(executor: AbstractExecutor | None, path: os.PathLike[str] | str) -> bool:
+    """Return True when *path* is a directory on the node the workload runs on."""
+    if is_remote_executor(executor):
+        return executor.run(f"test -d {shlex.quote(str(path))}").ok
+    return pathlib.Path(path).is_dir()
+
+
+def ensure_remote_dir(executor: AbstractExecutor | None, path: os.PathLike[str] | str) -> None:
+    """Create *path* on the executor's node so redirects into it can succeed."""
+    if is_remote_executor(executor):
+        executor.run(f"mkdir -p {shlex.quote(str(path))}")
+
+
+def node_path_for(executor: AbstractExecutor | None, path: os.PathLike[str] | str) -> str:
+    """Return the path *path* should take on the executor's node.
+
+    A local absolute path is meaningless on a remote node -- it names a home
+    directory belonging to a different user -- so it is mapped into the
+    framework's managed remote workspace. Returns *path* unchanged when the
+    workload runs here.
+    """
+    mapper = getattr(_connection_executor(executor), "workspace_path_for", None)
+    if mapper is None or not is_remote_executor(executor):
+        return str(path)
+    return mapper(path)
+
+
+def fetch_remote_file(
+    executor: AbstractExecutor | None,
+    local_path: os.PathLike[str] | str,
+    remote_path: os.PathLike[str] | str | None = None,
+) -> bool:
+    """Copy the node's copy of an artifact to *local_path*.
+
+    Workloads produce their artifacts -- a redirected stdout, the monitor's CSV
+    -- on whichever node ran them, and every log- and sample-based validator
+    reads them here. The framework ships ``upload_tree`` but no download, so the
+    file comes back over the command channel.
+
+    *remote_path* defaults to the workspace mapping of *local_path*. Returns
+    False and leaves the local file alone for local executors and for files the
+    node does not have, so callers can fetch unconditionally.
+    """
+    if not is_remote_executor(executor):
+        return False
+    source = remote_path if remote_path is not None else node_path_for(executor, local_path)
+    result = executor.run(f"cat {shlex.quote(str(source))}")
+    if not result.ok:
+        return False
+    local = pathlib.Path(local_path)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text(result.stdout)
+    return True
 
 
 def workload_executor_from(
@@ -207,18 +306,35 @@ def run_command_redirect(
     env: dict[str, str] | None = None,
     cwd: os.PathLike[str] | str | None = None,
 ) -> int:
-    """Run ``cmd`` with stdout/stderr redirected to ``stdout_file``."""
+    """Run ``cmd`` with stdout/stderr redirected to ``stdout_file``.
+
+    Every workload that needs a real file descriptor rather than a pipe comes
+    through here, so the remote-node handling lives here too: the redirect names
+    the run directory by its local path, which a remote shell has neither to
+    write into nor to leave the result in. The directory is created on the node
+    before the run and the file pulled back after, so callers can keep reading
+    *stdout_file* locally whichever node produced it.
+    """
+    target = node_path_for(executor, stdout_file)
+    ensure_remote_dir(executor, posixpath.dirname(target))
+    if cwd is not None:
+        # ``cwd`` is a run directory too, so it needs the same mapping or the
+        # command's leading ``cd`` fails before the workload starts.
+        cwd = node_path_for(executor, cwd)
+        ensure_remote_dir(executor, cwd)
     redirect = format_shell_command(
         cmd,
         env=env,
         cwd=cwd,
-        redirect_stdout=stdout_file,
+        redirect_stdout=target,
     )
     wrapped = redirect
     if timeout:
         wrapped = f"timeout {int(timeout)} {redirect}"
     wall_timeout = float(timeout) + 5.0 if timeout else None
-    return run_command(executor, wrapped, timeout=wall_timeout, stream=True)
+    rc = run_command(executor, wrapped, timeout=wall_timeout, stream=True)
+    fetch_remote_file(executor, stdout_file, target)
+    return rc
 
 
 class BackgroundSessionAdapter:

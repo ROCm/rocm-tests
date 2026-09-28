@@ -20,7 +20,15 @@ import os
 from pathlib import Path
 
 from tests.common.gpu_monitored.config import Config
+from tests.common.gpu_monitored.executor_bridge import executable_exists
 from tests.common.gpu_monitored.workloads.base import BuildContext, BuildStatus, RunContext, RunResult, Test, TestSpec
+
+# Slack added to ``SWEEP_TIME_LIMIT`` when no ``--per-iter-watchdog`` is set.
+# The executor reads a timeout of None as "apply the 300s default" rather than
+# "no limit", which lands on the sweep's own time limit and kills the run at the
+# moment it is meant to finish. The sweep needs this margin on top to enumerate
+# the transfer paths and let the final in-flight transfer drain.
+_SWEEP_TIMEOUT_HEADROOM = 300
 
 
 class TransferBench(Test):
@@ -53,7 +61,7 @@ class TransferBench(Test):
             f"(expected {ctx.rocm_root}/bin/TransferBench or "
             f"ROCM_TEST_TRANSFERBENCH_BIN from pytest fixtures). TransferBench "
             f"is shipped with ROCm Validation Suite; preinstall it under the "
-            f"ROCm root or let tests/e2e/rvs/conftest.py build it from source."
+            f"ROCm root or let tests/e2e/system_tools/rvs/conftest.py build it from source."
         )
         return BuildStatus.BUILD_FAILED
 
@@ -101,39 +109,35 @@ class TransferBench(Test):
         )
 
         print(f"  [transferbench] Running: {tb_bin} rsweep")
-        print(f"  [transferbench] SWEEP_TIME_LIMIT={sweep_time_limit} " f"SWEEP_MIN={sweep_min} SWEEP_MAX={sweep_max}")
+        print(f"  [transferbench] SWEEP_TIME_LIMIT={sweep_time_limit} SWEEP_MIN={sweep_min} SWEEP_MAX={sweep_max}")
 
         rc = ctx.exec(
             [str(tb_bin), "rsweep"],
             env=env,
-            timeout=wd,
+            timeout=wd or int(sweep_time_limit) + _SWEEP_TIMEOUT_HEADROOM,
         )
         if rc == 124:
-            print(
-                f"  [transferbench] FAIL: watchdog timeout — rsweep did "
-                f"not complete within --per-iter-watchdog {wd}s"
-            )
+            limit = f"--per-iter-watchdog {wd}s" if wd else f"SWEEP_TIME_LIMIT plus {_SWEEP_TIMEOUT_HEADROOM}s of slack"
+            print(f"  [transferbench] FAIL: watchdog timeout — rsweep did not complete within {limit}")
             return RunResult(exit_code=1, reproduce_cmd=reproduce)
         if rc == 0:
             print("  [transferbench] Completed rsweep successfully (rc=0)")
         return RunResult(exit_code=rc, reproduce_cmd=reproduce)
 
     @classmethod
-    def _installed_bin(cls, rocm_root: Path) -> Path | None:
+    def _installed_bin(cls, rocm_root: Path, executor: object | None = None) -> Path | None:
         """Return TransferBench binary when present and executable."""
         override = os.environ.get("ROCM_TEST_TRANSFERBENCH_BIN", "").strip()
-        if override:
-            p = Path(override)
-            if p.is_file() and os.access(p, os.X_OK):
-                return p
+        if override and executable_exists(executor, override):
+            return Path(override)
         installed = rocm_root / "bin" / "TransferBench"
-        if installed.is_file() and os.access(installed, os.X_OK):
+        if executable_exists(executor, installed):
             return installed
         return None
 
     @classmethod
     def _find_bin(cls, config: Config) -> Path | None:
-        return cls._installed_bin(config.rocm_root)
+        return cls._installed_bin(config.rocm_root, config.probe_executor)
 
     @staticmethod
     def _positive_env_int(name: str, default: int) -> str:
@@ -145,6 +149,6 @@ class TransferBench(Test):
             if value <= 0:
                 raise ValueError("must be positive")
         except ValueError as e:
-            print(f"  [transferbench] WARNING: ignoring invalid " f"{name}={raw!r} ({e}); using default {default}")
+            print(f"  [transferbench] WARNING: ignoring invalid {name}={raw!r} ({e}); using default {default}")
             return str(default)
         return str(value)

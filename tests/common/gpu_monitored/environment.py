@@ -5,17 +5,14 @@
 
 from __future__ import annotations
 
-import contextlib
-import glob
 import os
 from pathlib import Path
 import re
 import shutil
-import subprocess
 import sys
 
 from tests.common.gpu_monitored.config import Config
-from tests.common.gpu_pci_map import GPU_DEVICE_MAP
+from tests.common.gpu_pci_map import GPU_DEVICE_MAP, ConfDirUnresolvedError, detect_device_key
 
 
 def rocm_version_from_path(p: Path) -> str:
@@ -41,73 +38,24 @@ def rocm_version_from_path(p: Path) -> str:
     return "unknown"
 
 
-def _render_node_index(path: str) -> int:
-    """Sort key for ``/sys/class/drm/renderD<N>/...`` paths."""
-    m = re.search(r"renderD(\d+)", path)
-    return int(m.group(1)) if m else -1
+def detect_gpu_device_key(cmake_executor=None) -> str:
+    """Return the ``<device>_<revision>`` key the RVS config mapping is indexed by.
 
+    Delegates to the detector the RVS module tests use, so both suites resolve a
+    host to the same key -- including the power-variant split for boards that
+    share a device id. Detection follows *cmake_executor* to the node under
+    test, which is what makes remote-node runs pick the config of the GPU that
+    will actually run the workload rather than the one in the machine running
+    pytest.
 
-def detect_gpu_device_id() -> str:
-    """Read PCI device + revision IDs from sysfs; fall back to amd-smi.
-
-    Returns the ``<device>_<revision>`` pair of the lowest-numbered render
-    node. That pair selects the RVS config (see ``tests/_rvs_based.py``),
-    so which node wins must not vary between runs on the same host.
+    An undetectable GPU yields ``""``, which the mapping reports as UNSUPPORTED
+    rather than failing the run.
     """
-    found: list[tuple[int, str]] = []
-    for f in glob.glob("/sys/class/drm/renderD*/device/device"):
-        f_path = Path(f)
-        try:
-            dev_id = f_path.read_text().strip().replace("0x", "").lower()
-        except Exception:
-            continue
-        if not dev_id:
-            continue
-        rev_file = f_path.parent / "revision"
-        rev_id = "00"
-        with contextlib.suppress(Exception):
-            rev_id = rev_file.read_text().strip().replace("0x", "").lower() or "00"
-        found.append((_render_node_index(f), f"{dev_id}_{rev_id}"))
-
-    if found:
-        found.sort()
-        distinct = sorted({did for _idx, did in found})
-        if len(distinct) > 1:
-            print(
-                f"  WARNING: render nodes report {len(distinct)} distinct PCI "
-                f"device IDs ({', '.join(distinct)}); selecting "
-                f"{found[0][1]} from the lowest-numbered node. RVS configs "
-                f"are chosen from this one ID, so verify it matches the "
-                f"GPUs under test.",
-                file=sys.stderr,
-            )
-        return found[0][1]
-
     try:
-        out = subprocess.run(["amd-smi", "static", "-a", "-g", "0"], capture_output=True, text=True, timeout=10).stdout
-        for line in out.splitlines():
-            if re.search(r"DEVICE_ID|DEV_ID", line, re.I):
-                parts = line.split(":", 1)
-                if len(parts) == 2:
-                    raw = parts[1].strip().lower()
-                    match = re.fullmatch(
-                        r"(?:0x)?([0-9a-f]{4})(?:[_:\-/](?:0x)?([0-9a-f]{2}))?",
-                        raw,
-                    )
-                    if match:
-                        if match.group(2) is None:
-                            print(
-                                f"  WARNING: amd-smi reported device "
-                                f"{match.group(1)} without a revision; "
-                                f"assuming revision 00. RVS config "
-                                f"selection may be wrong on parts whose "
-                                f"actual revision is non-zero.",
-                                file=sys.stderr,
-                            )
-                        return f"{match.group(1)}_{match.group(2) or '00'}"
-    except Exception:
-        pass
-    return ""
+        return detect_device_key(cmake_executor=cmake_executor)
+    except ConfDirUnresolvedError as e:
+        print(f"  WARNING: {e}; RVS tests will report UNSUPPORTED", file=sys.stderr)
+        return ""
 
 
 def match_rvs_gpu_dir(gpu_short_name: str, gpu_model: str, rocm_root: Path, build_dir: Path) -> str:
@@ -177,7 +125,7 @@ def apply_framework_environment(
         pass
 
     if not config.gpu_device_id:
-        config.gpu_device_id = detect_gpu_device_id()
+        config.gpu_device_id = detect_gpu_device_key()
     if not config.gpu_short_name:
         config.gpu_short_name = GPU_DEVICE_MAP.get(config.gpu_device_id, "")
     if not config.gpu_conf_dir:

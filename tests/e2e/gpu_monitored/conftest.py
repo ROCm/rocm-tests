@@ -29,7 +29,7 @@ from tests.common.gpu_monitored.orchestrator import MonitoredTestOrchestrator, T
 from tests.common.gpu_monitored.validation import pretest_health_probe
 from tests.common.gpu_monitored.workloads import get_test
 from tests.common.gpu_monitored.workloads.base import BuildContext, BuildStatus
-from tests.e2e.rvs.conftest import (  # noqa: F401
+from tests.e2e.system_tools.rvs.conftest import (  # noqa: F401
     export_rvs_env_paths,
     gpu_conf_dir,
     rvs_binary as _rvs_binary,
@@ -41,8 +41,8 @@ from tests.e2e.rvs.conftest import (  # noqa: F401
 logger = logging.getLogger(__name__)
 
 # pytest only auto-loads conftest.py for its own directory tree, so the RVS
-# build fixtures from the sibling ``tests/e2e/rvs`` suite are re-exported here
-# to make them requestable by the monitored workloads below.
+# build fixtures from ``tests/e2e/system_tools/rvs`` are re-exported here to
+# make them requestable by the monitored workloads below.
 rvs_binary = _rvs_binary
 rvs_source = _rvs_source
 transferbench_binary = _transferbench_binary
@@ -55,13 +55,14 @@ _CUDA_MEMTEST_REPO_URL = "https://github.com/ComputationalRadiationPhysics/cuda_
 
 
 @pytest.fixture(scope="session")
-def _gpu_monitored_rvs_env(rvs_binary, rvs_source, rock_dir, compiler_build_dir):
+def _gpu_monitored_rvs_env(rvs_binary, rvs_source, rock_dir, compiler_build_dir, cmake_executor):
     """Export RVS paths — only requested by workloads that drive ``rvs``."""
     export_rvs_env_paths(
         rvs_binary,
         rvs_source,
         rock_dir,
         compiler_build_dir=compiler_build_dir,
+        cmake_executor=cmake_executor,
     )
 
 
@@ -83,7 +84,7 @@ def cuda_memtest_source(external_build, compiler_build_dir: str) -> str:
 
 
 @pytest.fixture(scope="session")
-def _gpu_monitored_transferbench_env(transferbench_binary, rock_dir, compiler_build_dir):
+def _gpu_monitored_transferbench_env(transferbench_binary, rock_dir, compiler_build_dir, cmake_executor):
     """Export TransferBench path without pulling in a full RVS build."""
     export_rvs_env_paths(
         None,
@@ -91,6 +92,7 @@ def _gpu_monitored_transferbench_env(transferbench_binary, rock_dir, compiler_bu
         rock_dir,
         transferbench_binary=transferbench_binary,
         compiler_build_dir=compiler_build_dir,
+        cmake_executor=cmake_executor,
     )
 
 
@@ -140,6 +142,7 @@ def monitored_config(
     target_executor,
     gpu_monitored_monitor_executor,
     gpu_arch,
+    cmake_executor,
 ):
     """Per-test :class:`Config` from framework GPU detection + ROCm paths."""
     num_gpus = target_executor.visible_gpu_count
@@ -149,7 +152,7 @@ def monitored_config(
         rock_dir,
     )
 
-    from tests.common.gpu_monitored.environment import detect_gpu_device_id
+    from tests.common.gpu_monitored.environment import detect_gpu_device_key
 
     cfg = make_monitored_config(
         rock_dir=rock_dir,
@@ -157,12 +160,15 @@ def monitored_config(
         compiler_build_dir=compiler_build_dir,
         artifact_dir=framework_config.framework.artifact_dir,
         sample_interval=gpu_monitor_interval,
-        rocmtest_path=os.environ.get("ROCM_TEST_ROCMTEST_PATH"),
         num_gpus=num_gpus,
         gpu_arch=arch,
         gpu_model=model,
-        gpu_device_id=detect_gpu_device_id(),
+        gpu_device_id=detect_gpu_device_key(cmake_executor),
     )
+    # Binaries and config trees are looked for where the workload will run.
+    # ``cmake_executor`` is None in local mode, which leaves every probe reading
+    # this filesystem exactly as before.
+    cfg.probe_executor = cmake_executor
     ensure_gpu_environment(cfg)
     return cfg
 
@@ -192,6 +198,14 @@ def run_monitored_test(
         _ensure_workload_prerequisites(request, name)
 
         config = monitored_config
+        # Resolved here rather than inside the workload so the qualification
+        # matrix is read through the same fixture the RVS module tests use --
+        # which probes the node under test, not the host running pytest -- and
+        # so an unqualified module skips from the fixture layer, where skipping
+        # is legal, instead of being reported back as an UNSUPPORTED outcome.
+        conf_name = getattr(test, "_conf_name", "")
+        if conf_name:
+            config.rvs_conf_path = request.getfixturevalue("rvs_find_conf")(conf_name)
         lookback = int(os.environ.get("GPU_MONITOR_PRETEST_LOOKBACK_MIN", "30"))
         clean, health_summary = pretest_health_probe(
             lookback_min=lookback,
@@ -221,7 +235,7 @@ def run_monitored_test(
         )
         build_status = test.build(build_ctx)
         if build_status == BuildStatus.SOURCE_MISSING:
-            pytest.skip(f"{name}: source not available (set ROCM_TEST_ROCMTEST_PATH for NDA workloads)")
+            pytest.skip(f"{name}: workload source not available")
         if build_status == BuildStatus.BUILD_FAILED:
             pytest.fail(f"{name}: build failed — prerequisites missing or build error")
         if not test.available(config):

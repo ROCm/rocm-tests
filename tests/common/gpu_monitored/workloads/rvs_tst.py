@@ -17,8 +17,7 @@ class RvsTst(_RvsBased):
     )
     _conf_name = "tst_single.conf"
     _human_label = "TST"
-    # Relies on the base-class generic fallback (``_gpu_only=False``):
-    # upstream RVS ships a generic ``tst_single.conf`` but a per-silicon
-    # copy only for a few parts (e.g. MI210), so without the fallback this
-    # reported UNSUPPORTED on MI300X/MI300A/MI325X despite a usable config
-    # being available.
+    # Upstream RVS ships a generic ``tst_single.conf`` but a per-silicon copy
+    # only for a few parts (e.g. MI210). The qualification matrix names which
+    # of the two each GPU was qualified with, so parts like MI300X and MI325X
+    # resolve to the generic config rather than reporting UNSUPPORTED.

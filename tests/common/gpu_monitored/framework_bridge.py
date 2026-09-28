@@ -120,7 +120,6 @@ def make_monitored_config(
     compiler_build_dir: str,
     artifact_dir: str,
     sample_interval: int | None,
-    rocmtest_path: str | None,
     num_gpus: int,
     gpu_arch: str,
     gpu_model: str,
@@ -137,12 +136,9 @@ def make_monitored_config(
     if interval is None:
         interval = int(os.environ.get("GPU_MONITOR_INTERVAL", "1"))
 
-    rocmtest = Path(rocmtest_path) if rocmtest_path else Path(os.environ.get("ROCM_TEST_ROCMTEST_PATH", ""))
-
     cfg = Config(
         script_dir=rocm_tests_root(),
         build_dir=build_dir,
-        rocmtest_path=rocmtest,
         sample_interval=interval,
         enable_cu_occupancy=os.environ.get("GPU_MONITOR_CU_OCCUPANCY", "").lower() in ("1", "true", "yes"),
         per_iter_watchdog=int(os.environ.get("GPU_MONITOR_PER_ITER_WATCHDOG", "0") or "0"),

@@ -7,6 +7,7 @@ import pytest
 
 @pytest.mark.gpu_count("ALL")
 @pytest.mark.runtime.medium
+@pytest.mark.layer.math_lib
 def test_gpu_hipblaslt_bench_monitored(run_monitored_test):
     """Run hipblaslt_bench under amd-smi monitoring with full validation pipeline."""
     outcome = run_monitored_test()

@@ -24,7 +24,6 @@ install check in the same interpreter (e.g. unit tests).
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 
 from tests.common.gpu_monitored.config import Config
 
@@ -32,7 +31,7 @@ from tests.common.gpu_monitored.config import Config
 class SharedToolBuilder:
     """Cache the verdict of an 'install or build from source' step.
 
-    ``install_check(rocm_root) -> bool`` is invoked on every call; when
+    ``install_check(config) -> bool`` is invoked on every call; when
     it returns True we always take the fast path (no cache needed, the
     binary is already there). The cache only kicks in when the install
     check is False, in which case ``build_fn(config) -> bool`` runs
@@ -44,7 +43,7 @@ class SharedToolBuilder:
         self,
         *,
         label: str,
-        install_check: Callable[[Path], bool],
+        install_check: Callable[[Config], bool],
         build_fn: Callable[[Config], bool],
     ) -> None:
         self._label = label
@@ -71,7 +70,7 @@ class SharedToolBuilder:
         via its module-level ``find_bin`` helper and the
         ``Test.available`` override.
         """
-        if self._install_check(config.rocm_root):
+        if self._install_check(config):
             if not self._announced_install:
                 print(f"  [build] {self._label}: found at {config.rocm_root}/bin")
                 self._announced_install = True

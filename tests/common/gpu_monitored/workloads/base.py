@@ -174,7 +174,7 @@ class RunContext:
             follower.start()
             try:
                 return run_command_redirect(
-                    self.target_executor or self.monitor_executor,
+                    executor,
                     list(cmd),
                     stdout_file,
                     timeout=float(timeout) if timeout is not None else None,

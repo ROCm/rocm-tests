@@ -13,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path
+import posixpath
 import re
 import shlex
 import shutil
@@ -22,6 +23,13 @@ import time
 from typing import TYPE_CHECKING
 
 from tests.common.gpu_monitored import csv_schema
+from tests.common.gpu_monitored.executor_bridge import (
+    ensure_remote_dir,
+    executable_exists,
+    fetch_remote_file,
+    is_remote_executor,
+    node_path_for,
+)
 
 if TYPE_CHECKING:
     from framework.executors.abstract_executor import AbstractExecutor
@@ -41,17 +49,22 @@ _DYNAMIC_TELEMETRY_FIELDS = (
 )
 
 
-def resolve_amd_smi(rocm_root: Path | str | None = None) -> str:
+def resolve_amd_smi(rocm_root: Path | str | None = None, executor: object | None = None) -> str:
     """Return amd-smi binary path (PATH first, then ``{rocm_root}/bin/amd-smi``).
 
     Mirrors ``health_plugin.GpuHealthChecker._resolve_amd_smi`` so gpu_monitored
-    monitoring works when ROCm is only visible via ``--rock-dir``.
+    monitoring works when ROCm is only visible via ``--rock-dir``. The lookup
+    follows *executor*, because the machine driving the test having amd-smi on
+    PATH says nothing about the node whose GPUs are being sampled.
     """
-    if shutil.which("amd-smi"):
+    if is_remote_executor(executor):
+        if executor.run("command -v amd-smi").ok:
+            return "amd-smi"
+    elif shutil.which("amd-smi"):
         return "amd-smi"
     if rocm_root:
         candidate = Path(rocm_root) / "bin" / "amd-smi"
-        if candidate.is_file():
+        if executable_exists(executor, candidate):
             return str(candidate)
     return "amd-smi"
 
@@ -210,7 +223,8 @@ class Monitor:
         self.sample_interval = sample_interval
         self.enable_cu_occupancy = enable_cu_occupancy
         self.monitor_executor = monitor_executor
-        self._amd_smi = resolve_amd_smi(rocm_root)
+        self._amd_smi = resolve_amd_smi(rocm_root, monitor_executor)
+        self._node_csv: str | None = None
         self._monitor_proc: subprocess.Popen | None = None
         self._monitor_bg: AbstractBackgroundProcess | None = None
         # amd-smi's own stderr, kept so a mid-run death can say why. Written
@@ -282,10 +296,14 @@ class Monitor:
         if self._use_direct_monitor_popen():
             self._start_monitor_proc()
         else:
+            # amd-smi writes the CSV itself, so it needs a path that exists on
+            # the node rather than this machine's run directory.
+            self._node_csv = node_path_for(self.monitor_executor, self.csv_file)
+            ensure_remote_dir(self.monitor_executor, posixpath.dirname(self._node_csv))
             amd_smi = shlex.quote(self._amd_smi)
             monitor_cmd = (
                 f"{amd_smi} monitor -p -t -u -m -v -w {self.sample_interval} "
-                f"--csv --overwrite --file {self.csv_file}"
+                f"--csv --overwrite --file {self._node_csv}"
             )
             self._monitor_bg = self.monitor_executor.start_background(
                 monitor_cmd,
@@ -371,6 +389,10 @@ class Monitor:
             self._cu_thread.join(timeout=5)
         self._report_monitor_death()
         self._kill_monitor()
+        # amd-smi wrote the CSV itself via ``--file``, so on a remote node the
+        # samples are there rather than here. Fetch after the monitor is stopped
+        # so the file is complete, and before any analysis reads it.
+        fetch_remote_file(self.monitor_executor, self.csv_file, self._node_csv)
         return False
 
     def _report_monitor_death(self) -> None:

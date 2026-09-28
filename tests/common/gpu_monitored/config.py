@@ -16,7 +16,6 @@ class Config:
     # Paths
     script_dir: Path
     build_dir: Path = Path("/tmp/gpu_test_builds")
-    rocmtest_path: Path = Path()  # defaults to script_dir/ROCmTest
 
     # Test tuning
     sample_interval: int = 1
@@ -92,6 +91,13 @@ class Config:
     gpu_short_name: str = ""
     gpu_arch: str = ""
     gpu_conf_dir: str = ""
+    # Config the RVS qualification matrix names for this GPU, resolved by the
+    # shared ``rvs_find_conf`` fixture so it points at the node under test.
+    rvs_conf_path: str = ""
+    # Executor used to look for binaries and config trees. ``None`` means the
+    # workload runs here, so the checks read this filesystem; with a remote node
+    # it carries the probes to the machine that will actually run them.
+    probe_executor: object | None = field(default=None, repr=False, compare=False)
     num_gpus: int = 0
     clangxx: str = ""
     rocm_lib: Path = field(default=Path())

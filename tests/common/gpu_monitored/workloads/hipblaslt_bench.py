@@ -18,7 +18,7 @@ from pathlib import Path
 import re
 
 from tests.common.gpu_monitored.config import Config
-from tests.common.gpu_monitored.executor_bridge import run_command_redirect
+from tests.common.gpu_monitored.executor_bridge import executable_exists, run_command_redirect
 from tests.common.gpu_monitored.workloads.base import BuildContext, BuildStatus, RunContext, RunResult, Test, TestSpec
 
 # GEMM shapes: (M, N, K, batch_count)
@@ -68,7 +68,7 @@ class HipblasltBench(Test):
     COLD_ITERS = 10
 
     def build(self, ctx: BuildContext) -> BuildStatus:
-        if self._is_installed(ctx.rocm_root):
+        if self._is_installed(ctx.rocm_root, ctx.config.probe_executor):
             print(f"  [build] hipblaslt-bench: found at {ctx.rocm_root}/bin")
             return BuildStatus.OK
 
@@ -192,13 +192,12 @@ class HipblasltBench(Test):
 
     # --- Helpers ---
     @staticmethod
-    def _is_installed(rocm_root: Path) -> bool:
-        p = rocm_root / "bin" / "hipblaslt-bench"
-        return p.is_file() and os.access(p, os.X_OK)
+    def _is_installed(rocm_root: Path, executor: object | None = None) -> bool:
+        return executable_exists(executor, rocm_root / "bin" / "hipblaslt-bench")
 
     @classmethod
     def _find_bin(cls, config: Config) -> Path | None:
-        if cls._is_installed(config.rocm_root):
+        if cls._is_installed(config.rocm_root, config.probe_executor):
             return config.rocm_root / "bin" / "hipblaslt-bench"
         return None
 
