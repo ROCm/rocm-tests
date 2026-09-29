@@ -113,14 +113,26 @@ preflight() {
     shopt -u nullglob
 
     if [[ ${#PTL_NODES[@]} -eq 0 ]]; then
-        skip "no per-GPU PTL sysfs nodes match $SYSFS_PTL_GLOB -- this node does not expose runtime PTL toggle"
+        # Reuse the same amd-smi list call from detect_n_gpus to identify
+        # the ASIC name — no new tooling required.
+        local asic_name
+        asic_name=$(timeout 30s "$AMD_SMI" list 2>/dev/null \
+            | grep -m1 -iE 'market_name|card_model|GPU model' \
+            | awk -F: '{print $2}' | xargs) || true
+        [[ -z "$asic_name" ]] && asic_name="unknown ASIC"
+        log "preflight: ASIC detected as '$asic_name' — PTL sysfs nodes absent"
+        skip "ASIC '$asic_name' does not expose runtime PTL toggle ($SYSFS_PTL_GLOB not found) -- load amdgpu with ptl=1 to enable"
     fi
 
-    # Read access is enough to snapshot; we need write to toggle.
-    # Missing permissions are an environment issue, not a SUT failure.
+    # Read access is enough to snapshot; writes go via write_ptl_node which
+    # mirrors the existing sudo fallback pattern already used for dmesg.
+    # Check both paths here so we fail fast with a clear skip, not a mid-run die.
     for node in "${PTL_NODES[@]}"; do
         [[ -r "$node" ]] || skip "cannot read $node (need root or chmod 666)"
-        [[ -w "$node" ]] || skip "cannot write $node (need root or chmod 666)"
+        if [[ ! -w "$node" ]]; then
+            sudo -n true 2>/dev/null || \
+                skip "cannot write $node -- need direct write access or passwordless sudo (chmod 666 or add sudoers rule for tee)"
+        fi
     done
 
     # Rocprof presence is a hard skip: rocprof silently suppresses PTL.
@@ -178,6 +190,20 @@ ptl_norm() {
     esac
 }
 
+# Write $2 to PTL sysfs node $1. Tries direct shell redirection first
+# (works when the process runs as root or the node is world-writable);
+# falls back to `sudo tee` for the common case where amdgpu exposes the
+# node as root-rw-only (-rw-r--r--) and the test runs as a non-root user
+# with passwordless sudo.
+write_ptl_node() {
+    local node="$1" val="$2"
+    if [[ -w "$node" ]]; then
+        echo "$val" >"$node" 2>/dev/null
+    else
+        echo "$val" | sudo tee "$node" >/dev/null 2>&1
+    fi
+}
+
 ensure_ptl_enabled() {
     log "ensure_ptl_enabled: forcing every GPU's ptl_enable to 1"
 
@@ -192,7 +218,7 @@ ensure_ptl_enabled() {
     fi
 
     for node in "${PTL_NODES[@]}"; do
-        if ! echo 1 >"$node" 2>/dev/null; then
+        if ! write_ptl_node "$node" 1; then
             die "failed to write 1 to $node -- amdgpu refused the change"
         fi
         local r r_norm
@@ -219,7 +245,7 @@ restore_ptl_state() {
         if [[ "$val" == "?" ]]; then continue; fi
         local want
         want=$(ptl_norm "$val")
-        if ! echo "$want" >"$node" 2>/dev/null; then
+        if ! write_ptl_node "$node" "$want"; then
             warn "restore: write '$want' (from '$val') -> $node failed"
             restored_ok=0
             continue
@@ -345,7 +371,7 @@ start_toggler() {
                 local card
                 card=$(echo "$node" | sed -E 's|.*/(card[0-9]+)/.*|\1|')
                 local ok=1
-                if ! echo "$desired" >"$node" 2>/dev/null; then ok=0; fi
+                if ! write_ptl_node "$node" "$desired"; then ok=0; fi
                 local rb rb_norm
                 rb=$(cat "$node" 2>/dev/null || echo "?")
                 rb_norm=$(ptl_norm "$rb")
