@@ -250,7 +250,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     # CK (Composable Kernel) tile FMHA and other CK-based tests.
     "tests/e2e/ck": [
         "hw.gpu",
-        "layer.runtime",
+        "layer.math_lib",
         "ci.nightly",
         "e2e.stack",
         "os.linux",
