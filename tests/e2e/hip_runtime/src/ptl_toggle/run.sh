@@ -113,12 +113,12 @@ preflight() {
     shopt -u nullglob
 
     if [[ ${#PTL_NODES[@]} -eq 0 ]]; then
-        # Reuse the same amd-smi list call from detect_n_gpus to identify
-        # the ASIC name — no new tooling required.
+        # Reuse amd-smi static — already used by the toggler for consistency
+        # snapshots — to extract MARKET_NAME without introducing new tooling.
         local asic_name
-        asic_name=$(timeout 30s "$AMD_SMI" list 2>/dev/null \
-            | grep -m1 -iE 'market_name|card_model|GPU model' \
-            | awk -F: '{print $2}' | xargs) || true
+        asic_name=$(timeout 30s "$AMD_SMI" static 2>/dev/null \
+            | grep -m1 -i 'MARKET_NAME' \
+            | awk -F: '{$1=""; print $0}' | xargs) || true
         [[ -z "$asic_name" ]] && asic_name="unknown ASIC"
         log "preflight: ASIC detected as '$asic_name' — PTL sysfs nodes absent"
         skip "ASIC '$asic_name' does not expose runtime PTL toggle ($SYSFS_PTL_GLOB not found) -- load amdgpu with ptl=1 to enable"
