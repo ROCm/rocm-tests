@@ -18,10 +18,15 @@ _ROCM_LIBRARIES_REF = os.environ.get("ROCM_TEST_CK_REF", "develop")
 _CK_SPARSE_SUBTREE = "projects/composablekernel"
 _SUBDIR = "ck"
 
+# FMHA (Flash Multi-Head Attention) targets — used by test_ck_hipgraph_dropout.py
 _FMHA_FWD_TARGET = "tile_example_fmha_fwd"
 _FMHA_BWD_TARGET = "tile_example_fmha_bwd"
 _FMHA_FWD_BINARY = f"bin/{_FMHA_FWD_TARGET}"
 _FMHA_BWD_BINARY = f"bin/{_FMHA_BWD_TARGET}"
+
+# Stream-K GEMM target — used by test_ck_streamk.py
+_STREAMK_TARGET = "tile_example_streamk_gemm_basic"
+_STREAMK_BINARY = f"bin/{_STREAMK_TARGET}"
 
 _SUPPORTED_ARCHS = frozenset({"gfx942", "gfx950"})
 
@@ -89,3 +94,34 @@ def ck_fmha_build(
     )
 
     return build_dir
+
+
+@pytest.fixture(scope="session")
+def ck_streamk_build(
+    ck_repo: pathlib.Path,
+    cmake_build_dir,
+    gpu_arch: str | None,
+    require_gpu_arch_for,
+) -> str:
+    """Configure and build the CK tile stream-k GEMM example; return build directory."""
+    if gpu_arch is None:
+        require_gpu_arch_for("ck")
+    elif gpu_arch not in _SUPPORTED_ARCHS:
+        pytest.skip(f"CK stream-k GEMM not supported on {gpu_arch} (supported: {sorted(_SUPPORTED_ARCHS)})")
+
+    return cmake_build_dir(
+        src=str(ck_repo),
+        subdir=_SUBDIR,
+        gpu_arch=gpu_arch,
+        extra_cmake_args=[
+            "-DBUILD_DEV=ON",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_CXX_FLAGS=-O3 -ftemplate-backtrace-limit=0",
+            "-DCMAKE_VERBOSE_MAKEFILE=ON",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        ],
+        gpu_arch_var="GPU_TARGETS",
+        target=_STREAMK_TARGET,
+        artifact=_STREAMK_BINARY,
+        label="ck_streamk",
+    )

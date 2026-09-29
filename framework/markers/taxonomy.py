@@ -203,7 +203,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ml_frameworks/torchvision": [
         "hw.multi_gpu",
         "layer.math_lib",
-        "ci.nightly",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
@@ -235,7 +235,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ml_frameworks/apex": [
         "hw.multi_gpu",
         "layer.math_lib",
-        "ci.nightly",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
@@ -247,7 +247,8 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
-    # CK (Composable Kernel) tile FMHA and other CK-based tests.
+    # CK (Composable Kernel) tile tests: FMHA dropout and stream-k GEMM.
+    # Sparse-clones rocm-libraries; nightly; MI3xx (gfx942/gfx950) only.
     "tests/e2e/ck": [
         "hw.gpu",
         "layer.math_lib",
