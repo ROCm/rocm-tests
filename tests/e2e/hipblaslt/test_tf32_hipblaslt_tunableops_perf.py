@@ -371,14 +371,13 @@ class TestTunableOpLinearMatmul:
         ld = shlex.quote(ld_path["LD_LIBRARY_PATH"])
         python = shlex.quote(torch_python)
 
+        # Only set PYTORCH_TUNABLEOP_TUNING when enabling — omit the key when
+        # disabling to match original env.pop() behaviour.
+        tuning_env = " PYTORCH_TUNABLEOP_TUNING=1" if tunableop_enabled else ""
         result = _run_script_in_tmpdir(
             target_executor,
             script=script,
-            env_prefix=(
-                f"env PYTORCH_TUNABLEOP_ENABLED={tunableop_val}"
-                f" PYTORCH_TUNABLEOP_TUNING={tunableop_val}"
-                f" LD_LIBRARY_PATH={ld}"
-            ),
+            env_prefix=(f"env PYTORCH_TUNABLEOP_ENABLED={tunableop_val}" f"{tuning_env}" f" LD_LIBRARY_PATH={ld}"),
             python=python,
         )
         detail = workload_failure_detail(result, f"tunableop_trace enabled={tunableop_enabled}")
