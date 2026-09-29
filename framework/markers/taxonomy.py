@@ -203,7 +203,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ml_frameworks/torchvision": [
         "hw.multi_gpu",
         "layer.math_lib",
-        "ci.nightly",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
@@ -235,7 +235,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ml_frameworks/apex": [
         "hw.multi_gpu",
         "layer.math_lib",
-        "ci.nightly",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
@@ -253,6 +253,15 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/system_tools/cmake_path_verifier": [
         "hw.cpu_only",
         "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # ComposableKernel (CK) tile GEMM tests: sparse-clones rocm-libraries and builds
+    # the CK tile stream-k GEMM example. Nightly; MI3xx (gfx942/gfx950) only.
+    "tests/e2e/ck": [
+        "hw.gpu",
+        "layer.math_lib",
         "ci.nightly",
         "e2e.stack",
         "os.linux",

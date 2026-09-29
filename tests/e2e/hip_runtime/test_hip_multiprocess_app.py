@@ -49,7 +49,7 @@ architecture-agnostic (no fixed VRAM floor is declared via ``gpu_vram``).
 
 This file defines 7 marker-tagged test functions (18 parametrised cases) spanning:
 
-- Single-GPU full-suite nightly + soak scenarios (``test_hip_multiprocess_app``,
+- Single-GPU full-suite weekly + soak scenarios (``test_hip_multiprocess_app``,
   ``test_hip_multiprocess_app_soak``)
 - Multi-GPU full-suite with cross-GPU peer copy (``test_hip_multiprocess_all_gpus``,
   ``test_hip_multiprocess_all_gpus_soak``)
@@ -390,7 +390,7 @@ def test_hip_multiprocess_app_soak(
 @pytest.mark.parametrize(
     ("duration", "vram"),
     [
-        pytest.param(600, 0, marks=pytest.mark.ci.nightly),
+        pytest.param(600, 0, marks=pytest.mark.ci.weekly),
         pytest.param(600, 60, marks=pytest.mark.ci.weekly),
     ],
 )
@@ -442,10 +442,10 @@ def test_hip_multiprocess_all_gpus_soak(
 @pytest.mark.parametrize(
     ("role_a", "role_b", "vram"),
     [
-        pytest.param("compute", "compiler", 0, marks=pytest.mark.ci.nightly, id="compute-compiler"),
+        pytest.param("compute", "compiler", 0, marks=pytest.mark.ci.weekly, id="compute-compiler"),
         pytest.param("memory_mover", "library", 60, marks=pytest.mark.ci.weekly, id="memory_mover-library"),
-        pytest.param("compute", "monitor", 0, marks=pytest.mark.ci.nightly, id="compute-monitor"),
-        pytest.param("compute", "profiler", 0, marks=pytest.mark.ci.nightly, id="compute-profiler"),
+        pytest.param("compute", "monitor", 0, marks=pytest.mark.ci.weekly, id="compute-monitor"),
+        pytest.param("compute", "profiler", 0, marks=pytest.mark.ci.weekly, id="compute-profiler"),
     ],
 )
 def test_hip_multiprocess_role_pair(
