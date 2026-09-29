@@ -25,7 +25,7 @@ if isinstance(_GPU_COUNT, str) and _GPU_COUNT.lower() != "all":
 
 def _parse_verdict_field(stdout: str, field: str) -> str | None:
     """Return the value of a VERDICT field from run.sh stdout, or None."""
-    m = re.search(rf"^\s*{re.escape(field)}\s*:\s*(.+)$", stdout, re.MULTILINE)
+    m = re.search(rf"^\[[\d:]+\]\s+{re.escape(field)}\s*:\s*(.+)$", stdout, re.MULTILINE)
     return m.group(1).strip() if m else None
 
 
