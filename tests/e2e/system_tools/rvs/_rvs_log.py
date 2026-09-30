@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import logging
 import re
-import shlex
 
 logger = logging.getLogger(__name__)
 
@@ -112,11 +111,15 @@ def parse_summary(text: str) -> dict[str, bool]:
 def declared_actions(executor, conf_path: str) -> set[str]:
     """Return the action names the config declares.
 
+    ``conf_path`` arrives already shell-quoted, the same contract as
+    :func:`run_rvs`; quoting it again here would embed literal quote characters
+    in the filename and break exactly the paths the quoting is meant to protect.
+
     Bounded because the config may live on a remote node: reading a few KB over
     a wedged SSH connection or a stalled NFS mount would otherwise hang the
     runner rather than failing the test.
     """
-    read = executor.run(f"cat {shlex.quote(conf_path)}", timeout=_CONF_READ_TIMEOUT)
+    read = executor.run(f"cat {conf_path}", timeout=_CONF_READ_TIMEOUT)
     return set(_ACTION_DECL_RE.findall(read.stdout or ""))
 
 

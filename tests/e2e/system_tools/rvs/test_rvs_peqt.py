@@ -38,7 +38,13 @@ import shlex
 import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
-from tests.e2e.system_tools.rvs._rvs_log import RVS_DEBUG_LEVEL, assert_not_crashed
+from tests.e2e.system_tools.rvs._rvs_log import (
+    RVS_DEBUG_LEVEL,
+    assert_not_crashed,
+    assert_summary_passed,
+    declared_actions,
+    parse_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +169,11 @@ def test_rvs_peqt(target_executor, rvs_binary, rvs_find_conf, gpu_conf_dir, rvs_
         report_metric("RVS_PEQT_ACTIONS_PASSED", float(len(actions) - len(failed)))
         logger.info("PEQT actions: %d total, %d failed", len(actions), len(failed))
 
+    # The detail lines above are only as complete as what RVS chose to print, and
+    # an action with no verdict is read as passing, so an action that never ran
+    # would otherwise be invisible. The summary table is the one place every
+    # declared action is accounted for.
+    assert_summary_passed(parse_summary(output), declared_actions(target_executor, conf_path), _LABEL, conf)
     assert (
         not failed
     ), f"{len(failed)}/{len(actions)} PEQT action(s) reported 'peqt false': {', '.join(failed)}\n{output[-2000:]}"

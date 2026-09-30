@@ -371,7 +371,7 @@ def gpu_conf_dir(cmake_executor) -> str:
     return _detect_gpu_conf_dir(cmake_executor)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def rvs_env(rvs_binary: str, rock_dir: str, ld_path: dict) -> str:
     """Return ``VAR=value`` assignments for running RVS via ``env``.
 
