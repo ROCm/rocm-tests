@@ -247,6 +247,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # CMake packaging path verifier: checks that ROCm packages ship cmake config
+    # files under lib/cmake/<package>/ without hardcoded /opt/rocm paths.
+    # cpu_only because no GPU computation is needed — pure filesystem inspection.
+    "tests/e2e/system_tools/cmake_path_verifier": [
+        "hw.cpu_only",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # ComposableKernel (CK) tile GEMM tests: sparse-clones rocm-libraries and builds
     # the CK tile stream-k GEMM example. Nightly; MI3xx (gfx942/gfx950) only.
     "tests/e2e/ck": [
