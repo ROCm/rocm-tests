@@ -156,6 +156,20 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # Kokkos HIP RDC (Relocatable Device Code, -fgpu-rdc) validation: third-party
+    # CMake configure/build of the Kokkos HPC library with
+    # Kokkos_ENABLE_HIP_RELOCATABLE_DEVICE_CODE=ON, then the Kokkos ctest suite.
+    # layer.runtime (not math_lib): the feature under test is the HIP compiler's
+    # -fgpu-rdc codegen path (a runtime/toolchain capability); Kokkos is only the
+    # vehicle that drives RDC compilation, not the compute-under-test (contrast
+    # QUDA/UCX, where the library's own numerics are the thing validated).
+    "tests/e2e/hpc/kokkos": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # rocHPL (High-Performance Linpack) HPC benchmark: third-party CMake/install.sh
     # build + MPI mpirun_rochpl launch. Weekly by default (a tuned Linpack solve is
     # a long, GPU-saturating run); hw.multi_gpu is the default, but the test
