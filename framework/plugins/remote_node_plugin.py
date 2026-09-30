@@ -1547,24 +1547,28 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
     from framework.nodes.node_pool import MultiGpuSlots as _MultiGpuSlots  # pylint: disable=import-outside-toplevel
 
     slot_as_multi = _MultiGpuSlots(slots=[slot], node_spec=slot.node_spec)
-    health_monitors, pre_health_maps, bg_monitors = _setup_monitoring(
-        ctx, framework_config, [slot_as_multi], is_multi_node_shape=False
-    )
-    _single_exec = slot.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log)
-    # @pytest.mark.container: run every command inside a persistent container on this
-    # node, with the acquired GPU index injected as ROCR_VISIBLE_DEVICES.
-    _container_wrappers = []
-    if container_opts:
-        _container_wrappers = _start_container_wrappers(
-            [_single_exec],
-            [[slot.gpu_info.index]],
-            container_opts,
-            pull_timeout=float(framework_config.therock.build_timeout_secs),
-        )
-    _group_execs = _container_wrappers or [_single_exec]
+    # The slot is already held: set up inside the try so a failure here still releases it.
+    health_monitors: list = []
+    pre_health_maps: list = []
+    bg_monitors: list = []
+    _single_exec = None
+    _container_wrappers: list = []
     _t = _time.monotonic()
     try:
-        yield NodeExecutorGroup(_group_execs)
+        health_monitors, pre_health_maps, bg_monitors = _setup_monitoring(
+            ctx, framework_config, [slot_as_multi], is_multi_node_shape=False
+        )
+        _single_exec = slot.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log)
+        # @pytest.mark.container: run every command inside a persistent container on this
+        # node, with the acquired GPU index injected as ROCR_VISIBLE_DEVICES.
+        if container_opts:
+            _container_wrappers = _start_container_wrappers(
+                [_single_exec],
+                [[slot.gpu_info.index]],
+                container_opts,
+                pull_timeout=float(framework_config.therock.build_timeout_secs),
+            )
+        yield NodeExecutorGroup(_container_wrappers or [_single_exec])
     finally:
         elapsed = _time.monotonic() - _t
         for _wrapper in _container_wrappers:

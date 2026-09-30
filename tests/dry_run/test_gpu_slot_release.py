@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 
 """
-test_gpu_slot_release.py -- Unit tests for GPU slot release in _acquire_and_yield.
+test_gpu_slot_release.py -- Unit tests for GPU slot release in _acquire_and_yield and
+target_executor's single-GPU path.
 
 Slots are acquired before the executors and container wrappers are built, so a
 failure while building them must still release them.  Leaked slots are never
@@ -31,6 +32,11 @@ class _FakeSlot:
 
     def __init__(self, index: int):
         self.gpu_info = _FakeGpuInfo(index)
+        self.gpu_label = f"GPU-{index}"
+        self.node_spec = _FakeNodeSpec()
+
+    def make_executor(self, **_kwargs):
+        return object()
 
 
 class _FakeNodeSpec:
@@ -55,7 +61,7 @@ class _FakeMulti:
 
 
 class _FakePool:
-    """NodePool stand-in recording which groups were released."""
+    """NodePool stand-in recording which slots were released."""
 
     def __init__(self, total: int):
         self._total = total
@@ -64,8 +70,11 @@ class _FakePool:
     def pool_status(self):
         return self._total - len(self.released), self._total
 
+    def release(self, slots):
+        self.released.extend(slots)
+
     def release_multi(self, multi):
-        self.released.append(multi)
+        self.release(multi.slots)
 
 
 class _FakeConfig:
@@ -89,8 +98,19 @@ class _FakeFrameworkConfig:
     therock = _TheRock()
 
 
-def _drive(monkeypatch, container_wrappers_raise: bool):
-    """Run _acquire_and_yield once and return (pool, multi, raised_exception)."""
+class _FakeRequest:
+    """pytest.FixtureRequest stand-in for a test without a gpu_indices marker."""
+
+    class _Node:
+        def get_closest_marker(self, _name):
+            return None
+
+    config = _FakeConfig()
+    node = _Node()
+
+
+def _drive(monkeypatch, single_gpu: bool, container_wrappers_raise: bool):
+    """Start one acquisition path and return (generator, pool, slots it acquired)."""
     monkeypatch.setattr(remote_node_plugin, "_setup_monitoring", lambda *a, **k: ([], [], []))
     monkeypatch.setattr(remote_node_plugin, "_teardown_monitoring", lambda *a, **k: None)
     monkeypatch.setattr(remote_node_plugin, "_drain_gpu_slots", lambda *a, **k: None)
@@ -105,23 +125,39 @@ def _drive(monkeypatch, container_wrappers_raise: bool):
         _boom if container_wrappers_raise else (lambda *a, **k: []),
     )
 
+    ctx = {
+        "test_name": "test_stub",
+        "log_path": "/tmp/stub.log",
+        "session_log": None,
+        "rock_dir": None,
+        "gpu_count_marker": None,
+        "is_multi_node": False,
+        "is_multi_gpu": False,
+    }
+    container_opts = {"image": "stub:latest"}
+
+    if single_gpu:
+        # The default hw.gpu path sets up inline in target_executor, not via _acquire_and_yield.
+        slot = _FakeSlot(0)
+        monkeypatch.setattr(remote_node_plugin, "_resolve_test_context", lambda *a, **k: ctx)
+        monkeypatch.setattr(remote_node_plugin, "_container_marker_opts", lambda *a, **k: container_opts)
+        monkeypatch.setattr(remote_node_plugin, "_acquire_single", lambda *a, **k: slot)
+        pool = _FakePool(total=1)
+        gen = remote_node_plugin.target_executor.__wrapped__(_FakeRequest(), _FakeFrameworkConfig(), pool)
+        return gen, pool, [slot]
+
     multi = _FakeMulti([0, 1])
     pool = _FakePool(total=2)
     gen = remote_node_plugin._acquire_and_yield(
         multi_list=[multi],
-        ctx={
-            "test_name": "test_stub",
-            "log_path": "/tmp/stub.log",
-            "session_log": None,
-            "rock_dir": None,
-        },
+        ctx=ctx,
         framework_config=_FakeFrameworkConfig(),
         config=_FakeConfig(),
         node_pool=pool,
         is_multi_node=False,
-        container_opts={"image": "stub:latest"},
+        container_opts=container_opts,
     )
-    return gen, pool, multi
+    return gen, pool, multi.slots
 
 
 # ---------------------------------------------------------------------------
@@ -133,14 +169,15 @@ def _drive(monkeypatch, container_wrappers_raise: bool):
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_setup_failure_releases_slots(monkeypatch):
+@pytest.mark.parametrize("single_gpu", [False, True], ids=["multi_gpu", "single_gpu"])
+def test_setup_failure_releases_slots(monkeypatch, single_gpu):
     """Slots are released when container startup raises before the test body runs."""
-    gen, pool, multi = _drive(monkeypatch, container_wrappers_raise=True)
+    gen, pool, held = _drive(monkeypatch, single_gpu, container_wrappers_raise=True)
 
     with pytest.raises(RuntimeError, match="docker: not found"):
         next(gen)
 
-    assert pool.released == [multi], "acquired slots were not returned to the pool"
+    assert pool.released == held, "acquired slots were not returned to the pool"
 
 
 # ---------------------------------------------------------------------------
@@ -152,12 +189,13 @@ def test_setup_failure_releases_slots(monkeypatch):
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_normal_path_releases_slots(monkeypatch):
+@pytest.mark.parametrize("single_gpu", [False, True], ids=["multi_gpu", "single_gpu"])
+def test_normal_path_releases_slots(monkeypatch, single_gpu):
     """Slots are released once the test body completes and the generator closes."""
-    gen, pool, multi = _drive(monkeypatch, container_wrappers_raise=False)
+    gen, pool, held = _drive(monkeypatch, single_gpu, container_wrappers_raise=False)
 
     next(gen)
     assert pool.released == [], "slots released while the test body was still running"
 
     gen.close()
-    assert pool.released == [multi], "acquired slots were not returned to the pool"
+    assert pool.released == held, "acquired slots were not returned to the pool"
