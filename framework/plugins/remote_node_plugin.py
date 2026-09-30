@@ -1161,8 +1161,13 @@ class _ManualGpuAllocator:
 
         import time as _time  # pylint: disable=import-outside-toplevel
 
-        log_path = executor_log_path(self._fc.framework.artifact_dir, effective_id, self._request.node.nodeid)
-        executor = slot.make_executor(test_id=effective_id, log_path=log_path, session_log_path=self._session_log)
+        # The slot is not in _held yet, so neither release() nor _cleanup() can return it.
+        try:
+            log_path = executor_log_path(self._fc.framework.artifact_dir, effective_id, self._request.node.nodeid)
+            executor = slot.make_executor(test_id=effective_id, log_path=log_path, session_log_path=self._session_log)
+        except BaseException:
+            self._pool.release([slot])
+            raise
         group = NodeExecutorGroup([executor])
         self._held.append((slot, group, _time.monotonic()))
         _console_slot_acquired(self._pool, slot, effective_id, self._session_log)

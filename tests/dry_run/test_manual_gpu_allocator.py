@@ -9,6 +9,8 @@ All tests run without GPU hardware (--no-gpu / hw.cpu_only, ci.pr).
 
 import pytest
 
+from framework.plugins import remote_node_plugin
+
 # ---------------------------------------------------------------------------
 # DryRun: available_gpus returns synthetic pool
 # ---------------------------------------------------------------------------
@@ -98,3 +100,53 @@ def test_dry_run_no_leak_with_pin(manual_gpu_allocator):
         pass
     # _cleanup() is called by the fixture teardown — we just verify _held is empty now
     assert manual_gpu_allocator._held == []
+
+
+# ---------------------------------------------------------------------------
+# An executor setup failure must not strand the acquired slot
+# ---------------------------------------------------------------------------
+
+
+class _FailingSlot:
+    """NodeSlot stand-in whose executor cannot be built (e.g. an unwritable log directory)."""
+
+    def make_executor(self, **_kwargs):
+        raise OSError("log directory is not writable")
+
+
+class _FakePool:
+    """NodePool stand-in handing out one slot and recording which slots were released."""
+
+    def __init__(self, slot):
+        self._slot = slot
+        self.released: list = []
+
+    def acquire_specific_slot(self, **_kwargs):
+        return self._slot
+
+    def release(self, slots):
+        self.released.extend(slots)
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_executor_failure_releases_slot(request, framework_config, monkeypatch, tmp_path):
+    """acquire() returns the slot to the pool when its executor cannot be built."""
+    monkeypatch.setattr(remote_node_plugin, "executor_log_path", lambda *_a, **_k: str(tmp_path / "stub.log"))
+    slot = _FailingSlot()
+    pool = _FakePool(slot)
+    alloc = remote_node_plugin._ManualGpuAllocator(
+        node_pool=pool,
+        no_gpu=False,
+        config=request.config,
+        framework_config=framework_config,
+        request=request,
+    )
+
+    with pytest.raises(OSError, match="not writable"):
+        alloc.acquire(gpu_index=0)
+
+    assert pool.released == [slot], "acquired slot was not returned to the pool"
+    assert alloc._held == []

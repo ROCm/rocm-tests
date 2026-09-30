@@ -992,20 +992,26 @@ class NodePool:
         """
         want_all = isinstance(gpu_count_per_node, str) and gpu_count_per_node.strip().lower() == GPU_COUNT_ALL
         result: list[MultiGpuSlots] = []
-        for spec in self.node_specs:
-            if want_all:
-                alloc = self._allocators.get(spec.label)
-                count = len(alloc._pool) if alloc else 0
-            else:
-                count = int(gpu_count_per_node)
-            slots = self.acquire_slots(
-                count=count,
-                node_label=spec.label,
-                vram_required_gb=vram_required_gb,
-                wait_timeout_secs=wait_timeout_secs,
-                test_id=test_id,
-            )
-            result.append(slots)
+        try:
+            for spec in self.node_specs:
+                if want_all:
+                    alloc = self._allocators.get(spec.label)
+                    count = len(alloc._pool) if alloc else 0
+                else:
+                    count = int(gpu_count_per_node)
+                slots = self.acquire_slots(
+                    count=count,
+                    node_label=spec.label,
+                    vram_required_gb=vram_required_gb,
+                    wait_timeout_secs=wait_timeout_secs,
+                    test_id=test_id,
+                )
+                result.append(slots)
+        except BaseException:
+            # A later node failed: the caller never sees the earlier nodes' slots, so return them here.
+            for multi in result:
+                self.release_multi(multi)
+            raise
         return result
 
     # ------------------------------------------------------------------
