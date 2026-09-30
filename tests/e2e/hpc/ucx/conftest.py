@@ -21,7 +21,14 @@ def ucx_build(rock_dir, compiler_build_dir, framework_config, external_build, cm
 
     rocm_path = os.path.realpath(rock_dir) if cmake_executor is None else rock_dir
     build_timeout = float(framework_config.therock.build_timeout_secs)
-    env_prefix = f"ROCM_PATH={rocm_path} LD_LIBRARY_PATH={rocm_path}/lib:{rocm_path}/lib64:$LD_LIBRARY_PATH"
+    # UCX gtest sources use VLAs in C++, which Clang rejects under -Werror when the
+    # system compiler is amdclang rather than GCC. Suppress the extension warning so
+    # the gtest binary links cleanly; the suppress has no effect on GCC builds.
+    env_prefix = (
+        f"ROCM_PATH={rocm_path} "
+        f"LD_LIBRARY_PATH={rocm_path}/lib:{rocm_path}/lib64:$LD_LIBRARY_PATH "
+        "CXXFLAGS='-Wno-vla-cxx-extension'"
+    )
     log_dir = os.path.join(framework_config.framework.artifact_dir, "ucx")
     dest = pathlib.Path(compiler_build_dir) / "hpc" / "ucx"
 
