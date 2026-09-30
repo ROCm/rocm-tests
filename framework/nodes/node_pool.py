@@ -998,19 +998,13 @@ class NodePool:
                 count = len(alloc._pool) if alloc else 0
             else:
                 count = int(gpu_count_per_node)
-            try:
-                slots = self.acquire_slots(
-                    count=count,
-                    node_label=spec.label,
-                    vram_required_gb=vram_required_gb,
-                    wait_timeout_secs=wait_timeout_secs,
-                    test_id=test_id,
-                )
-            except BaseException:
-                # A later node failed: the caller never sees the earlier nodes' slots, so return them here.
-                for multi in result:
-                    self.release_multi(multi)
-                raise
+            slots = self.acquire_slots(
+                count=count,
+                node_label=spec.label,
+                vram_required_gb=vram_required_gb,
+                wait_timeout_secs=wait_timeout_secs,
+                test_id=test_id,
+            )
             result.append(slots)
         return result
 
