@@ -1071,18 +1071,21 @@ def _acquire_and_yield(
         yield NodeExecutorGroup(container_wrappers or executors)
     finally:
         elapsed = _time.monotonic() - _t
-        for _wrapper in container_wrappers:
-            _wrapper.stop()
-        _teardown_monitoring(ctx, multi_list, health_monitors, pre_health_maps, bg_monitors, elapsed)
-        for _exec in executors:
-            if getattr(_exec, "test_logger", None) is not None:
-                _exec.test_logger.close()
-        _write_session_separator(session_log, test_name, "END", elapsed)
-        all_indices = [s.gpu_info.index for m in multi_list for s in m.slots]
-        _drain_gpu_slots(config, rock_dir, all_indices)
-        for multi in multi_list:
-            node_pool.release_multi(multi)
-            _console_multi_released(node_pool, multi, test_name, elapsed, session_log)
+        try:
+            for _wrapper in container_wrappers:
+                _wrapper.stop()
+            _teardown_monitoring(ctx, multi_list, health_monitors, pre_health_maps, bg_monitors, elapsed)
+            for _exec in executors:
+                if getattr(_exec, "test_logger", None) is not None:
+                    _exec.test_logger.close()
+            _write_session_separator(session_log, test_name, "END", elapsed)
+            all_indices = [s.gpu_info.index for m in multi_list for s in m.slots]
+            _drain_gpu_slots(config, rock_dir, all_indices)
+        finally:
+            # A teardown step that raises (e.g. a container stop) must not strand the slots.
+            for multi in multi_list:
+                node_pool.release_multi(multi)
+                _console_multi_released(node_pool, multi, test_name, elapsed, session_log)
 
 
 # ---------------------------------------------------------------------------
@@ -1571,15 +1574,18 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
         yield NodeExecutorGroup(_container_wrappers or [_single_exec])
     finally:
         elapsed = _time.monotonic() - _t
-        for _wrapper in _container_wrappers:
-            _wrapper.stop()
-        _teardown_monitoring(ctx, [slot_as_multi], health_monitors, pre_health_maps, bg_monitors, elapsed)
-        if getattr(_single_exec, "test_logger", None) is not None:
-            _single_exec.test_logger.close()
-        _write_session_separator(session_log, test_name, "END", elapsed)
-        _drain_gpu_slots(config, rock_dir, [slot.gpu_info.index])
-        node_pool.release([slot])
-        _console_slot_released(node_pool, slot, test_name, elapsed, session_log)
+        try:
+            for _wrapper in _container_wrappers:
+                _wrapper.stop()
+            _teardown_monitoring(ctx, [slot_as_multi], health_monitors, pre_health_maps, bg_monitors, elapsed)
+            if getattr(_single_exec, "test_logger", None) is not None:
+                _single_exec.test_logger.close()
+            _write_session_separator(session_log, test_name, "END", elapsed)
+            _drain_gpu_slots(config, rock_dir, [slot.gpu_info.index])
+        finally:
+            # A teardown step that raises (e.g. a container stop) must not strand the slot.
+            node_pool.release([slot])
+            _console_slot_released(node_pool, slot, test_name, elapsed, session_log)
 
 
 @pytest.fixture

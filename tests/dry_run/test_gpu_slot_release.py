@@ -199,3 +199,24 @@ def test_normal_path_releases_slots(monkeypatch, single_gpu):
 
     gen.close()
     assert pool.released == held, "acquired slots were not returned to the pool"
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+@pytest.mark.parametrize("single_gpu", [False, True], ids=["multi_gpu", "single_gpu"])
+def test_teardown_failure_releases_slots(monkeypatch, single_gpu):
+    """Slots are released even when an earlier teardown step raises."""
+    gen, pool, held = _drive(monkeypatch, single_gpu, container_wrappers_raise=False)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("teardown step failed")
+
+    monkeypatch.setattr(remote_node_plugin, "_drain_gpu_slots", _boom)
+
+    next(gen)
+    with pytest.raises(RuntimeError, match="teardown step failed"):
+        gen.close()
+
+    assert pool.released == held, "acquired slots were not returned to the pool"
