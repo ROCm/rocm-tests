@@ -316,7 +316,8 @@ jobs:
         if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends make pciutils
+          sudo apt-get install -y --no-install-recommends make pciutils autoconf automake libtool libtool-bin m4 \
+              pkg-config libnuma-dev libdrm-dev
           python3 -m venv .venv
           source .venv/bin/activate
           uv pip install -r requirements.txt
