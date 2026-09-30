@@ -220,3 +220,59 @@ def test_teardown_failure_releases_slots(monkeypatch, single_gpu):
         gen.close()
 
     assert pool.released == held, "acquired slots were not returned to the pool"
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_manual_allocator_setup_failure_releases_slot(request, framework_config, monkeypatch, tmp_path):
+    """manual_gpu_allocator.acquire() returns the slot when its executor cannot be built."""
+    slot = _FakeSlot(0)
+
+    def _boom(**_k):
+        raise OSError("log directory is not writable")
+
+    monkeypatch.setattr(slot, "make_executor", _boom)
+    monkeypatch.setattr(remote_node_plugin, "executor_log_path", lambda *a, **k: str(tmp_path / "stub.log"))
+    pool = _FakePool(total=1)
+    pool.acquire_specific_slot = lambda **_k: slot
+    alloc = remote_node_plugin._ManualGpuAllocator(pool, False, request.config, framework_config, request)
+
+    with pytest.raises(OSError, match="not writable"):
+        alloc.acquire(gpu_index=0)
+
+    assert pool.released == [slot], "acquired slot was not returned to the pool"
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_multi_node_partial_acquisition_releases_earlier_nodes(monkeypatch, tmp_path):
+    """Slots taken on node-a are released when node-b cannot be acquired."""
+    from framework.gpu.detector import GpuInfo  # pylint: disable=import-outside-toplevel
+    from framework.nodes.node_pool import NodePool  # pylint: disable=import-outside-toplevel
+    from framework.nodes.node_spec import NodeSpec  # pylint: disable=import-outside-toplevel
+
+    specs = [NodeSpec(hostname="node-a", label="node-a"), NodeSpec(hostname="node-b", label="node-b")]
+    pool = NodePool(
+        node_specs=specs,
+        prefilled_gpus={s.label: [GpuInfo(0, "gfx942", 32768, 0)] for s in specs},
+        artifact_dir=str(tmp_path),
+    )
+    node_a_slots = object()
+
+    def _acquire_slots(*, node_label, **_k):
+        if node_label == "node-b":
+            raise RuntimeError("NodePool: cannot acquire 1 GPU slots from node-b")
+        return node_a_slots
+
+    released: list = []
+    monkeypatch.setattr(pool, "acquire_slots", _acquire_slots)
+    monkeypatch.setattr(pool, "release_multi", released.append)
+
+    with pytest.raises(RuntimeError, match="cannot acquire"):
+        pool.acquire_multi_node(gpu_count_per_node=1, wait_timeout_secs=0.0, test_id="test_stub")
+
+    assert released == [node_a_slots], "slots taken on node-a were not returned to the pool"
