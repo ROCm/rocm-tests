@@ -26,6 +26,9 @@ only the required target rather than compiling unrelated HIP runtime binaries:
   binary for partition isolation; requires ``--gpu-arch``).
 - ``hip_device_count_binary`` — builds ``hip_device_count`` (driver-API only;
   prints ``hipGetDeviceCount()`` to stdout; does not require ``--gpu-arch``).
+- ``mixbench_hip_binary`` — clones ekondis/mixbench and builds ``mixbench-hip``
+  (mixed compute/memory throughput microbenchmark; the upstream CMake project
+  selects the HIP compiler itself, so no ``--gpu-arch`` is forwarded).
 
 Build output layout::
 
@@ -41,6 +44,7 @@ Build output layout::
     output/test-binaries/hip_runtime/partition_isolation/buggy_workload
     output/test-binaries/hip_runtime/partition_isolation/hip_device_count
     output/test-binaries/hip_runtime/mps/rock_mps_test
+    output/test-binaries/hip_runtime/mixbench/build/mixbench-hip
 """
 
 from __future__ import annotations
@@ -69,6 +73,10 @@ _HIP_TESTS_REF = os.environ.get("ROCM_TEST_HIP_TESTS_REF", "develop")
 # Cloned at runtime; pin via env override. License: custom permissive (similar to BSD-3-Clause).
 _BABELSTREAM_URL = "https://github.com/UoB-HPC/BabelStream.git"
 _BABELSTREAM_REF = os.environ.get("ROCM_TEST_BABELSTREAM_REF", "main")
+# ekondis/mixbench mixed compute/memory throughput microbenchmark.
+# Cloned at runtime (never vendored); pin the ref via env override.
+_MIXBENCH_URL = "https://github.com/ekondis/mixbench.git"
+_MIXBENCH_REF = os.environ.get("ROCM_TEST_MIXBENCH_REF", "master")
 
 
 @pytest.fixture(scope="session")
@@ -404,3 +412,28 @@ def babelstream_binary(
 
     logger.info(f"BabelStream HIP-Stream binary ready: {hip_stream_binary}")
     return hip_stream_binary
+def _mixbench_repo(external_build, compiler_build_dir: str) -> str:
+    """Clone ekondis/mixbench once per session; return the checkout path."""
+    dest = pathlib.Path(compiler_build_dir) / "hip_runtime" / "mixbench"
+    repo = external_build.clone_repo(_MIXBENCH_URL, dest, ref=_MIXBENCH_REF)
+    external_build.assert_license_present(repo)
+    return str(repo)
+
+
+@pytest.fixture(scope="session")
+def mixbench_hip_binary(cmake_build_dir, _mixbench_repo: str, built_binary) -> str:
+    """Configure and build ``mixbench-hip``; return the compiled binary path.
+
+    The upstream ``mixbench-hip`` CMake project sets ``CMAKE_CXX_COMPILER`` to the
+    detected HIP compiler itself, so ``compiler_mode="none"`` leaves compiler
+    discovery to the project (``-DCMAKE_PREFIX_PATH`` points ``find_package(HIP)``
+    at the ROCm install).
+    """
+    build_dir = cmake_build_dir(
+        src=os.path.join(_mixbench_repo, "mixbench-hip"),
+        subdir="hip_runtime/mixbench",
+        compiler_mode="none",
+        artifact="mixbench-hip",
+        label="hip_runtime/mixbench",
+    )
+    return built_binary(os.path.join(build_dir, "mixbench-hip"), "mixbench-hip")
