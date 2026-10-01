@@ -27,13 +27,13 @@ logger = logging.getLogger("rocm.test")
 # GPU architectures known to report the UBB_POWER and THRESHOLD fields via amd-smi.
 _UBB_SUPPORTED_ARCHS: frozenset[str] = frozenset({"gfx950"})
 
-# CoralGemm workload args matching the original test (batch=12, shape 8640³).
-# Iterations increased from 300 to 3000 so the workload outlasts the 2s ramp-up
-# plus five 2s polling intervals on fast hardware (MI350 finishes 300 in <1s).
+# CoralGemm workload args matching the original test exactly (batch=12, iter=300).
+# A continuous shell loop keeps the workload alive on fast hardware where 300
+# iterations complete in under 1 s, without changing the original args.
 # Override via ROCM_TEST_CORAL_GEMM_ARGS if needed.
 _CORAL_GEMM_ARGS = os.environ.get(
     "ROCM_TEST_CORAL_GEMM_ARGS",
-    "R_64F R_64F R_64F R_64F OP_N OP_T 8640 8640 8640 8640 8640 8640 12 3000",
+    "R_64F R_64F R_64F R_64F OP_N OP_T 8640 8640 8640 8640 8640 8640 12 300",
 )
 
 
@@ -168,50 +168,51 @@ def test_ubb_power_workload(
         log_path="output/artifacts/executor-logs/test_ubb_power_workload__coral_gemm.log",
         console_label="coral-gemm",
     ) as workload:
-        time.sleep(2)  # ramp-up: let the GPU reach operating power before polling
+        time.sleep(5)  # ramp-up: match original — wait for GPU power to stabilise
         if not workload.is_alive:
             pytest.fail(
-                "CoralGemm shell loop exited within 2 s — likely a launch or library error. "
+                "CoralGemm shell loop exited within 5 s — likely a launch or library error. "
                 "Check: output/artifacts/executor-logs/test_ubb_power_workload__coral_gemm.log"
             )
         logger.info("test_ubb_power_workload: workload running — polling UBB_POWER (5 attempts)")
 
+        # Track pass/fail across all 5 polls — every valid poll must exceed idle.
+        # Matches original: final_state is set False on any failing poll, not on first miss.
+        final_state = True
         for attempt in range(5):
-            if not workload.is_alive:
-                logger.info("test_ubb_power_workload: workload finished at attempt %d", attempt)
-                break
-
             poll = target_executor.run(cmd)
-            if not poll.ok:
-                logger.warning("test_ubb_power_workload: poll %d failed (exit=%d)", attempt, poll.exit_code)
-                time.sleep(2)
-                continue
-
             load_watts = _parse_ubb_power(poll.stdout or "")
-            if load_watts is None:
-                logger.warning("test_ubb_power_workload: UBB_POWER missing in poll %d output", attempt)
-                time.sleep(2)
-                continue
+            if load_watts is not None:
+                logger.info(
+                    "test_ubb_power_workload: attempt %d — idle=%.1f W  load=%.1f W",
+                    attempt,
+                    idle_watts,
+                    load_watts,
+                )
+                if float(load_watts) <= float(idle_watts):
+                    logger.error(
+                        "test_ubb_power_workload: poll %d FAIL — load %.1f W did not exceed idle %.1f W",
+                        attempt,
+                        load_watts,
+                        idle_watts,
+                    )
+                    final_state = False
+                else:
+                    logger.info(
+                        "test_ubb_power_workload: poll %d PASS — load %.1f W > idle %.1f W",
+                        attempt,
+                        load_watts,
+                        idle_watts,
+                    )
+            else:
+                logger.error("test_ubb_power_workload: poll %d — UBB_POWER missing in output", attempt)
+                final_state = False
 
-            logger.info(
-                "test_ubb_power_workload: attempt %d — idle=%.1f W  load=%.1f W",
-                attempt,
-                idle_watts,
-                load_watts,
-            )
-            assert load_watts > idle_watts, (
-                f"GPU {gpu_id}: poll {attempt} — load {load_watts:.1f} W did not exceed "
-                f"idle baseline {idle_watts:.1f} W"
-            )
-            logger.info(
-                "test_ubb_power_workload: attempt %d PASS — load %.1f W > idle %.1f W",
-                attempt,
-                load_watts,
-                idle_watts,
-            )
-
-            time.sleep(2)  # allow power to stabilise between samples
-    logger.info("test_ubb_power_workload: PASS — all valid polls exceeded idle UBB_POWER on GPU %s", gpu_id)
+    assert final_state, (
+        f"GPU {gpu_id}: UBB_POWER did not exceed idle baseline on every poll — "
+        f"load must be greater than idle {idle_watts:.1f} W on all 5 attempts"
+    )
+    logger.info("test_ubb_power_workload: PASS — all polls exceeded idle UBB_POWER on GPU %s", gpu_id)
 
 
 @pytest.mark.runtime.fast
