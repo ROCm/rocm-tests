@@ -7,7 +7,8 @@ Imported by both ``conftest.py`` (clone + build) and ``test_gpu_rdc_kokkos.py``
 (ctest run) so build-time and run-time settings can never drift.
 
 Environment overrides:
-    KOKKOS_REF            git ref (tag/branch/SHA) to clone. Default ``4.2.01``.
+    KOKKOS_REF            git ref (tag/branch/SHA) to clone. Default ``5.1.1``
+                          (supports gfx950 + modern AMD_GFX arch-flag naming).
     KOKKOS_CTEST_TIMEOUT  per-test ctest timeout in seconds (``ctest --timeout N``).
     KOKKOS_CTEST_RUN_TIMEOUT
                           outer wall-clock cap for the whole ctest run (seconds).
@@ -22,11 +23,15 @@ import os
 # Upstream Kokkos performance-portability HPC library.
 KOKKOS_URL = os.environ.get("KOKKOS_URL", "https://github.com/kokkos/kokkos.git")
 
-# Pinned default clone ref. This is the documented spec tag (4.2.01). A separate
-# real automation run happened to use 5.1.1; that discrepancy is deliberately NOT
-# baked in — override with KOKKOS_REF=5.1.1 (or any tag) when a newer Kokkos is
-# needed (e.g. for a GFX target 4.2.01 cannot build).
-KOKKOS_REF = os.environ.get("KOKKOS_REF", "4.2.01")
+# Pinned default clone ref. 5.1.1 is the evidence-based default: it supports
+# current AMD hardware (gfx950/MI350 and the gfx12xx Navi line) and the modern
+# ``Kokkos_ARCH_AMD_GFX<NNN>`` arch-flag naming emitted by ``kokkos_arch_flag``
+# below. The older 4.2.01 tag predates gfx950 and uses codename arch flags
+# (``Kokkos_ARCH_VEGA90A`` etc.), so it cannot configure for newer GPUs — a
+# ``-DKokkos_ARCH_AMD_GFX950=ON`` is simply unknown there and cmake fails with
+# "no AMD GPU architecture is supported". Override with KOKKOS_REF for a specific
+# Kokkos version matched to the target arch.
+KOKKOS_REF = os.environ.get("KOKKOS_REF", "5.1.1")
 
 # Per-test ctest timeout (seconds); bounds any single hung/aborted Kokkos unit
 # test. Kept well below the outer run cap so one slow test cannot consume the
