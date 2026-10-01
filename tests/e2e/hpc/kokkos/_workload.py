@@ -33,15 +33,17 @@ KOKKOS_URL = os.environ.get("KOKKOS_URL", "https://github.com/kokkos/kokkos.git"
 # Kokkos version matched to the target arch.
 KOKKOS_REF = os.environ.get("KOKKOS_REF", "5.1.1")
 
-# Per-test ctest timeout (seconds); bounds any single hung/aborted Kokkos unit
-# test. Kept well below the outer run cap so one slow test cannot consume the
-# whole budget.
-CTEST_TIMEOUT = os.environ.get("KOKKOS_CTEST_TIMEOUT", "1800")
+# Per-test ctest timeout (seconds), matching the original script's
+# ``ctest --timeout 50000``. Large on purpose: it bounds a genuinely hung test
+# without prematurely killing a slow-but-valid one (e.g. the atomic performance
+# benchmark, which the enabled benchmarks run), so a strict ctest pass is judged
+# on real results rather than an overtight cap.
+CTEST_TIMEOUT = os.environ.get("KOKKOS_CTEST_TIMEOUT", "50000")
 
-# Outer wall-clock cap for the full ctest run. The suite measured ~43 min end to
-# end serially, so the default (90 min) leaves headroom for slower GPUs / variance
-# even before the -j speed-up below.
-CTEST_RUN_TIMEOUT = float(os.environ.get("KOKKOS_CTEST_RUN_TIMEOUT", "5400"))
+# Outer wall-clock cap for the full ctest run. Set above the per-test timeout so
+# the executor never pre-empts ctest's own --timeout accounting; normal runs
+# finish in well under an hour with -j parallelism, this is only a hang ceiling.
+CTEST_RUN_TIMEOUT = float(os.environ.get("KOKKOS_CTEST_RUN_TIMEOUT", "54000"))
 
 # ctest parallelism (``ctest -j N``), mirroring the original launch's ``-j`` flag.
 # Empty/unset resolves to ``$(nproc)`` on the execution node (see

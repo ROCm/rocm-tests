@@ -10,8 +10,10 @@ Validates:
        appears in the VERBOSE build output of the Kokkos
        (https://github.com/kokkos/kokkos) HPC library. This is the AUTHORITATIVE
        pass criterion.
-    2. The Kokkos ctest suite (built with RDC on) runs on the GPU and emits a
-       pass summary — evidence the RDC-compiled binaries execute.
+    2. The Kokkos ctest suite (built with RDC on) runs on the GPU and every test
+       passes — evidence the RDC-compiled binaries execute correctly. The ctest
+       gate is strict: any failing test fails this test (as the original did by
+       parsing ctest results into its verdict).
 
 The clone + custom CMake configure/VERBOSE-build/install and the ``-fgpu-rdc``
 scan are handled by the session-scoped ``kokkos_rdc_build`` fixture in
@@ -39,6 +41,10 @@ from tests.e2e.hpc.kokkos._workload import CTEST_RUN_TIMEOUT, CTEST_TIMEOUT, cte
 
 logger = logging.getLogger(__name__)
 
+# ctest prints this banner when any test in the suite fails; its presence (or a
+# non-zero ctest exit) fails the strict gate below.
+_CTEST_FAIL_BANNER = "The following tests FAILED"
+
 
 @pytest.mark.runtime.soak
 def test_gpu_rdc_kokkos(
@@ -49,9 +55,9 @@ def test_gpu_rdc_kokkos(
 ):
     """Assert HIP RDC compilation occurred, then run the Kokkos ctest suite.
 
-    The ``-fgpu-rdc`` trace in the VERBOSE build output is the authoritative gate
-    (it proves RDC compilation actually happened) and is asserted first. The
-    ctest run is secondary validation that the RDC-compiled suite executes.
+    The ``-fgpu-rdc`` trace in the VERBOSE build output is the first gate (it
+    proves RDC compilation actually happened). The ctest run is then strict:
+    every test in the suite must pass, so any ctest failure fails this test.
     """
     build = kokkos_rdc_build
     ld = ld_path["LD_LIBRARY_PATH"]
@@ -66,12 +72,13 @@ def test_gpu_rdc_kokkos(
         f"Inspect the build log: {build.build_log_path}"
     )
 
-    # --- secondary validation: run the Kokkos ctest suite ---------------------
+    # --- secondary validation: run the full Kokkos ctest suite (strict) -------
     # ROCR/HIP visible-device vars are intentionally omitted (target_executor
     # injects them). ctest runs in parallel (`-j`, mirroring the original launch)
-    # with a per-test --timeout bound so a single hung/aborted unit test cannot
-    # consume the whole outer run budget. Parallelism is KOKKOS_CTEST_JOBS (default
-    # $(nproc), node-resolved); set it to 1 for serial.
+    # with the original's long per-test --timeout so a slow-but-valid test (e.g.
+    # the atomic performance benchmark) completes instead of being killed.
+    # Parallelism is KOKKOS_CTEST_JOBS (default $(nproc), node-resolved); set it
+    # to 1 for serial.
     ctest_log = f"{build.build_dir}/results.log"
     cmd = (
         f"env ROCM_PATH={rock_dir} "
@@ -84,18 +91,16 @@ def test_gpu_rdc_kokkos(
 
     result = target_executor.run(cmd, timeout=CTEST_RUN_TIMEOUT)
 
-    # ctest pass assertion — deliberately NOT `assert result.ok` / "0 tests
-    # failed". The original's authoritative gate is the -fgpu-rdc trace (asserted
-    # above); it runs ctest with --output-on-failure but does not treat the ctest
-    # exit code as the pass criterion. A healthy observed run showed 98% passed
-    # (1 of 63 failed: a flaky Kokkos_CoreUnitTest_HIP subprocess abort), so
-    # asserting zero failures would wrongly fail a run the original treats as
-    # passing. Instead we assert the suite actually ran and emitted a ctest pass
-    # summary line ("X% tests passed").
+    # Strict ctest gate (matches the original, which parsed ctest results into the
+    # test verdict): every test in the suite must pass. First confirm the suite
+    # actually ran, then require a clean exit with no reported failures.
     no_tests = f"Kokkos ctest ran no tests — build produced no test targets:\n{result.stdout[-2000:]}"
     assert "No tests were found" not in result.stdout, no_tests
     assert result.stdout.strip(), no_tests
-    assert "tests passed" in result.stdout, (
-        f"Kokkos ctest did not report a pass summary (exit={result.exit_code}):\n"
+    assert _CTEST_FAIL_BANNER not in result.stdout, (
+        f"Kokkos ctest reported failing tests:\n{result.stdout[-4000:]}"
+    )
+    assert result.ok, (
+        f"Kokkos ctest suite failed (exit={result.exit_code}):\n"
         f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-2000:]}"
     )
