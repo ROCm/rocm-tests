@@ -16,6 +16,10 @@ from __future__ import annotations
 
 import pytest
 
+# MIOpenDriver binary path relative to the ROCm install root — referenced by
+# every test below. Combined with rock_dir at call time.
+_MIOPEN_DRIVER_REL = "bin/MIOpenDriver"
+
 # ---------------------------------------------------------------------------
 # Conv command groups
 # ---------------------------------------------------------------------------
@@ -93,7 +97,7 @@ def _run_conv_group(
 @pytest.mark.runtime.fast
 def test_miopen_forward_conv_1(target_executor, ld_path: dict, rock_dir: str) -> None:
     """Validate MIOpenDriver forward conv group 1 (6 shapes, -F 1)."""
-    driver = f"{rock_dir}/bin/MIOpenDriver"
+    driver = f"{rock_dir}/{_MIOPEN_DRIVER_REL}"
     ld = ld_path["LD_LIBRARY_PATH"]
     _run_conv_group(target_executor, ld, driver, _FORWARD_CONV_1, "Forward_Conv_1")
 
@@ -101,7 +105,7 @@ def test_miopen_forward_conv_1(target_executor, ld_path: dict, rock_dir: str) ->
 @pytest.mark.runtime.fast
 def test_miopen_forward_conv_2(target_executor, ld_path: dict, rock_dir: str) -> None:
     """Validate MIOpenDriver forward conv group 2 (3 shapes, -F 1)."""
-    driver = f"{rock_dir}/bin/MIOpenDriver"
+    driver = f"{rock_dir}/{_MIOPEN_DRIVER_REL}"
     ld = ld_path["LD_LIBRARY_PATH"]
     _run_conv_group(target_executor, ld, driver, _FORWARD_CONV_2, "Forward_Conv_2")
 
@@ -109,7 +113,7 @@ def test_miopen_forward_conv_2(target_executor, ld_path: dict, rock_dir: str) ->
 @pytest.mark.runtime.fast
 def test_miopen_backward_data_conv(target_executor, ld_path: dict, rock_dir: str, gpu_arch: str | None) -> None:
     """Validate MIOpenDriver backward-data conv group (5 shapes, -F 2)."""
-    driver = f"{rock_dir}/bin/MIOpenDriver"
+    driver = f"{rock_dir}/{_MIOPEN_DRIVER_REL}"
     ld = ld_path["LD_LIBRARY_PATH"]
     # gfx906 requires verification disabled for backward passes
     extra = "-V 0" if gpu_arch and "gfx906" in gpu_arch else ""
@@ -119,7 +123,7 @@ def test_miopen_backward_data_conv(target_executor, ld_path: dict, rock_dir: str
 @pytest.mark.runtime.fast
 def test_miopen_backward_wrw_conv(target_executor, ld_path: dict, rock_dir: str, gpu_arch: str | None) -> None:
     """Validate MIOpenDriver backward weight-gradient conv group (4 shapes, -F 4)."""
-    driver = f"{rock_dir}/bin/MIOpenDriver"
+    driver = f"{rock_dir}/{_MIOPEN_DRIVER_REL}"
     ld = ld_path["LD_LIBRARY_PATH"]
     # gfx906 requires verification disabled for backward passes
     extra = "-V 0" if gpu_arch and "gfx906" in gpu_arch else ""
