@@ -16,6 +16,7 @@ import pathlib
 
 import pytest
 
+from tests.common.gpu_monitored.environment import detect_gpu_device_key
 from tests.common.gpu_monitored.executor_bridge import (
     make_monitor_executor,
     workload_executor_from,
@@ -124,11 +125,52 @@ def gpu_monitor_interval() -> int:
 
 @pytest.fixture
 def gpu_monitored_monitor_executor(target_executor, rock_dir):
-    """Executor for ``amd-smi monitor`` — no ``ROCR_VISIBLE_DEVICES`` mask."""
+    """Executor for ``amd-smi monitor`` — no ``ROCR_VISIBLE_DEVICES`` mask.
+
+    Function-scoped because it wraps ``target_executor``, which pytest scopes per
+    test so each one gets the node and GPUs it was allocated. Construction is a
+    wrapper around that executor with no connection setup of its own, so the
+    per-test cost is negligible; the probing it feeds is cached below.
+    """
     return make_monitor_executor(
         workload_executor_from(target_executor),
         rock_dir=rock_dir,
     )
+
+
+@pytest.fixture(scope="session")
+def _gpu_identity_cache() -> dict[str, tuple[str, str, str]]:
+    """Session cache: host identity -> ``(arch, model, device_key)``.
+
+    GPU arch, model and device id are fixed properties of a node, but the probes
+    that read them need an executor bound to the node under test, which pytest
+    scopes per test. Caching per host is what keeps this to one detection pass
+    instead of one per workload, while still re-probing when a fleet run moves
+    to a different node.
+    """
+    return {}
+
+
+@pytest.fixture
+def gpu_monitored_gpu_identity(
+    target_executor,
+    gpu_monitored_monitor_executor,
+    gpu_arch,
+    rock_dir,
+    cmake_executor,
+    _gpu_identity_cache: dict,
+) -> tuple[str, str, str]:
+    """Return ``(arch, model, device_key)`` for the node under test, once per host."""
+    first = next(iter(target_executor))
+    host_key = getattr(getattr(first, "node_spec", None), "label", None) or type(first).__name__
+
+    if host_key not in _gpu_identity_cache:
+        arch, model, _bdf = resolve_gpu_identity(gpu_monitored_monitor_executor, gpu_arch, rock_dir)
+        identity = (arch, model, detect_gpu_device_key(cmake_executor))
+        logger.info("gpu_monitored: GPU identity on %s: arch=%s model=%r device=%s", host_key, *identity)
+        _gpu_identity_cache[host_key] = identity
+
+    return _gpu_identity_cache[host_key]
 
 
 @pytest.fixture
@@ -140,19 +182,12 @@ def monitored_config(
     framework_config,
     gpu_monitor_interval,
     target_executor,
-    gpu_monitored_monitor_executor,
-    gpu_arch,
+    gpu_monitored_gpu_identity,
     cmake_executor,
 ):
     """Per-test :class:`Config` from framework GPU detection + ROCm paths."""
     num_gpus = target_executor.visible_gpu_count
-    arch, model, _bdf = resolve_gpu_identity(
-        gpu_monitored_monitor_executor,
-        gpu_arch,
-        rock_dir,
-    )
-
-    from tests.common.gpu_monitored.environment import detect_gpu_device_key
+    arch, model, device_key = gpu_monitored_gpu_identity
 
     cfg = make_monitored_config(
         rock_dir=rock_dir,
@@ -163,7 +198,7 @@ def monitored_config(
         num_gpus=num_gpus,
         gpu_arch=arch,
         gpu_model=model,
-        gpu_device_id=detect_gpu_device_key(cmake_executor),
+        gpu_device_id=device_key,
     )
     # Binaries and config trees are looked for where the workload will run.
     # ``cmake_executor`` is None in local mode, which leaves every probe reading

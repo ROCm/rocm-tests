@@ -15,6 +15,7 @@ from framework.gpu.detector import GpuDetector
 from framework.rocm.libs.amd_smi import list_devices
 from tests.common.gpu_monitored.config import Config
 from tests.common.gpu_monitored.environment import apply_framework_environment
+from tests.common.gpu_monitored.executor_bridge import executable_exists
 from tests.common.gpu_pci_map import short_name_for_device
 
 if TYPE_CHECKING:
@@ -100,8 +101,11 @@ def resolve_gpu_identity(
     if not model:
         amd_smi = "amd-smi"
         if rock_dir:
+            # Probed on the node that will run the command, not the one running
+            # pytest: under --remote-node the ROCm tree lives on the remote host,
+            # so a local check would miss it and fall back to a bare ``amd-smi``.
             candidate = Path(rock_dir) / "bin" / "amd-smi"
-            if candidate.is_file():
+            if executable_exists(cpu_executor, candidate):
                 amd_smi = str(candidate)
         result = cpu_executor.run(f"{amd_smi} static -a -g 0")
         if result.ok:
