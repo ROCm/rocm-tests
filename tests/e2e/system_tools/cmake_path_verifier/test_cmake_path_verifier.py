@@ -90,6 +90,10 @@ def test_cmake_mandatory_packages_present(target_executor, rock_dir: str) -> Non
     missing = []
     for package in PACKAGES_ALWAYS_VERIFY:
         result = target_executor.run(f"test -d {cmake_root}/{package} && echo EXISTS || echo MISSING")
+        if not result.ok:
+            pytest.fail(
+                f"failed to probe {cmake_root}/{package} " f"(exit={result.exit_code}):\n{(result.stderr or '')[:300]}"
+            )
         if "MISSING" in (result.stdout or ""):
             missing.append(f"{cmake_root}/{package}")
     if missing:
