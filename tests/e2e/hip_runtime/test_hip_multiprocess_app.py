@@ -342,7 +342,7 @@ def _run_suite(  # noqa: C901  # pylint: disable=too-many-locals,too-many-branch
 
 
 @pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
+@pytest.mark.ci.weekly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.medium
 @pytest.mark.parametrize(("duration", "vram"), [(60, 0), (600, 60)])
@@ -468,7 +468,7 @@ def test_hip_multiprocess_role_pair(
 
 
 @pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
+@pytest.mark.ci.weekly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 @pytest.mark.parametrize(("role", "vram"), _SINGLE_ROLES, ids=[r for r, _ in _SINGLE_ROLES])
@@ -490,7 +490,7 @@ def test_hip_multiprocess_single_role(
 
 
 @pytest.mark.hw.gpu
-@pytest.mark.ci.nightly
+@pytest.mark.ci.weekly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_hip_multiprocess_ipc(target_executor, ld_path: dict, rock_mps_binary: str, run_ctx, request):
