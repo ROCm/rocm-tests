@@ -67,12 +67,17 @@ def _require_passwordless_sudo(executor) -> None:
 
 
 def install_packages(executor, packages: list[str]) -> None:
-    """Install *packages* on the target node using the OS-appropriate package manager.
+    """Best-effort install of *packages* using the OS-appropriate package manager.
 
     *executor* is a NodeExecutorGroup (as returned by target_executor). On RHEL
-    and SLES each name is suffixed with -devel. Installs run with ``-y`` so the
-    package manager returns 0 even when a package is already present; a non-zero
-    exit therefore means a genuine install failure and is raised.
+    and SLES each name is suffixed with -devel. Installs run with ``-y``.
+
+    This step is best-effort: ROCm is frequently installed from a TheRock/tarball
+    under --rock-dir rather than from the OS package repo, so the devel packages
+    may legitimately be absent from apt/dnf/zypper (e.g. apt "Unable to locate
+    package"). A non-zero exit is therefore logged with full detail but not raised
+    here — the authoritative gate is the downstream cmake-config-dir existence
+    check, which fails clearly if a required package's cmake dir is missing.
     """
     os_family = detect_os(executor)
     _require_passwordless_sudo(executor)
@@ -90,10 +95,14 @@ def install_packages(executor, packages: list[str]) -> None:
 
     logger.info("installing packages [%s]: %s", os_family, pkg_str)
     result = executor.run(cmd, timeout=_INSTALL_TIMEOUT_SECS)
-    # With -y, a package that is already installed still exits 0; a non-zero exit
-    # means the install genuinely failed, so surface it instead of passing silently.
     if not result.ok:
-        raise RuntimeError(
-            f"package install failed [{os_family}] for [{pkg_str}] "
-            f"(exit={result.exit_code}):\n{(result.stderr or '')[:500]}"
+        # Not fatal: packages may be supplied via --rock-dir instead of the OS repo.
+        # The cmake-dir existence check downstream is the real pass/fail signal.
+        logger.warning(
+            "package install [%s] returned non-zero (exit=%s) for [%s] — "
+            "continuing; cmake-dir checks will catch any genuinely missing package.\n%s",
+            os_family,
+            result.exit_code,
+            pkg_str,
+            (result.stderr or "")[:500],
         )
