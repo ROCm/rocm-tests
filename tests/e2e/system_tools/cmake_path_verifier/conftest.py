@@ -27,9 +27,9 @@ _RUN_ID = os.environ.get("PYTEST_XDIST_TESTRUNUID") or str(os.getpid())
 def cmake_packages_installed(target_executor) -> None:
     """Install ROCm devel packages required by cmake_path_verifier tests.
 
-    Runs exactly once per session across all xdist workers: an ``fcntl`` file lock
-    serialises workers and a sentinel file records that the install has completed.
-    target_executor is function-scoped so this fixture must be too.
+    Runs exactly once per session across all xdist workers: a ``filelock.FileLock``
+    serialises workers and a per-run sentinel file records that the install has
+    completed. target_executor is function-scoped so this fixture must be too.
     """
     from filelock import FileLock  # local import: optional dependency, matches GpuFileLock
 
