@@ -37,6 +37,11 @@ _WATCH_ITERATIONS = int(os.environ.get("ROCM_TEST_GFX_CLKVIOL_ITERATIONS", "100"
 # On an eight-GPU host one nominal one-second iteration can take nearly two
 # seconds because amd-smi serializes per-device queries and JSON emission.
 _AMDSMI_TIMEOUT_SECS = max(180.0, _WATCH_INTERVAL_SECS * _WATCH_ITERATIONS * 3.0 + 60.0)
+# Ceiling for the small helper commands around the sampling runs -- reading the
+# captured JSON, reading the version file, creating and removing the scratch
+# directory. All are sub-second, so anything approaching this means the
+# connection or mount is wedged rather than the command being slow.
+_NODE_CMD_TIMEOUT = 60.0
 
 _MONITOR_FIELDS = ("gfxclk_pviol", "gfxclk_totalviol")
 _METRIC_FIELDS = (
@@ -120,7 +125,7 @@ def _run_json_capture(executor, command: str, output_path: str, label: str) -> A
         f"stdout:\n{(result.stdout or '')[-2000:]}\nstderr:\n{(result.stderr or '')[-2000:]}"
     )
 
-    captured = executor.run(f"cat {quoted_path}")
+    captured = executor.run(f"cat {quoted_path}", timeout=_NODE_CMD_TIMEOUT)
     assert captured.ok, f"{label} produced no JSON in {output_path}"
     assert (captured.stdout or "").strip(), f"{label} wrote an empty JSON file at {output_path}"
     try:
@@ -140,7 +145,10 @@ def _skip_if_unsupported(executor, rock_dir: str) -> None:
 
     version = ""
     if rock_dir:
-        result = executor.run(f"cat {shlex.quote(rock_dir.rstrip('/'))}/.info/version 2>/dev/null")
+        result = executor.run(
+            f"cat {shlex.quote(rock_dir.rstrip('/'))}/.info/version 2>/dev/null",
+            timeout=_NODE_CMD_TIMEOUT,
+        )
         if result.ok:
             version = (result.stdout or "").strip().split()[0]
     if not version:
@@ -157,6 +165,7 @@ def test_amdsmi_gfx_clock_violation(
     rvs_binary,
     rvs_find_conf,
     rvs_env,
+    amd_smi_binary,
     rock_dir,
     run_ctx,
     request,
@@ -174,7 +183,10 @@ def test_amdsmi_gfx_clock_violation(
     scratch = f"/tmp/rocm_test_gfx_clkviol_{tag}"  # nosec B108 - target-node scratch
     monitor_path = f"{scratch}/monitor.json"
     metric_path = f"{scratch}/metric.json"
-    target_executor.run(f"rm -rf {shlex.quote(scratch)} && mkdir -p {shlex.quote(scratch)}")
+    target_executor.run(
+        f"rm -rf {shlex.quote(scratch)} && mkdir -p {shlex.quote(scratch)}",
+        timeout=_NODE_CMD_TIMEOUT,
+    )
 
     logger.info("starting RVS IET stress with %s", conf)
     workload = target_executor.start_background(
@@ -190,7 +202,7 @@ def test_amdsmi_gfx_clock_violation(
         with step("Sample amd-smi monitor violation telemetry"):
             monitor_data = _run_json_capture(
                 target_executor,
-                f"amd-smi monitor --violation {watch}",
+                f"{amd_smi_binary} monitor --violation {watch}",
                 monitor_path,
                 "amd-smi monitor --violation",
             )
@@ -205,7 +217,7 @@ def test_amdsmi_gfx_clock_violation(
         with step("Sample amd-smi metric throttle telemetry"):
             metric_data = _run_json_capture(
                 target_executor,
-                f"amd-smi metric --throttle {watch}",
+                f"{amd_smi_binary} metric --throttle {watch}",
                 metric_path,
                 "amd-smi metric --throttle",
             )
@@ -227,4 +239,4 @@ def test_amdsmi_gfx_clock_violation(
         )
         logger.info("Wait %ss to kill RVS Workload", int(_IET_STOP_WAIT_SECS))
         time.sleep(_IET_STOP_WAIT_SECS)
-        target_executor.run(f"rm -rf {shlex.quote(scratch)}")
+        target_executor.run(f"rm -rf {shlex.quote(scratch)}", timeout=_NODE_CMD_TIMEOUT)
