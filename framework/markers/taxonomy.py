@@ -203,7 +203,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ml_frameworks/torchvision": [
         "hw.multi_gpu",
         "layer.math_lib",
-        "ci.nightly",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
@@ -243,12 +243,21 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ml_frameworks/apex": [
         "hw.multi_gpu",
         "layer.math_lib",
-        "ci.nightly",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
     # UCX HPC communication library: configure/make build + filtered *rocm* gtest suite.
     "tests/e2e/hpc/ucx": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # CK (Composable Kernel) tile tests: FMHA dropout and stream-k GEMM.
+    # Sparse-clones rocm-libraries; nightly; MI3xx (gfx942/gfx950) only.
+    "tests/e2e/ck": [
         "hw.gpu",
         "layer.math_lib",
         "ci.nightly",
