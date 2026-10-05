@@ -39,6 +39,11 @@ _EXPECTED_SNAPSHOTS = 4
 _RUN_TIMEOUT = 300.0
 
 
+# Filters out undersized GPUs before the catch2 suite is built, rather than
+# discovering it from the skip sentinel after the run. A pre-filter only: this
+# matches on total VRAM while the scenario needs 30 GB *free*, so the sentinel
+# check below stays as the runtime backstop.
+@pytest.mark.gpu_vram(30)
 @pytest.mark.runtime.fast
 def test_hip_mem_pool(target_executor, ld_path: dict, rock_dir: str, hip_perf_memory_binary: str):
     """Reserve and release 30 GB via the mempool, then assert nothing was retained."""
