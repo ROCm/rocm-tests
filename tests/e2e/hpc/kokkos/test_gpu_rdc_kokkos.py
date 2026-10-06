@@ -37,7 +37,7 @@ import logging
 
 import pytest
 
-from tests.e2e.hpc.kokkos._workload import CTEST_RUN_TIMEOUT, CTEST_TIMEOUT, ctest_parallel_arg
+from tests.e2e.hpc.kokkos._workload import CTEST_RUN_TIMEOUT, CTEST_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -74,17 +74,14 @@ def test_gpu_rdc_kokkos(
 
     # --- secondary validation: run the full Kokkos ctest suite (strict) -------
     # ROCR/HIP visible-device vars are intentionally omitted (target_executor
-    # injects them). ctest runs in parallel (`-j`, mirroring the original launch)
-    # with the original's long per-test --timeout so a slow-but-valid test (e.g.
-    # the atomic performance benchmark) completes instead of being killed.
-    # Parallelism is KOKKOS_CTEST_JOBS (default $(nproc), node-resolved); set it
-    # to 1 for serial.
+    # injects them). The long per-test --timeout lets a slow-but-valid test
+    # (e.g. the ~48 min atomic benchmark) finish rather than being killed.
     ctest_log = f"{build.build_dir}/results.log"
     cmd = (
         f"env ROCM_PATH={rock_dir} "
         f"PATH={rock_dir}/bin:$PATH "
         f"LD_LIBRARY_PATH={ld}:$LD_LIBRARY_PATH "
-        f"ctest --test-dir {build.build_dir} {ctest_parallel_arg()} --output-on-failure "
+        f"ctest --test-dir {build.build_dir} --output-on-failure "
         f"--timeout {CTEST_TIMEOUT} --output-log {ctest_log}"
     )
     logger.info("Kokkos ctest starting; full log -> %s (use `pytest -s` for live output)", ctest_log)

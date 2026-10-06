@@ -12,10 +12,6 @@ Environment overrides:
     KOKKOS_CTEST_TIMEOUT  per-test ctest timeout in seconds (``ctest --timeout N``).
     KOKKOS_CTEST_RUN_TIMEOUT
                           outer wall-clock cap for the whole ctest run (seconds).
-    KOKKOS_CTEST_JOBS     ctest parallelism (``ctest -j N``). Unset/empty ->
-                          ``$(nproc)`` (resolved on the execution node); set ``1``
-                          to force serial. The source build always parallelises
-                          make/cmake (``cmake --build --parallel``) automatically.
 """
 
 import os
@@ -41,25 +37,10 @@ KOKKOS_REF = os.environ.get("KOKKOS_REF", "5.1.1")
 CTEST_TIMEOUT = os.environ.get("KOKKOS_CTEST_TIMEOUT", "50000")
 
 # Outer wall-clock cap for the full ctest run. Set above the per-test timeout so
-# the executor never pre-empts ctest's own --timeout accounting; normal runs
-# finish in well under an hour with -j parallelism, this is only a hang ceiling.
+# the executor never pre-empts ctest's own --timeout accounting. The suite runs
+# ~60-70 min on gfx950 (the atomic benchmark alone is ~48 min); this is only a
+# hang ceiling, not an expected duration.
 CTEST_RUN_TIMEOUT = float(os.environ.get("KOKKOS_CTEST_RUN_TIMEOUT", "54000"))
-
-# ctest parallelism (``ctest -j N``), mirroring the original launch's ``-j`` flag.
-# Empty/unset resolves to ``$(nproc)`` on the execution node (see
-# ``ctest_parallel_arg``); set KOKKOS_CTEST_JOBS=1 to force serial if parallel
-# Kokkos unit tests contend for the single GPU.
-CTEST_JOBS = os.environ.get("KOKKOS_CTEST_JOBS", "").strip()
-
-
-def ctest_parallel_arg() -> str:
-    """Return the ``ctest -j`` argument controlling parallel test execution.
-
-    When ``KOKKOS_CTEST_JOBS`` is set, uses that fixed job count; otherwise falls
-    back to ``-j$(nproc)`` so the shell resolves the core count on the execution
-    node (which may be a remote GPU host, not the coordinator).
-    """
-    return f"-j{CTEST_JOBS}" if CTEST_JOBS else "-j$(nproc)"
 
 
 def kokkos_arch_flag(gpu_arch: str | None) -> str:
