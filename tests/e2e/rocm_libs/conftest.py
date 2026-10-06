@@ -41,7 +41,7 @@ _HIPBLAS_SPARSE_PROJECT = "projects/hipblas"
 # Sentinel binary: its presence means all samples were built successfully
 _HIPBLAS_SAMPLE_SENTINEL = "hipblas-example-sgemm"
 # Default branch — override with HIPBLAS_LIBRARIES_REF env var when needed
-_HIPBLAS_LIBRARIES_REF = os.environ.get("HIPBLAS_LIBRARIES_REF", "main")
+_HIPBLAS_LIBRARIES_REF = os.environ.get("HIPBLAS_LIBRARIES_REF", "develop")
 
 
 def check_rocblas_library(rock_dir: str, remote: bool = False, cmake_executor=None) -> None:
