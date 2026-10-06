@@ -15,6 +15,7 @@ Build output layout::
     output/test-binaries/rocm_libs/async_mixed_precision_workflow/async_mixed_precision_workflow
     output/test-binaries/rocm_libs/sparse_csrrf_analysis_reuse/sparse_csrrf_analysis_reuse
     output/test-binaries/rocm_libs/hip_mempool_probe/hip_mempool_probe
+    output/test-binaries/rocm_libs/hipblas_samples/build/clients/staging/
 """
 
 from __future__ import annotations
@@ -25,11 +26,20 @@ import pathlib
 
 import pytest
 
+from framework.builder.binary_builder import resolve_parallel_jobs
 from tests.e2e.rocm_libs._workload import HIP_MEM_POOL_ENV
 
 logger = logging.getLogger(__name__)
 
 _CORE_SRC = "tests/e2e/rocm_libs/src"
+
+# ---------------------------------------------------------------------------
+# hipBLAS samples — sparse clone of ROCm/rocm-libraries
+# ---------------------------------------------------------------------------
+_HIPBLAS_LIBRARIES_REPO = "https://github.com/ROCm/rocm-libraries.git"
+_HIPBLAS_SPARSE_PROJECT = "projects/hipblas"
+# Sentinel binary: its presence means all samples were built successfully
+_HIPBLAS_SAMPLE_SENTINEL = "hipblas-example-sgemm"
 
 
 def check_rocblas_library(rock_dir: str, remote: bool = False, cmake_executor=None) -> None:
@@ -215,3 +225,119 @@ def hip_mempool_env(target_executor, ld_path: dict, hip_mempool_probe_binary: st
 
 
 # requested_gpu_count is provided by the shared suite-level conftest (tests/conftest.py).
+
+
+# ---------------------------------------------------------------------------
+# hipBLAS samples bin-dir fixture
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def hipblas_samples_bin_dir(
+    rock_dir: str,
+    compiler_build_dir: str,
+    framework_config,
+    external_build,
+    cmake_executor,
+    ld_path: dict,
+    target_executor,
+) -> str:
+    """Return the directory that contains the pre-built hipBLAS sample binaries.
+
+    Resolution order:
+
+    1. ``rock_dir/bin`` — binaries shipped with the ``hipblas-samples`` package.
+    2. Build from source using a sparse clone of ``ROCm/rocm-libraries`` via
+       ``external_build.clone_repo`` and ``cmake_build_dir``.  The build is
+       cached for the session (idempotent clone + cmake_build_dir skip rebuild
+       when the staging directory already exists).
+
+    Returns:
+        Absolute path to the directory containing the sample binaries.
+    """
+    ld = ld_path["LD_LIBRARY_PATH"]
+    rocm_bin = os.path.join(rock_dir, "bin")
+
+    # --- 1. Pre-installed package -------------------------------------------
+    sentinel_in_pkg = f"{rocm_bin}/{_HIPBLAS_SAMPLE_SENTINEL}"
+    if cmake_executor is not None:
+        probe = cmake_executor.run(f"test -f {sentinel_in_pkg}", timeout=15.0)
+        found_in_pkg = probe.ok
+    else:
+        found_in_pkg = os.path.isfile(sentinel_in_pkg)
+
+    if found_in_pkg:
+        logger.info("hipBLAS samples found pre-installed at %s", rocm_bin)
+        return rocm_bin
+
+    # --- 2. Build from source -----------------------------------------------
+    build_timeout = float(framework_config.therock.build_timeout_secs)
+
+    # Sparse clone: only the projects/hipblas subtree is fetched
+    dest = pathlib.Path(compiler_build_dir) / "rocm_libs" / "hipblas_samples" / "rocm-libraries"
+    repo_dir = external_build.clone_repo(
+        _HIPBLAS_LIBRARIES_REPO,
+        dest,
+        sparse_subtree=_HIPBLAS_SPARSE_PROJECT,
+        timeout=build_timeout,
+    )
+    external_build.assert_license_present(repo_dir)
+
+    # cmake_build_dir is idempotent: skips configure+build if the artifact exists
+    staging_dir = os.path.join(str(repo_dir), "build", "clients", "staging")
+    sentinel_in_build = os.path.join(staging_dir, _HIPBLAS_SAMPLE_SENTINEL)
+
+    already_built = (
+        cmake_executor.run(f"test -f {sentinel_in_build}", timeout=15.0).ok
+        if cmake_executor is not None
+        else os.path.isfile(sentinel_in_build)
+    )
+
+    if not already_built:
+        jobs = resolve_parallel_jobs(remote_executor=cmake_executor)
+        cmake_src = str(repo_dir)
+        build_dir = os.path.join(str(dest), "build")
+
+        configure_cmd = (
+            f"cmake -S {cmake_src} -B {build_dir}"
+            f" -DCMAKE_PREFIX_PATH={rock_dir}"
+            f" -DBUILD_CLIENTS_SAMPLES=ON"
+            f" -DBUILD_CLIENTS_TESTS=OFF"
+            f" -DBUILD_CLIENTS_BENCHMARKS=OFF"
+        )
+        if cmake_executor is not None:
+            cfg = cmake_executor.run(configure_cmd, timeout=build_timeout)
+        else:
+            import subprocess
+            proc = subprocess.run(configure_cmd, shell=True, capture_output=True, text=True)
+            cfg = type("R", (), {"ok": proc.returncode == 0, "stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode})()
+        if not cfg.ok:
+            pytest.fail(
+                f"hipBLAS samples cmake configure failed (exit={cfg.exit_code}):\n"
+                f"stdout: {cfg.stdout[:2000]}\nstderr: {cfg.stderr[:1000]}"
+            )
+
+        build_cmd = f"cmake --build {build_dir} -j {jobs}"
+        if cmake_executor is not None:
+            bld = cmake_executor.run(build_cmd, timeout=build_timeout)
+        else:
+            proc = subprocess.run(build_cmd, shell=True, capture_output=True, text=True)
+            bld = type("R", (), {"ok": proc.returncode == 0, "stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode})()
+        if not bld.ok:
+            pytest.fail(
+                f"hipBLAS samples cmake build failed (exit={bld.exit_code}):\n"
+                f"stdout: {bld.stdout[:2000]}\nstderr: {bld.stderr[:1000]}"
+            )
+
+    # Verify sentinel is present
+    verify_ok = (
+        cmake_executor.run(f"test -f {sentinel_in_build}", timeout=15.0).ok
+        if cmake_executor is not None
+        else os.path.isfile(sentinel_in_build)
+    )
+    if not verify_ok:
+        pytest.fail(
+            f"hipBLAS samples build completed but sentinel binary not found: {sentinel_in_build}"
+        )
+
+    logger.info("hipBLAS samples built at %s", staging_dir)
+    return staging_dir
