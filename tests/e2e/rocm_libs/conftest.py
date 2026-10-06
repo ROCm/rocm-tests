@@ -40,6 +40,8 @@ _HIPBLAS_LIBRARIES_REPO = "https://github.com/ROCm/rocm-libraries.git"
 _HIPBLAS_SPARSE_PROJECT = "projects/hipblas"
 # Sentinel binary: its presence means all samples were built successfully
 _HIPBLAS_SAMPLE_SENTINEL = "hipblas-example-sgemm"
+# Default branch — override with HIPBLAS_LIBRARIES_REF env var when needed
+_HIPBLAS_LIBRARIES_REF = os.environ.get("HIPBLAS_LIBRARIES_REF", "main")
 
 
 def check_rocblas_library(rock_dir: str, remote: bool = False, cmake_executor=None) -> None:
@@ -278,6 +280,7 @@ def hipblas_samples_bin_dir(
     repo_dir = external_build.clone_repo(
         _HIPBLAS_LIBRARIES_REPO,
         dest,
+        ref=_HIPBLAS_LIBRARIES_REF,
         sparse_subtree=_HIPBLAS_SPARSE_PROJECT,
         timeout=build_timeout,
     )
