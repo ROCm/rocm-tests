@@ -286,8 +286,13 @@ def hipblas_samples_bin_dir(
     )
     external_build.assert_license_present(repo_dir)
 
-    # cmake_build_dir is idempotent: skips configure+build if the artifact exists
-    staging_dir = os.path.join(str(repo_dir), "build", "clients", "staging")
+    # repo_dir = <clone_root>/projects/hipblas  (sparse subtree path returned by clone_repo)
+    # repo_root = <clone_root>/                 (the actual rocm-libraries checkout root)
+    # build_dir = <clone_root>/build            (matches: cmake -S projects/hipblas -B build)
+    # staging   = <clone_root>/build/clients/staging
+    repo_root = repo_dir.parent
+    build_dir = str(repo_root / "build")
+    staging_dir = str(repo_root / "build" / "clients" / "staging")
     sentinel_in_build = os.path.join(staging_dir, _HIPBLAS_SAMPLE_SENTINEL)
 
     already_built = (
@@ -298,8 +303,7 @@ def hipblas_samples_bin_dir(
 
     if not already_built:
         jobs = resolve_parallel_jobs(remote_executor=cmake_executor)
-        cmake_src = str(repo_dir)
-        build_dir = os.path.join(str(dest), "build")
+        cmake_src = str(repo_dir)  # projects/hipblas — cmake -S source
 
         configure_cmd = (
             f"cmake -S {cmake_src} -B {build_dir}"
