@@ -106,23 +106,7 @@ jobs:
 
       - name: Build test matrix from Test Configuration
         id: testplan
-        shell: python
-        run: |
-          import os, configparser, json
-          conf = configparser.ConfigParser()
-          conf.read('testplan.ini')
-          all_targets = []
-          skipped     = []
-          for section in conf.sections():
-              entry = {'name': section, **dict(conf.items(section))}
-              all_targets.append(entry)
-              if entry.get('target_available', 'true').strip().lower() == 'false':
-                  skipped.append(section)
-          print(f'all targets: {repr(all_targets)}')
-          print(f'skipped:     {repr(skipped)}')
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f'targets={json.dumps(all_targets)}\n')
-              f.write(f'skipped_targets={json.dumps(skipped)}\n')
+        run: python3 .github/scripts/build_test_matrix.py
 
   check_runners:
     name: Check runner availability
@@ -183,6 +167,13 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout CI scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/**
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Download all platform counts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -192,90 +183,11 @@ jobs:
 
       - name: Build master summary table
         env:
+          MODE: aggregate
           RUN_ID: ${{ needs.setup_matrix.outputs.run_id || inputs.artifact_source || 'latest-release' }}
+          COUNTS_DIR: all-counts
           SKIPPED_TARGETS: ${{ needs.check_runners.outputs.skipped_targets }}
-        shell: python
-        run: |
-          import json, os, pathlib
-
-          rows = []
-          for counts_file in sorted(pathlib.Path("all-counts").rglob("counts.json")):
-              try:
-                  rows.append(json.loads(counts_file.read_text()))
-              except Exception as e:
-                  print(f"Skipping {counts_file}: {e}")
-
-          raw = os.environ.get("SKIPPED_TARGETS", "").strip()
-          skipped_names = json.loads(raw) if raw else []
-
-          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
-          has_skip = any(r.get("skipped", 0) > 0 for r in rows)
-
-          lines = []
-          run_id = os.environ["RUN_ID"]
-          lines.append(f"## Nightly Results — {run_id} — All Platforms")
-          lines.append("")
-
-          if has_skip:
-              lines.append("| Platform | Tests Run | Pass | Skip | Fail | Error | Status |")
-              lines.append("|---|--:|--:|--:|--:|--:|---|")
-          else:
-              lines.append("| Platform | Tests Run | Pass | Fail | Error | Status |")
-              lines.append("|---|--:|--:|--:|--:|---|")
-
-          total_run = total_pass = total_skip = total_fail = total_err = 0
-          for r in rows:
-              if r.get("runner_timeout"):
-                  # Platform dispatched but runner never acquired — distinct from a test failure
-                  status = "⏭ Runner timeout"
-                  dash = "—"
-                  if has_skip:
-                      lines.append(f"| {r['platform']} | {dash} | {dash} | {dash} | {dash} | {dash} | {status} |")
-                  else:
-                      lines.append(f"| {r['platform']} | {dash} | {dash} | {dash} | {dash} | {status} |")
-              else:
-                  ok = r["failed"] == 0 and r["error"] == 0 and r["total"] > 0
-                  status = "✅ Passed" if ok else "❌ Failed"
-                  if has_skip:
-                      lines.append(
-                          f"| {r['platform']} | {r['total']} | {r['passed']} | "
-                          f"{r.get('skipped', 0)} | {r['failed']} | {r['error']} | {status} |"
-                      )
-                  else:
-                      lines.append(
-                          f"| {r['platform']} | {r['total']} | {r['passed']} | "
-                          f"{r['failed']} | {r['error']} | {status} |"
-                      )
-                  total_run  += r["total"]
-                  total_pass += r["passed"]
-                  total_skip += r.get("skipped", 0)
-                  total_fail += r["failed"]
-                  total_err  += r["error"]
-
-          for name in skipped_names:
-              if has_skip:
-                  lines.append(f"| {name} | — | — | — | — | — | ⏭ Skipped — platform not available |")
-              else:
-                  lines.append(f"| {name} | — | — | — | — | ⏭ Skipped — platform not available |")
-
-          if rows:
-              if has_skip:
-                  lines.append(
-                      f"| **TOTAL** | **{total_run}** | **{total_pass}** | "
-                      f"**{total_skip}** | **{total_fail}** | **{total_err}** | |"
-                  )
-              else:
-                  lines.append(
-                      f"| **TOTAL** | **{total_run}** | **{total_pass}** | "
-                      f"**{total_fail}** | **{total_err}** | |"
-                  )
-          else:
-              lines.append("_No platform results collected._")
-
-          lines.append("")
-
-          with open(summary_path, "a") as f:
-              f.write("\n".join(lines) + "\n")
+        run: python3 .github/scripts/write_step_summary.py
 
   upload_results:
     name: "Upload Nightly Results to ClickHouse"
