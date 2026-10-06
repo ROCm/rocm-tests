@@ -409,7 +409,7 @@ class MonitoredTestOrchestrator:
             # fd 1 still succeeded but never reached disk, so the log was
             # truncated with no error raised anywhere. ``O_APPEND`` keeps every
             # write atomic across the workload, its children and this process.
-            log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_APPEND, 0o644)
+            log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_APPEND, 0o600)
             os.dup2(log_fd, 1)
             os.dup2(log_fd, 2)
             os.close(log_fd)
