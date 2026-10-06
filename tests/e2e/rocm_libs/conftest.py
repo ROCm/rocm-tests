@@ -238,8 +238,6 @@ def hipblas_samples_bin_dir(
     framework_config,
     external_build,
     cmake_executor,
-    ld_path: dict,
-    target_executor,
 ) -> str:
     """Return the directory that contains the pre-built hipBLAS sample binaries.
 
@@ -247,18 +245,21 @@ def hipblas_samples_bin_dir(
 
     1. ``rock_dir/bin`` — binaries shipped with the ``hipblas-samples`` package.
     2. Build from source using a sparse clone of ``ROCm/rocm-libraries`` via
-       ``external_build.clone_repo`` and ``cmake_build_dir``.  The build is
-       cached for the session (idempotent clone + cmake_build_dir skip rebuild
-       when the staging directory already exists).
+       ``external_build.clone_repo``.  The build is cached for the session
+       (idempotent clone + sentinel check skip rebuild when already built).
+
+    All dependencies are session-scoped — no function-scoped fixtures are
+    requested here to preserve the session-scope guarantee.
 
     Returns:
         Absolute path to the directory containing the sample binaries.
     """
-    ld = ld_path["LD_LIBRARY_PATH"]
     rocm_bin = os.path.join(rock_dir, "bin")
+    sentinel_in_pkg = os.path.join(rocm_bin, _HIPBLAS_SAMPLE_SENTINEL)
 
     # --- 1. Pre-installed package -------------------------------------------
-    sentinel_in_pkg = f"{rocm_bin}/{_HIPBLAS_SAMPLE_SENTINEL}"
+    # Use cmake_executor for remote nodes; fall back to local os.path.isfile.
+    # Both paths are session-safe — no function-scoped fixture is needed here.
     if cmake_executor is not None:
         probe = cmake_executor.run(f"test -f {sentinel_in_pkg}", timeout=15.0)
         found_in_pkg = probe.ok
