@@ -13,6 +13,7 @@ from __future__ import annotations
 import shlex
 
 import pytest
+
 from tests.e2e.system_tools.rvs.conftest import (  # noqa: F401
     rvs_binary as _rvs_binary,
     rvs_env,
