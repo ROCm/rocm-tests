@@ -25,7 +25,6 @@ import pytest
 
 _SAMPLES: list[tuple[str, str]] = [
     ("hipblas-example-bfdot-hip-bfloat16", "BFDOT TEST PASSES"),
-    ("hipblas-example-gemmEx-fortran", "GEMMEX TEST PASS"),
     ("hipblas-example-c", "SSCAL TEST PASSES"),
     ("hipblas-example-gemmEx", "PASS"),
     ("hipblas-example-hgemm-half", "PASS"),
@@ -34,9 +33,11 @@ _SAMPLES: list[tuple[str, str]] = [
     ("hipblas-example-sgemm", "PASS"),
     ("hipblas-example-sgemm-strided-batched", "PASS"),
     ("hipblas-example-sscal", "SSCAL TEST PASSES"),
-    ("hipblas-example-sscal-fortran", "SSCAL TEST PASS"),
     ("hipblas-example-strmm", "PASS"),
 ]
+# hipblas-example-gemmEx-fortran and hipblas-example-sscal-fortran are excluded:
+# they link against hipblasGemmGroupedBatchedExWithFlags which is only present in
+# hipBLAS builds newer than ROCm 7.15.0.
 
 
 @pytest.mark.runtime.fast
