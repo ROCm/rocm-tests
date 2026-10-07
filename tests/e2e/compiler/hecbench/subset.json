@@ -139,7 +139,7 @@
       "(?:Average execution time of the kernel: )([0-9.+-e]+)(?: \\(us\\))"
     ],
     "black-scholes": [
-        "(?:Processing time on GPU: )([0-9.+-e]+)(?: \\(ms\\))"
+        "(?:Processing time using GPU )([0-9.+-e]+)(?: \\(ms\\))"
     ],
     "blas-dot": [
       "(?:Average hipblasDotEx_v2 execution time )([0-9.+-e]+)(?: \\(ms\\))"
