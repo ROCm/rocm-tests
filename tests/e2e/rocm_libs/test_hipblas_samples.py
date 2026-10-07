@@ -27,15 +27,15 @@ _SAMPLES: list[tuple[str, str]] = [
     ("hipblas-example-bfdot-hip-bfloat16", "BFDOT TEST PASSES"),
     ("hipblas-example-gemmEx-fortran", "GEMMEX TEST PASS"),
     ("hipblas-example-c", "SSCAL TEST PASSES"),
-    ("hipblas-example-gemmEx", "PASS"),
-    ("hipblas-example-hgemm-half", "PASS"),
+    ("hipblas-example-gemmEx", "PASS: max_relative_error ="),
+    ("hipblas-example-hgemm-half", "PASS: max_relative_error ="),
     ("hipblas-example-hip-complex-her2", "PASS"),
     ("hipblas-example-scal-ex", "SCALEX TEST PASSES"),
-    ("hipblas-example-sgemm", "PASS"),
-    ("hipblas-example-sgemm-strided-batched", "PASS"),
+    ("hipblas-example-sgemm", "PASS: max_relative_error ="),
+    ("hipblas-example-sgemm-strided-batched", "PASS: max_relative_error ="),
     ("hipblas-example-sscal", "SSCAL TEST PASSES"),
     ("hipblas-example-sscal-fortran", "SSCAL TEST PASS"),
-    ("hipblas-example-strmm", "PASS"),
+    ("hipblas-example-strmm", "PASS: max_relative_error ="),
 ]
 
 

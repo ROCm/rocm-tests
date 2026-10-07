@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import subprocess
 
 import pytest
 
@@ -315,7 +316,6 @@ def hipblas_samples_bin_dir(
         if cmake_executor is not None:
             cfg = cmake_executor.run(configure_cmd, timeout=build_timeout)
         else:
-            import subprocess
             proc = subprocess.run(configure_cmd, shell=True, capture_output=True, text=True)
             cfg = type("R", (), {"ok": proc.returncode == 0, "stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode})()
         if not cfg.ok:
