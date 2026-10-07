@@ -19,6 +19,7 @@ DEADLOCK_TIMEOUT_SEC = 120
 NO_PROGRESS_THRESHOLD_SEC = 60
 
 GPT_1B_CONFIG = dict(vocab=8192, dim=2048, heads=16, layers=20, seq_len=256)
+ATTN_1B_CONFIG = dict(dim=2048, heads=16, layers=20, seq_len=256)
 
 
 class DeadlockTimeoutError(Exception):
