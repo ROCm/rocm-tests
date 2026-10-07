@@ -5,19 +5,6 @@ third-party software that is **downloaded at test runtime** and is **not** vendo
 into this repository. Each such dependency remains under its own license; the
 notices below are provided for attribution.
 
-## ROCm Libraries (hipBLAS samples)
-
-- Used by: `tests/e2e/rocm_libs/test_hipblas_samples.py` (cloned at runtime via a
-  sparse checkout of `projects/hipblas`; see the `hipblas_samples_bin_dir` fixture in
-  `tests/e2e/rocm_libs/conftest.py`).
-- Upstream: https://github.com/ROCm/rocm-libraries
-- License: MIT (see the `LICENSE` file in the upstream repository).
-- Copyright (c) Advanced Micro Devices, Inc.
-
-The hipBLAS sample sources are fetched during test execution and compiled/run on AMD
-GPU hardware. No hipBLAS source is redistributed as part of this repository; only the
-pytest harness is checked in here.
-
 ## HeCBench
 
 - Used by: `tests/e2e/compiler/hecbench/` (cloned at runtime; see the
