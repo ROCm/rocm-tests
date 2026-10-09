@@ -214,8 +214,10 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
-    # amd-smi power metric checks (UBB_POWER field and node THRESHOLD).
-    # Read-only; no destructive operations; nightly cadence. runtime.* declared per function.
+    # amd-smi system tool suite: UBB_POWER/node THRESHOLD power metric checks plus
+    # amd-smi telemetry sampled while RVS IET loads the node. Read-only; nightly.
+    # runtime.* declared per function; tests that qualify every GPU on the node
+    # (RVS clock-violation, UBB power-under-load) declare hw.multi_gpu per function.
     "tests/e2e/system_tools/amd_smi": [
         "hw.gpu",
         "layer.runtime",
@@ -229,14 +231,6 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "hw.gpu",
         "layer.runtime",
         "ci.weekly",
-        "e2e.stack",
-        "os.linux",
-    ],
-    # amd-smi telemetry sampled while RVS IET loads every GPU on the node.
-    "tests/e2e/system_tools/amd_smi": [
-        "hw.multi_gpu",
-        "layer.runtime",
-        "ci.nightly",
         "e2e.stack",
         "os.linux",
     ],
