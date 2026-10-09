@@ -35,24 +35,27 @@ logger = logging.getLogger(__name__)
 _RVS_REPO_URL = "https://github.com/ROCm/ROCmValidationSuite.git"
 _RVS_REF = os.environ.get("ROCM_TEST_RVS_REF", "master")
 
-# Build prerequisites ROCm does not ship: yaml-cpp is probed by the RVS
-# CMakeLists, libnuma by its bundled TransferBench, which aborts later in the
-# same configure. gcc is for the pciutils RVS vendors and builds itself -- its
-# Makefile pins ``CC=$(CROSS_COMPILE)gcc``, so the ROCm clang on PATH does not
-# satisfy it. Package names and the EPEL requirement come from the RVS README;
-# SLES carries yaml-cpp-devel only in the subscription-gated Development module.
+# The RVS README's build prerequisites, which ROCm does not ship. yaml-cpp is
+# probed by the RVS CMakeLists and libnuma by its bundled TransferBench, both
+# during configure. The pci headers and gcc are for the pciutils RVS vendors:
+# it builds its own libpci.a with a Makefile that pins
+# ``CC=$(CROSS_COMPILE)gcc``, yet rvslib compiles ``#include <pci/pci.h>``
+# against the system headers rather than the vendored copy. EPEL is where the
+# RHEL family keeps yaml-cpp; SLES has yaml-cpp-devel only in the
+# subscription-gated Development module.
 _PREREQ_SCRIPT = (
     "if [ -f /usr/include/yaml-cpp/yaml.h ] && [ -f /usr/include/numa.h ] "
+    "&& ls /usr/include/pci/pci.h /usr/include/*/pci/pci.h 2>/dev/null | grep -q . "
     "&& command -v gcc >/dev/null 2>&1; then exit 0; fi; "
     'SUDO=""; if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then SUDO=sudo; fi; '
     "if command -v apt-get >/dev/null 2>&1; then "
-    "  $SUDO apt-get update && $SUDO apt-get install -y libyaml-cpp-dev libnuma-dev gcc; "
+    "  $SUDO apt-get update && $SUDO apt-get install -y libyaml-cpp-dev libnuma-dev libpci-dev gcc; "
     "elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then "
     "  DNF=$(command -v dnf || command -v yum); "
     "  $SUDO $DNF install -y epel-release || true; "
-    "  $SUDO $DNF install -y yaml-cpp-devel yaml-cpp-static numactl-devel gcc; "
+    "  $SUDO $DNF install -y yaml-cpp-devel yaml-cpp-static numactl-devel pciutils-devel gcc; "
     "elif command -v zypper >/dev/null 2>&1; then "
-    "  $SUDO zypper --non-interactive install yaml-cpp-devel libnuma-devel gcc; "
+    "  $SUDO zypper --non-interactive install yaml-cpp-devel libnuma-devel pciutils-devel gcc; "
     "else "
     '  echo "no supported package manager (apt-get/dnf/yum/zypper)" >&2; exit 1; '
     "fi"
@@ -116,7 +119,7 @@ def _is_executable(path: pathlib.Path, cmake_executor=None) -> bool:
 
 
 def _ensure_build_prereqs(cmake_executor=None) -> None:
-    """Best-effort install of yaml-cpp and libnuma before building RVS.
+    """Best-effort install of the RVS build prerequisites.
 
     Logged rather than raised on failure: RVS also accepts yaml-cpp from
     ``CMAKE_PREFIX_PATH``, so a node this cannot help may still configure, and
@@ -129,7 +132,7 @@ def _ensure_build_prereqs(cmake_executor=None) -> None:
         returncode, stdout, stderr = run_cmd_get_stdout_stderr("bash", "-lc", _PREREQ_SCRIPT, timeout=_PREREQ_TIMEOUT)
         ok, output = returncode == 0, (stdout or "") + (stderr or "")
     if not ok:
-        logger.warning("Could not install RVS build prerequisites (yaml-cpp, libnuma):\n%s", output[-1000:])
+        logger.warning("Could not install RVS build prerequisites:\n%s", output[-1000:])
 
 
 def _find_first(
