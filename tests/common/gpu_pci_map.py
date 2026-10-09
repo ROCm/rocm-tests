@@ -134,17 +134,56 @@ def conf_filename_for(gpu_conf_dir: str, config_name: str) -> str:
     return CONFIG_FILENAME_OVERRIDES.get(gpu_conf_dir, {}).get(config_name, config_name)
 
 
-# Vendor 0x1002 is AMD. The classes cover VGA (0300), display controller (0380)
-# and processing accelerator (1200) so datacenter parts are not missed: MI210
-# reports 0380, which a VGA-only filter drops entirely.
+# Every GPU AMD ships -- Instinct, Radeon and the APU iGPUs alike -- enumerates
+# under vendor 0x1002; 0x1022 is the CPU and chipset side and never a GPU. So a
+# device outside 0x1002 can only ever yield a key no caller can map, and is
+# filtered out rather than parsed.
+_AMD_VENDOR_ID = "1002"
+
+# Render nodes are the only source scoped to the caller rather than the machine.
+# Under Kubernetes the device plugin exposes just the GPUs the pod was granted,
+# while /sys and lspci still show every device on the host node, so scanning
+# those reports a GPU the pod cannot use -- or, on a mixed node, no GPU at all.
+_RENDER_NODE_PCI_ID_CMD = (
+    "for node in /dev/dri/renderD*; do "
+    "dev=/sys/class/drm/$(basename $node)/device; "
+    'test -r "$dev/device" || continue; '
+    f'test "$(cat $dev/vendor 2>/dev/null)" = "0x{_AMD_VENDOR_ID}" || continue; '
+    "echo $(cat $dev/device)_$(cat $dev/revision 2>/dev/null); "
+    "done | head -n 1"
+)
+
+# The classes cover VGA (0300), display controller (0380) and processing
+# accelerator (1200) so datacenter parts are not missed: MI210 reports 0380,
+# which a VGA-only filter drops entirely.
 _SYSFS_PCI_ID_CMD = (
     "for dev in /sys/bus/pci/devices/*; do "
     "vendor=$(cat $dev/vendor 2>/dev/null); class=$(cat $dev/class 2>/dev/null); "
     "case $vendor:$class in "
-    "0x1002:0x0300*|0x1002:0x0380*|0x1002:0x1200*) "
+    f"0x{_AMD_VENDOR_ID}:0x0300*|0x{_AMD_VENDOR_ID}:0x0380*|0x{_AMD_VENDOR_ID}:0x1200*) "
     "echo $(cat $dev/device 2>/dev/null)_$(cat $dev/revision 2>/dev/null);; "
     "esac; done | tail -n 1"
 )
+
+_SYSFS_ID_PATTERN = re.compile(r"0x([0-9a-fA-F]{4})_0x([0-9a-fA-F]{1,2})")
+_SMI_ID_PATTERN = re.compile(r"DEVICE_ID:\s*0x([0-9a-fA-F]{4}).*?REV_ID:\s*0x([0-9a-fA-F]{1,2})", re.DOTALL)
+
+
+def _smi_command(binary: str, args: str, *, sudo: bool = False) -> str:
+    """Build a detection command that locates *binary* before running it.
+
+    Detection runs under ``bash -c``, which is not a login shell, so a ROCm that
+    only reaches PATH through ``/etc/profile`` is invisible to a bare name and
+    the SMI is skipped entirely in favour of the host-wide sources below it. The
+    install tree is searched as well so the SMI gets its turn either way.
+    """
+    return (
+        f"SMI=$(command -v {binary} || ls -d "
+        f'"${{ROCM_PATH:-/opt/rocm}}/bin/{binary}" /opt/rocm*/bin/{binary} '
+        f"/opt/rocm*/install/bin/{binary} 2>/dev/null | head -n 1); "
+        f'test -x "$SMI" && {"sudo -n " if sudo else ""}"$SMI" {args} 2>/dev/null'
+    )
+
 
 # Ordered ``(name, command, pattern, default_revision)`` detection candidates.
 # Every entry is a fallback rather than an exclusive choice: amd-smi and rocm-smi
@@ -154,21 +193,22 @@ _SYSFS_PCI_ID_CMD = (
 # lspci is matched on the textual class names because numeric class filters miss
 # parts that enumerate as "Display controller".
 _DETECTION_METHODS: tuple[tuple[str, str, re.Pattern, str], ...] = (
+    ("render node", _RENDER_NODE_PCI_ID_CMD, _SYSFS_ID_PATTERN, ""),
     (
         "amd-smi",
-        "amd-smi static --asic 2>/dev/null",
-        re.compile(r"DEVICE_ID:\s*0x([0-9a-fA-F]{4}).*?REV_ID:\s*0x([0-9a-fA-F]{1,2})", re.DOTALL),
+        _smi_command("amd-smi", "static --asic"),
+        _SMI_ID_PATTERN,
         "",
     ),
     (
         "amd-smi with sudo",
-        "sudo -n amd-smi static --asic 2>/dev/null",
-        re.compile(r"DEVICE_ID:\s*0x([0-9a-fA-F]{4}).*?REV_ID:\s*0x([0-9a-fA-F]{1,2})", re.DOTALL),
+        _smi_command("amd-smi", "static --asic", sudo=True),
+        _SMI_ID_PATTERN,
         "",
     ),
     (
         "rocm-smi",
-        "rocm-smi --showid 2>/dev/null",
+        _smi_command("rocm-smi", "--showid"),
         re.compile(r"Device ID:\s*0x([0-9a-fA-F]{4}).*?Device Rev:\s*0x([0-9a-fA-F]{1,2})", re.DOTALL),
         "",
     ),
@@ -176,12 +216,12 @@ _DETECTION_METHODS: tuple[tuple[str, str, re.Pattern, str], ...] = (
         "lspci",
         "lspci -nn -v 2>/dev/null | grep -iE 'vga|display|accelerators' | grep -i amd | tail -n 1",
         re.compile(
-            r"\[(?:[0-9a-fA-F]{4}):(?P<DID>[0-9a-fA-F]{4})\](?:.*?rev (?P<RID>[0-9a-fA-F]+))?",
+            rf"\[{_AMD_VENDOR_ID}:(?P<DID>[0-9a-fA-F]{{4}})\](?:.*?rev (?P<RID>[0-9a-fA-F]+))?",
             re.IGNORECASE,
         ),
         "00",
     ),
-    ("pci sysfs", _SYSFS_PCI_ID_CMD, re.compile(r"0x([0-9a-fA-F]{4})_0x([0-9a-fA-F]{1,2})"), ""),
+    ("pci sysfs", _SYSFS_PCI_ID_CMD, _SYSFS_ID_PATTERN, ""),
 )
 
 
@@ -213,16 +253,49 @@ def _device_revision_from_output(output: str, pattern: re.Pattern, default_revis
     return ""
 
 
+#: Output a detection command prints when it ran but could not report ids.
+_UNUSABLE_OUTPUT_HINTS = (
+    "n/a",
+    "permission denied",
+    "not supported",
+    "no amd gpus found",
+    "unable to detect any gpu",
+    "command not found",
+    "no such file or directory",
+)
+
+
+def _unusable_output_reason(output: str) -> str:
+    """Describe why a detection command's output carried no ids."""
+    text = (output or "").strip()
+    if not text:
+        return "no output"
+    lowered = text.lower()
+    for hint in _UNUSABLE_OUTPUT_HINTS:
+        if hint in lowered:
+            return f"output reports '{hint}'"
+    return "output carried no device/revision id"
+
+
 def detect_device_revision(*, cmake_executor=None) -> str:
-    """Return the GPU ``<device_id>_<revision>`` key, trying each source in order."""
+    """Return the GPU ``<device_id>_<revision>`` key, trying each source in order.
+
+    Which source answered is logged, and at warning level for the ones that did
+    not: a method silently giving way to a less trustworthy one below it is how
+    a wrong GPU gets reported, so the handover has to be visible in the run log.
+    """
     for name, cmd, pattern, default_revision in _DETECTION_METHODS:
         output = _run_detection(cmd, cmake_executor)
         key = _device_revision_from_output(output, pattern, default_revision)
         if key:
-            logger.debug("PCI device_id_revision from %s: %s", name, key)
+            logger.info("PCI device_id_revision from %s: %s", name, key)
             return key
-        logger.debug("PCI device id lookup via %s returned no usable ids; trying the next method", name)
-    logger.warning("No valid PCI DeviceID/RevisionID found via amd-smi, rocm-smi, lspci or PCI sysfs")
+        logger.warning(
+            "PCI device id lookup via %s returned no usable ids (%s); trying the next method",
+            name,
+            _unusable_output_reason(output),
+        )
+    logger.warning("No valid PCI DeviceID/RevisionID found via render node, amd-smi, rocm-smi, lspci or PCI sysfs")
     return ""
 
 
@@ -289,7 +362,7 @@ def detect_device_key(*, cmake_executor=None) -> str:
     """
     key = detect_device_revision(cmake_executor=cmake_executor)
     if not key:
-        raise ConfDirUnresolvedError("No GPU detected via amd-smi, rocm-smi, lspci or PCI sysfs")
+        raise ConfDirUnresolvedError("No GPU detected via render node, amd-smi, rocm-smi, lspci or PCI sysfs")
     return resolve_power_variant(key, cmake_executor=cmake_executor)
 
 
