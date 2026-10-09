@@ -1,0 +1,295 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+"""Fixtures for GPU-monitored e2e tests.
+
+Uses rocm-tests ``target_executor`` for GPU workloads and a separate
+monitor executor (``CpuExecutor`` / unmasked ``SshExecutor``) for
+``amd-smi monitor``, matching ``remote_node_plugin._monitoring_executor``.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import pathlib
+
+import pytest
+
+from tests.common.gpu_monitored.environment import detect_gpu_device_key
+from tests.common.gpu_monitored.executor_bridge import (
+    make_monitor_executor,
+    workload_executor_from,
+)
+from tests.common.gpu_monitored.framework_bridge import (
+    ensure_gpu_environment,
+    make_monitored_config,
+    resolve_gpu_identity,
+)
+from tests.common.gpu_monitored.orchestrator import MonitoredTestOrchestrator, TestOutcome
+from tests.common.gpu_monitored.validation import pretest_health_probe
+from tests.common.gpu_monitored.workloads import get_test
+from tests.common.gpu_monitored.workloads.base import BuildContext, BuildStatus
+from tests.e2e.system_tools.rvs.conftest import (  # noqa: F401
+    export_rvs_env_paths,
+    gpu_conf_dir,
+    rvs_binary as _rvs_binary,
+    rvs_find_conf,
+    rvs_source as _rvs_source,
+    transferbench_binary as _transferbench_binary,
+)
+
+logger = logging.getLogger(__name__)
+
+# pytest only auto-loads conftest.py for its own directory tree, so the RVS
+# build fixtures from ``tests/e2e/system_tools/rvs`` are re-exported here to
+# make them requestable by the monitored workloads below.
+rvs_binary = _rvs_binary
+rvs_source = _rvs_source
+transferbench_binary = _transferbench_binary
+
+_RVS_WORKLOADS = frozenset({"rvs_tst", "rvs_iet_stress"})
+_TRANSFERBENCH_WORKLOADS = frozenset({"transferbench"})
+_CUDAMEMTEST_WORKLOADS = frozenset({"cudamemtest"})
+
+_CUDA_MEMTEST_REPO_URL = "https://github.com/ComputationalRadiationPhysics/cuda_memtest.git"
+
+
+@pytest.fixture(scope="session")
+def _gpu_monitored_rvs_env(rvs_binary, rvs_source, rock_dir, compiler_build_dir, cmake_executor):
+    """Export RVS paths — only requested by workloads that drive ``rvs``."""
+    export_rvs_env_paths(
+        rvs_binary,
+        rvs_source,
+        rock_dir,
+        compiler_build_dir=compiler_build_dir,
+        cmake_executor=cmake_executor,
+    )
+
+
+@pytest.fixture(scope="session")
+def cuda_memtest_source(external_build, compiler_build_dir: str) -> str:
+    """Clone cuda_memtest once per session at the pinned commit (framework git helper)."""
+    from tests.common.gpu_monitored.workloads.cudamemtest import CudaMemtest
+
+    dest = pathlib.Path(compiler_build_dir) / "gpu_monitored" / "cuda_memtest"
+    src_dir = external_build.clone_repo(
+        _CUDA_MEMTEST_REPO_URL,
+        dest,
+        ref=CudaMemtest.COMMIT,
+        timeout=600.0,
+    )
+    external_build.assert_license_present(src_dir)
+    os.environ["ROCM_TEST_CUDA_MEMTEST_SRC"] = str(src_dir)
+    return str(src_dir)
+
+
+@pytest.fixture(scope="session")
+def _gpu_monitored_transferbench_env(transferbench_binary, rock_dir, compiler_build_dir, cmake_executor):
+    """Export TransferBench path without pulling in a full RVS build."""
+    export_rvs_env_paths(
+        None,
+        None,
+        rock_dir,
+        transferbench_binary=transferbench_binary,
+        compiler_build_dir=compiler_build_dir,
+        cmake_executor=cmake_executor,
+    )
+
+
+def _ensure_workload_prerequisites(request, test_name: str) -> None:
+    """Lazily resolve RVS / TransferBench fixtures only when a test needs them."""
+    if test_name in _RVS_WORKLOADS:
+        request.getfixturevalue("_gpu_monitored_rvs_env")
+    elif test_name in _TRANSFERBENCH_WORKLOADS:
+        request.getfixturevalue("_gpu_monitored_transferbench_env")
+    elif test_name in _CUDAMEMTEST_WORKLOADS:
+        request.getfixturevalue("cuda_memtest_source")
+
+
+@pytest.fixture(scope="session")
+def gpu_monitor_interval() -> int:
+    """Monitoring sample interval in seconds, overridable via env.
+
+    Defaults to 1 Hz to match the standalone suite (``--sample-interval``
+    default 1): the analysis thresholds — steady-state windows, ramp-up
+    detection, active-sample counts — are calibrated for per-second
+    telemetry. ``framework_config.gpu.monitor_interval_secs`` is
+    deliberately not consulted; that 15 s knob configures the framework's
+    separate ``--monitor-gpu`` background poller, and borrowing it here
+    made a 5-minute thermal test land only ~4 loaded samples per GPU.
+    """
+    env_val = os.environ.get("GPU_MONITOR_INTERVAL", "").strip()
+    return int(env_val) if env_val else 1
+
+
+@pytest.fixture
+def gpu_monitored_monitor_executor(target_executor, rock_dir):
+    """Executor for ``amd-smi monitor`` — no ``ROCR_VISIBLE_DEVICES`` mask.
+
+    Function-scoped because it wraps ``target_executor``, which pytest scopes per
+    test so each one gets the node and GPUs it was allocated. Construction is a
+    wrapper around that executor with no connection setup of its own, so the
+    per-test cost is negligible; the probing it feeds is cached below.
+    """
+    return make_monitor_executor(
+        workload_executor_from(target_executor),
+        rock_dir=rock_dir,
+    )
+
+
+@pytest.fixture(scope="session")
+def _gpu_identity_cache() -> dict[str, tuple[str, str, str]]:
+    """Session cache: host identity -> ``(arch, model, device_key)``.
+
+    GPU arch, model and device id are fixed properties of a node, but the probes
+    that read them need an executor bound to the node under test, which pytest
+    scopes per test. Caching per host is what keeps this to one detection pass
+    instead of one per workload, while still re-probing when a fleet run moves
+    to a different node.
+    """
+    return {}
+
+
+@pytest.fixture
+def gpu_monitored_gpu_identity(
+    target_executor,
+    gpu_monitored_monitor_executor,
+    gpu_arch,
+    rock_dir,
+    cmake_executor,
+    _gpu_identity_cache: dict,
+) -> tuple[str, str, str]:
+    """Return ``(arch, model, device_key)`` for the node under test, once per host."""
+    first = next(iter(target_executor))
+    host_key = getattr(getattr(first, "node_spec", None), "label", None) or type(first).__name__
+
+    if host_key not in _gpu_identity_cache:
+        arch, model, _bdf = resolve_gpu_identity(gpu_monitored_monitor_executor, gpu_arch, rock_dir)
+        identity = (arch, model, detect_gpu_device_key(cmake_executor))
+        logger.info("gpu_monitored: GPU identity on %s: arch=%s model=%r device=%s", host_key, *identity)
+        _gpu_identity_cache[host_key] = identity
+
+    return _gpu_identity_cache[host_key]
+
+
+@pytest.fixture
+def monitored_config(
+    request,
+    rock_dir,
+    ld_path,
+    compiler_build_dir,
+    framework_config,
+    gpu_monitor_interval,
+    target_executor,
+    gpu_monitored_gpu_identity,
+    cmake_executor,
+):
+    """Per-test :class:`Config` from framework GPU detection + ROCm paths."""
+    num_gpus = target_executor.visible_gpu_count
+    arch, model, device_key = gpu_monitored_gpu_identity
+
+    cfg = make_monitored_config(
+        rock_dir=rock_dir,
+        ld_path=ld_path,
+        compiler_build_dir=compiler_build_dir,
+        artifact_dir=framework_config.framework.artifact_dir,
+        sample_interval=gpu_monitor_interval,
+        num_gpus=num_gpus,
+        gpu_arch=arch,
+        gpu_model=model,
+        gpu_device_id=device_key,
+    )
+    # Binaries and config trees are looked for where the workload will run.
+    # ``cmake_executor`` is None in local mode, which leaves every probe reading
+    # this filesystem exactly as before.
+    cfg.probe_executor = cmake_executor
+    ensure_gpu_environment(cfg)
+    return cfg
+
+
+def _test_name_from_request(request) -> str:
+    name = request.node.name
+    if name.startswith("test_gpu_") and name.endswith("_monitored"):
+        return name[len("test_gpu_") : -len("_monitored")]
+    return name.replace("test_", "")
+
+
+@pytest.fixture
+def run_monitored_test(
+    request,
+    monitored_config,
+    target_executor,
+    gpu_monitored_monitor_executor,
+):
+    """Run a registered gpu_monitored workload with full monitoring pipeline."""
+
+    def _run(test_name: str | None = None) -> TestOutcome:
+        name = test_name or _test_name_from_request(request)
+        test = get_test(name)
+        if test is None:
+            pytest.fail(f"Unknown gpu_monitored test: {name}")
+
+        _ensure_workload_prerequisites(request, name)
+
+        config = monitored_config
+        # Resolved here rather than inside the workload so the qualification
+        # matrix is read through the same fixture the RVS module tests use --
+        # which probes the node under test, not the host running pytest -- and
+        # so an unqualified module skips from the fixture layer, where skipping
+        # is legal, instead of being reported back as an UNSUPPORTED outcome.
+        conf_name = getattr(test, "_conf_name", "")
+        if conf_name:
+            config.rvs_conf_path = request.getfixturevalue("rvs_find_conf")(conf_name)
+        lookback = int(os.environ.get("GPU_MONITOR_PRETEST_LOOKBACK_MIN", "30"))
+        clean, health_summary = pretest_health_probe(
+            lookback_min=lookback,
+            cpu_executor=gpu_monitored_monitor_executor,
+        )
+        config.pretest_kernel_dirty = not clean
+        if health_summary.get("critical_total", 0) > 0:
+            config.inherited_critical_categories = [
+                cat for cat, count in health_summary.get("by_category", {}).items() if count > 0
+            ]
+
+        run_dir = config.log_root / name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        with open(run_dir / "pretest_health.json", "w") as fh:
+            json.dump(health_summary, fh, indent=2)
+
+        strict_pretest = os.environ.get("GPU_MONITOR_STRICT_PRETEST", "").lower() in ("1", "true", "yes")
+        if strict_pretest and not clean:
+            pytest.fail(
+                f"Pre-test kernel health check failed: {health_summary.get('critical_total', 0)} "
+                f"critical event(s) in last {lookback} minutes"
+            )
+
+        build_ctx = BuildContext(
+            config=config,
+            monitor_executor=gpu_monitored_monitor_executor,
+        )
+        build_status = test.build(build_ctx)
+        if build_status == BuildStatus.SOURCE_MISSING:
+            pytest.skip(f"{name}: workload source not available")
+        if build_status == BuildStatus.BUILD_FAILED:
+            pytest.fail(f"{name}: build failed — prerequisites missing or build error")
+        if not test.available(config):
+            pytest.skip(f"{name}: workload prerequisites not available on this host")
+
+        orchestrator = MonitoredTestOrchestrator(
+            config,
+            target_executor=target_executor,
+            monitor_executor=gpu_monitored_monitor_executor,
+        )
+        outcome = orchestrator.run_one(test)
+
+        if outcome.status == "UNSUPPORTED":
+            reason = outcome.validation or f"{name}: unsupported on this device"
+            if not reason.startswith(f"{name}:"):
+                reason = f"{name}: {reason}"
+            pytest.skip(reason)
+        if outcome.status == "BUILD_FAILED":
+            pytest.fail(outcome.validation or f"{name}: build failed at runtime")
+        return outcome
+
+    return _run
