@@ -203,7 +203,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ml_frameworks/torchvision": [
         "hw.multi_gpu",
         "layer.math_lib",
-        "ci.nightly",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
@@ -230,6 +230,14 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # amd-smi telemetry sampled while RVS IET loads every GPU on the node.
+    "tests/e2e/system_tools/amd_smi": [
+        "hw.multi_gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/hip_directed": [
         "hw.gpu",
         "layer.runtime",
@@ -242,7 +250,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ml_frameworks/apex": [
         "hw.multi_gpu",
         "layer.math_lib",
-        "ci.nightly",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
@@ -254,10 +262,29 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # CK (Composable Kernel) tile tests: FMHA dropout and stream-k GEMM.
+    # Sparse-clones rocm-libraries; nightly; MI3xx (gfx942/gfx950) only.
+    "tests/e2e/ck": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # rocm_agent_enumerator system tool: validates GPU agent discovery and
     # cross-tool consistency between rocm_agent_enumerator and rocminfo.
     "tests/e2e/system_tools/rocm_agent_enumerator": [
         "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # ROCm Validation Suite modules: each test drives one RVS module against its
+    # own conf and asserts on the verdicts RVS reports. Every module qualifies
+    # the whole node, hence multi_gpu rather than the system_tools default.
+    "tests/e2e/system_tools/rvs": [
+        "hw.multi_gpu",
         "layer.runtime",
         "ci.nightly",
         "e2e.stack",
