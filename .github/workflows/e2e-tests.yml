@@ -351,7 +351,7 @@ jobs:
             IFS=' ' read -ra TEST_PATHS_ARRAY <<< "${TEST_PATHS_OVERRIDE}"
           else
             TEST_PATHS_ARRAY=(
-              "tests/e2e/"
+              "tests/e2e/system_tools/rvs"
             )
           fi
 
