@@ -37,20 +37,22 @@ _RVS_REF = os.environ.get("ROCM_TEST_RVS_REF", "master")
 
 # Build prerequisites ROCm does not ship: yaml-cpp is probed by the RVS
 # CMakeLists, libnuma by its bundled TransferBench, which aborts later in the
-# same configure. Package names and the EPEL requirement come from the RVS
-# README; pciutils is absent because RVS builds its own static libpci. SLES
-# carries yaml-cpp-devel only in the subscription-gated Development module.
+# same configure. gcc is for the pciutils RVS vendors and builds itself -- its
+# Makefile pins ``CC=$(CROSS_COMPILE)gcc``, so the ROCm clang on PATH does not
+# satisfy it. Package names and the EPEL requirement come from the RVS README;
+# SLES carries yaml-cpp-devel only in the subscription-gated Development module.
 _PREREQ_SCRIPT = (
-    "if [ -f /usr/include/yaml-cpp/yaml.h ] && [ -f /usr/include/numa.h ]; then exit 0; fi; "
+    "if [ -f /usr/include/yaml-cpp/yaml.h ] && [ -f /usr/include/numa.h ] "
+    "&& command -v gcc >/dev/null 2>&1; then exit 0; fi; "
     'SUDO=""; if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then SUDO=sudo; fi; '
     "if command -v apt-get >/dev/null 2>&1; then "
-    "  $SUDO apt-get update && $SUDO apt-get install -y libyaml-cpp-dev libnuma-dev; "
+    "  $SUDO apt-get update && $SUDO apt-get install -y libyaml-cpp-dev libnuma-dev gcc; "
     "elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then "
     "  DNF=$(command -v dnf || command -v yum); "
     "  $SUDO $DNF install -y epel-release || true; "
-    "  $SUDO $DNF install -y yaml-cpp-devel yaml-cpp-static numactl-devel; "
+    "  $SUDO $DNF install -y yaml-cpp-devel yaml-cpp-static numactl-devel gcc; "
     "elif command -v zypper >/dev/null 2>&1; then "
-    "  $SUDO zypper --non-interactive install yaml-cpp-devel libnuma-devel; "
+    "  $SUDO zypper --non-interactive install yaml-cpp-devel libnuma-devel gcc; "
     "else "
     '  echo "no supported package manager (apt-get/dnf/yum/zypper)" >&2; exit 1; '
     "fi"
