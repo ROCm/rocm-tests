@@ -41,8 +41,11 @@ def hipblas_samples_bin_dir(target_executor, ld_path: dict, rock_dir: str) -> st
     """Return rock_dir/bin after verifying hipblas sample binaries are present."""
     ld = ld_path["LD_LIBRARY_PATH"]
     bin_dir = os.path.join(rock_dir, "bin")
-    probe = target_executor.run(f"env LD_LIBRARY_PATH={ld} test -f {bin_dir}/{_SENTINEL} && echo OK")
-    if not probe.ok or "OK" not in probe.stdout:
+    probe = target_executor.run(
+        f"env LD_LIBRARY_PATH={ld} test -f {bin_dir}/{_SENTINEL} && echo OK",
+        timeout=60.0,
+    )
+    if not probe.ok or probe.stdout.strip() != "OK":
         pytest.skip(
             f"hipblas-samples not installed — binaries not found in {bin_dir}. "
             "Install the 'hipblas-samples' package from the ROCm repository."
