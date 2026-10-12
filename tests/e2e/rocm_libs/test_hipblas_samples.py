@@ -29,7 +29,7 @@ _SAMPLES: list[tuple[str, str]] = [
     ("hipblas-example-c", "SSCAL TEST PASSES"),
     ("hipblas-example-gemmEx", "PASS: max_relative_error ="),
     ("hipblas-example-hgemm-half", "PASS: max_relative_error ="),
-    ("hipblas-example-hip-complex-her2", "PASS\n"),
+    ("hipblas-example-hip-complex-her2", "PASS"),
     ("hipblas-example-scal-ex", "SCALEX TEST PASSES"),
     ("hipblas-example-sgemm", "PASS: max_relative_error ="),
     ("hipblas-example-sgemm-strided-batched", "PASS: max_relative_error ="),
@@ -60,3 +60,4 @@ def test_hipblas_sample(
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     )
     assert pass_token in result.stdout, f"{binary_name}: expected '{pass_token}' in stdout:\n{result.stdout[:2000]}"
+    assert "FAILED" not in result.stdout, f"{binary_name}: unexpected FAILED in stdout:\n{result.stdout[:2000]}"
