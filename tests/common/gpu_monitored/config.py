@@ -94,6 +94,10 @@ class Config:
     # Config the RVS qualification matrix names for this GPU, resolved by the
     # shared ``rvs_find_conf`` fixture so it points at the node under test.
     rvs_conf_path: str = ""
+    # Where the ``cuda_memtest_source`` fixture put its checkout. Carried on the
+    # config rather than the environment so concurrent xdist workers each read
+    # their own run's path and a caller's ROCM_TEST_CUDA_MEMTEST_SRC survives.
+    cuda_memtest_src: str = ""
     # Executor used to look for binaries and config trees. ``None`` means the
     # workload runs here, so the checks read this filesystem; with a remote node
     # it carries the probes to the machine that will actually run them.

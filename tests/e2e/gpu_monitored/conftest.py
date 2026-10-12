@@ -80,7 +80,6 @@ def cuda_memtest_source(external_build, compiler_build_dir: str) -> str:
         timeout=600.0,
     )
     external_build.assert_license_present(src_dir)
-    os.environ["ROCM_TEST_CUDA_MEMTEST_SRC"] = str(src_dir)
     return str(src_dir)
 
 
@@ -97,14 +96,14 @@ def _gpu_monitored_transferbench_env(transferbench_binary, rock_dir, compiler_bu
     )
 
 
-def _ensure_workload_prerequisites(request, test_name: str) -> None:
+def _ensure_workload_prerequisites(request, test_name: str, config) -> None:
     """Lazily resolve RVS / TransferBench fixtures only when a test needs them."""
     if test_name in _RVS_WORKLOADS:
         request.getfixturevalue("_gpu_monitored_rvs_env")
     elif test_name in _TRANSFERBENCH_WORKLOADS:
         request.getfixturevalue("_gpu_monitored_transferbench_env")
     elif test_name in _CUDAMEMTEST_WORKLOADS:
-        request.getfixturevalue("cuda_memtest_source")
+        config.cuda_memtest_src = request.getfixturevalue("cuda_memtest_source")
 
 
 @pytest.fixture(scope="session")
@@ -230,9 +229,9 @@ def run_monitored_test(
         if test is None:
             pytest.fail(f"Unknown gpu_monitored test: {name}")
 
-        _ensure_workload_prerequisites(request, name)
-
         config = monitored_config
+        _ensure_workload_prerequisites(request, name, config)
+
         # Resolved here rather than inside the workload so the qualification
         # matrix is read through the same fixture the RVS module tests use --
         # which probes the node under test, not the host running pytest -- and

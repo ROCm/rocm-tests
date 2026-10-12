@@ -62,6 +62,8 @@ class CudaMemtest(Test):
         override = os.environ.get("ROCM_TEST_CUDA_MEMTEST_SRC", "").strip()
         if override:
             return Path(override)
+        if config.cuda_memtest_src:
+            return Path(config.cuda_memtest_src)
         return config.build_dir / "cuda_memtest"
 
     def build(self, ctx: BuildContext) -> BuildStatus:  # noqa: C901
