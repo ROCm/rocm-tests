@@ -355,19 +355,22 @@ def hipblas_samples_bin_dir(
             jobs = resolve_parallel_jobs(remote_executor=cmake_executor)
             cmake_src = str(repo_dir)  # projects/hipblas — cmake -S source
 
-            configure_cmd = (
-                f"cmake -S {cmake_src} -B {build_dir}"
-                f" -DCMAKE_PREFIX_PATH={rock_dir}"
-                f" -DBUILD_CLIENTS_SAMPLES=ON"
-                f" -DBUILD_CLIENTS_TESTS=OFF"
-                f" -DBUILD_CLIENTS_BENCHMARKS=OFF"
-            )
+            configure_args = [
+                "cmake",
+                "-S", cmake_src,
+                "-B", build_dir,
+                f"-DCMAKE_PREFIX_PATH={rock_dir}",
+                "-DBUILD_CLIENTS_SAMPLES=ON",
+                "-DBUILD_CLIENTS_TESTS=OFF",
+                "-DBUILD_CLIENTS_BENCHMARKS=OFF",
+            ]
+            configure_cmd = " ".join(configure_args)
             logger.info("hipBLAS samples: configuring — %s", configure_cmd)
             if cmake_executor is not None:
                 cfg = cmake_executor.run(configure_cmd, timeout=build_timeout)
                 cfg_stdout, cfg_stderr = cfg.stdout, cfg.stderr
             else:
-                proc = subprocess.run(configure_cmd, shell=True, text=True, capture_output=True)
+                proc = subprocess.run(configure_args, text=True, capture_output=True)
                 cfg_stdout, cfg_stderr = proc.stdout, proc.stderr
                 logger.info("hipBLAS samples cmake configure stdout:\n%s", cfg_stdout[-3000:])
                 cfg = type(
@@ -387,13 +390,14 @@ def hipblas_samples_bin_dir(
                 )
             logger.info("hipBLAS samples: cmake configure done")
 
-            build_cmd = f"cmake --build {build_dir} -j {jobs}"
+            build_args = ["cmake", "--build", build_dir, "-j", str(jobs)]
+            build_cmd = " ".join(build_args)
             logger.info("hipBLAS samples: building with %d jobs — %s", jobs, build_cmd)
             if cmake_executor is not None:
                 bld = cmake_executor.run(build_cmd, timeout=build_timeout)
                 bld_stdout, bld_stderr = bld.stdout, bld.stderr
             else:
-                proc = subprocess.run(build_cmd, shell=True, text=True, capture_output=True)
+                proc = subprocess.run(build_args, text=True, capture_output=True)
                 bld_stdout, bld_stderr = proc.stdout, proc.stderr
                 logger.info("hipBLAS samples cmake build stdout:\n%s", bld_stdout[-3000:])
                 bld = type(
