@@ -18,6 +18,7 @@ from tests.e2e.rccl._workload import RESULTS_PASS_RE, all_reduce_perf_env
 
 @pytest.mark.hw.gpu
 @pytest.mark.runtime.medium
+@pytest.mark.xfail(reason="Known open issue [ROCM-32212]")
 def test_rccl_dual_kernel_build(
     target_executor,
     ld_path: dict,
