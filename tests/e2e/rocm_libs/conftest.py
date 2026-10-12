@@ -100,7 +100,7 @@ def small_sliding_contact_binary(gpu_arch: str | None, cmake_build_dir, require_
         artifact="small_sliding_contact",
         target="small_sliding_contact",
     )
-    return built_binary(os.path.join(build_dir, "small_sliding_contact"), "small_sliding_contact")
+    return str(built_binary(os.path.join(build_dir, "small_sliding_contact"), "small_sliding_contact"))
 
 
 @pytest.fixture(scope="session")
@@ -115,7 +115,7 @@ def jacobian_svd_multistream_binary(gpu_arch: str | None, cmake_build_dir, requi
         artifact="jacobian_svd_multistream",
         target="jacobian_svd_multistream",
     )
-    return built_binary(os.path.join(build_dir, "jacobian_svd_multistream"), "jacobian_svd_multistream")
+    return str(built_binary(os.path.join(build_dir, "jacobian_svd_multistream"), "jacobian_svd_multistream"))
 
 
 @pytest.fixture(scope="session")
@@ -130,7 +130,7 @@ def equilibration_batch_kalman_binary(gpu_arch: str | None, cmake_build_dir, req
         artifact="equilibration_batch_kalman",
         target="equilibration_batch_kalman",
     )
-    return built_binary(os.path.join(build_dir, "equilibration_batch_kalman"), "equilibration_batch_kalman")
+    return str(built_binary(os.path.join(build_dir, "equilibration_batch_kalman"), "equilibration_batch_kalman"))
 
 
 @pytest.fixture(scope="session")
@@ -147,7 +147,8 @@ def async_mixed_precision_workflow_binary(
         artifact="async_mixed_precision_workflow",
         target="async_mixed_precision_workflow",
     )
-    return built_binary(os.path.join(build_dir, "async_mixed_precision_workflow"), "async_mixed_precision_workflow")
+    binary = built_binary(os.path.join(build_dir, "async_mixed_precision_workflow"), "async_mixed_precision_workflow")
+    return str(binary)
 
 
 @pytest.fixture(scope="session")
@@ -164,7 +165,7 @@ def sparse_csrrf_analysis_reuse_binary(
         artifact="sparse_csrrf_analysis_reuse",
         target="sparse_csrrf_analysis_reuse",
     )
-    return built_binary(os.path.join(build_dir, "sparse_csrrf_analysis_reuse"), "sparse_csrrf_analysis_reuse")
+    return str(built_binary(os.path.join(build_dir, "sparse_csrrf_analysis_reuse"), "sparse_csrrf_analysis_reuse"))
 
 
 @pytest.fixture(scope="session")
@@ -179,7 +180,7 @@ def hip_mempool_probe_binary(gpu_arch: str | None, cmake_build_dir, require_gpu_
         artifact="hip_mempool_probe",
         target="hip_mempool_probe",
     )
-    return built_binary(os.path.join(build_dir, "hip_mempool_probe"), "hip_mempool_probe")
+    return str(built_binary(os.path.join(build_dir, "hip_mempool_probe"), "hip_mempool_probe"))
 
 
 @pytest.fixture(scope="session")
@@ -194,7 +195,7 @@ def hip_complex_her2_binary(gpu_arch: str | None, cmake_build_dir, require_gpu_a
         artifact="hip_complex_her2",
         target="hip_complex_her2",
     )
-    return built_binary(os.path.join(build_dir, "hip_complex_her2"), "hip_complex_her2")
+    return str(built_binary(os.path.join(build_dir, "hip_complex_her2"), "hip_complex_her2"))
 
 
 @pytest.fixture(scope="session")
@@ -217,7 +218,7 @@ def miopen_np_nts_tensors_binary(
         artifact="miopen_np_nts_tensors",
         target="miopen_np_nts_tensors",
     )
-    return built_binary(os.path.join(build_dir, "miopen_np_nts_tensors"), "miopen_np_nts_tensors")
+    return str(built_binary(os.path.join(build_dir, "miopen_np_nts_tensors"), "miopen_np_nts_tensors"))
 
 
 @pytest.fixture(scope="session")
@@ -265,7 +266,7 @@ def hip_mempool_env(target_executor, ld_path: dict, hip_mempool_probe_binary: st
             )
         _hip_mempool_env_cache[host_key] = decision
 
-    return _hip_mempool_env_cache[host_key]
+    return str(_hip_mempool_env_cache[host_key])
 
 
 # requested_gpu_count is provided by the shared suite-level conftest (tests/conftest.py).
@@ -299,6 +300,8 @@ def hipblas_samples_bin_dir(
     Returns:
         Absolute path to the directory containing the sample binaries.
     """
+    if not rock_dir:
+        pytest.fail("rock_dir is empty — pass --rock-dir or set ROCK_DIR to the ROCm install path.")
     rocm_bin = os.path.join(rock_dir, "bin")
     sentinel_in_pkg = os.path.join(rocm_bin, _HIPBLAS_SAMPLE_SENTINEL)
 
@@ -306,7 +309,7 @@ def hipblas_samples_bin_dir(
     # Use cmake_executor for remote nodes; fall back to local os.path.isfile.
     # Both paths are session-safe — no function-scoped fixture is needed here.
     if cmake_executor is not None:
-        probe = cmake_executor.run(f"test -f {sentinel_in_pkg}", timeout=15.0)
+        probe = cmake_executor.run(f"test -f '{sentinel_in_pkg}'", timeout=15.0)
         found_in_pkg = probe.ok
     else:
         found_in_pkg = os.path.isfile(sentinel_in_pkg)
@@ -346,7 +349,7 @@ def hipblas_samples_bin_dir(
     # the sentinel inside the lock and skip straight to running the binaries.
     with external_build_lock(build_dir):
         already_built = (
-            cmake_executor.run(f"test -f {sentinel_in_build}", timeout=15.0).ok
+            cmake_executor.run(f"test -f '{sentinel_in_build}'", timeout=15.0).ok
             if cmake_executor is not None
             else os.path.isfile(sentinel_in_build)
         )
@@ -357,8 +360,10 @@ def hipblas_samples_bin_dir(
 
             configure_args = [
                 "cmake",
-                "-S", cmake_src,
-                "-B", build_dir,
+                "-S",
+                cmake_src,
+                "-B",
+                build_dir,
                 f"-DCMAKE_PREFIX_PATH={rock_dir}",
                 "-DBUILD_CLIENTS_SAMPLES=ON",
                 "-DBUILD_CLIENTS_TESTS=OFF",
@@ -370,7 +375,7 @@ def hipblas_samples_bin_dir(
                 cfg = cmake_executor.run(configure_cmd, timeout=build_timeout)
                 cfg_stdout, cfg_stderr = cfg.stdout, cfg.stderr
             else:
-                proc = subprocess.run(configure_args, text=True, capture_output=True)
+                proc = subprocess.run(configure_args, text=True, capture_output=True, timeout=build_timeout)
                 cfg_stdout, cfg_stderr = proc.stdout, proc.stderr
                 logger.info("hipBLAS samples cmake configure stdout:\n%s", cfg_stdout[-3000:])
                 cfg = type(
@@ -397,7 +402,7 @@ def hipblas_samples_bin_dir(
                 bld = cmake_executor.run(build_cmd, timeout=build_timeout)
                 bld_stdout, bld_stderr = bld.stdout, bld.stderr
             else:
-                proc = subprocess.run(build_args, text=True, capture_output=True)
+                proc = subprocess.run(build_args, text=True, capture_output=True, timeout=build_timeout)
                 bld_stdout, bld_stderr = proc.stdout, proc.stderr
                 logger.info("hipBLAS samples cmake build stdout:\n%s", bld_stdout[-3000:])
                 bld = type(

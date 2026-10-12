@@ -29,7 +29,7 @@ _SAMPLES: list[tuple[str, str]] = [
     ("hipblas-example-c", "SSCAL TEST PASSES"),
     ("hipblas-example-gemmEx", "PASS: max_relative_error ="),
     ("hipblas-example-hgemm-half", "PASS: max_relative_error ="),
-    ("hipblas-example-hip-complex-her2", "PASS"),
+    ("hipblas-example-hip-complex-her2", "PASS\n"),
     ("hipblas-example-scal-ex", "SCALEX TEST PASSES"),
     ("hipblas-example-sgemm", "PASS: max_relative_error ="),
     ("hipblas-example-sgemm-strided-batched", "PASS: max_relative_error ="),
@@ -39,7 +39,7 @@ _SAMPLES: list[tuple[str, str]] = [
 ]
 
 
-@pytest.mark.runtime.fast
+@pytest.mark.runtime.fast  # type: ignore[attr-defined]
 @pytest.mark.parametrize(("binary_name", "pass_token"), _SAMPLES, ids=[s[0] for s in _SAMPLES])
 def test_hipblas_sample(
     hipblas_samples_bin_dir: str,
