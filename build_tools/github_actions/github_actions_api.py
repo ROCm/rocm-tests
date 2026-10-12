@@ -13,6 +13,8 @@ See also https://pypi.org/project/github-action-utils/.
 
 import base64
 import binascii
+from collections.abc import Mapping
+import contextlib
 from enum import Enum, auto
 import json
 import logging
@@ -22,10 +24,10 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Any, Mapping
+from typing import Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import urlopen, Request
+from urllib.request import Request, urlopen
 
 
 def _log(*args, **kwargs):
@@ -162,8 +164,7 @@ class GitHubAPI:
             GitHubAPIError: If the request fails for any reason.
         """
         assert self._gh_cli_path is not None, (
-            "_send_request_via_gh_cli called without gh CLI path set. "
-            "Call get_auth_method() first."
+            "_send_request_via_gh_cli called without gh CLI path set. " "Call get_auth_method() first."
         )
 
         # Strip the base URL to get the API path
@@ -178,13 +179,9 @@ class GitHubAPI:
                 timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as e:
-            raise GitHubAPIError(
-                f"gh api request timed out after {timeout_seconds}s for {api_path}"
-            ) from e
+            raise GitHubAPIError(f"gh api request timed out after {timeout_seconds}s for {api_path}") from e
         except OSError as e:
-            raise GitHubAPIError(
-                f"Failed to execute gh CLI at {self._gh_cli_path}: {e}"
-            ) from e
+            raise GitHubAPIError(f"Failed to execute gh CLI at {self._gh_cli_path}: {e}") from e
 
         if result.returncode != 0:
             stderr = result.stderr or "(no error message)"
@@ -196,9 +193,7 @@ class GitHubAPI:
         try:
             return json.loads(result.stdout)
         except json.JSONDecodeError as e:
-            raise GitHubAPIError(
-                f"gh api returned invalid JSON: {e.msg} at position {e.pos}"
-            ) from e
+            raise GitHubAPIError(f"gh api returned invalid JSON: {e.msg} at position {e.pos}") from e
 
     def _send_request_via_rest_api(self, url: str, timeout_seconds: int) -> object:
         """Sends a GitHub API request using the REST API directly.
@@ -215,10 +210,8 @@ class GitHubAPI:
         except HTTPError as e:
             # Try to read the error response body for more context
             error_body = ""
-            try:
+            with contextlib.suppress(Exception):
                 error_body = e.read().decode("utf-8")
-            except Exception:
-                pass  # If we can't read it, continue with generic message
 
             if e.code == 403:
                 # Check if this is a rate limit error
@@ -234,26 +227,19 @@ class GitHubAPI:
                 ) from e
             elif e.code == 404:
                 raise GitHubAPIError(
-                    f"Resource not found (404) for {url}. "
-                    f"Verify the repository, workflow, or run ID exists."
+                    f"Resource not found (404) for {url}. " f"Verify the repository, workflow, or run ID exists."
                 ) from e
             else:
-                raise GitHubAPIError(
-                    f"HTTP {e.code} error for {url}: {e.reason}"
-                ) from e
+                raise GitHubAPIError(f"HTTP {e.code} error for {url}: {e.reason}") from e
         except URLError as e:
             raise GitHubAPIError(f"Network error for {url}: {e.reason}") from e
         except TimeoutError as e:
-            raise GitHubAPIError(
-                f"Request timed out after {timeout_seconds}s for {url}"
-            ) from e
+            raise GitHubAPIError(f"Request timed out after {timeout_seconds}s for {url}") from e
 
         try:
             return json.loads(body)
         except json.JSONDecodeError as e:
-            raise GitHubAPIError(
-                f"Invalid JSON response from {url}: {e.msg} at position {e.pos}"
-            ) from e
+            raise GitHubAPIError(f"Invalid JSON response from {url}: {e.msg} at position {e.pos}") from e
 
     def send_request(self, url: str, timeout_seconds: int = 300) -> object:
         """Sends a request to the given GitHub REST API URL.
@@ -336,7 +322,7 @@ def gha_set_env(vars: Mapping[str, str | Path]):
         return
 
     with open(env_file, "a") as f:
-        f.writelines(f"{k}={str(v)}" + "\n" for k, v in vars.items())
+        f.writelines(f"{k}={v!s}" + "\n" for k, v in vars.items())
 
 
 def gha_set_output(vars: Mapping[str, str | Path]):
@@ -357,8 +343,8 @@ def gha_set_output(vars: Mapping[str, str | Path]):
 
     with open(step_output_file, "a") as f:
         for k, v in vars.items():
-            print(f"OUTPUT {k}={str(v)}")
-            f.write(f"{k}={str(v)}\n")
+            print(f"OUTPUT {k}={v!s}")
+            f.write(f"{k}={v!s}\n")
 
 
 def gha_append_step_summary(summary: str):
@@ -394,10 +380,10 @@ def gha_load_github_event() -> dict[str, Any]:
     """
     path = os.environ["GITHUB_EVENT_PATH"]
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        return cast(dict[str, Any], json.load(f))
 
 
-def gha_send_request(url: str, timeout_seconds: int = 300) -> object:
+def gha_send_request(url: str, timeout_seconds: int = 300) -> Any:
     """Sends a request to the given GitHub REST API URL and returns the response.
 
     Authentication is handled automatically:
@@ -435,7 +421,7 @@ def gha_query_workflow_run_by_id(github_repository: str, workflow_run_id: str) -
     See: https://docs.github.com/en/rest/actions/workflow-runs#get-a-workflow-run
     """
     url = f"https://api.github.com/repos/{github_repository}/actions/runs/{workflow_run_id}"
-    return gha_send_request(url)
+    return cast(dict[str, Any], gha_send_request(url))
 
 
 # TODO: Consider accepting a git ref (branch/tag) here and resolving it
@@ -472,8 +458,8 @@ def gha_query_workflow_runs_for_commit(
         f"/actions/workflows/{workflow_file_name}/runs"
         f"?head_sha={git_commit_sha}&sort=created&direction=desc"
     )
-    response = gha_send_request(url)
-    runs = response.get("workflow_runs", [])
+    response: dict[str, Any] = gha_send_request(url)
+    runs: list[dict[str, Any]] = response.get("workflow_runs", [])
     # Sort client-side as defense in depth — the API default order is not
     # documented and community reports suggest it may not be chronological.
     runs.sort(key=lambda r: r["created_at"], reverse=True)
@@ -498,11 +484,11 @@ def gha_query_last_successful_workflow_run(
     """
     # Use GitHub API query parameters to pre-filter for successful runs on the specified branch
     url = f"https://api.github.com/repos/{github_repository}/actions/workflows/{workflow_name}/runs?status=success&branch={branch}&per_page=100&sort=created&direction=desc"
-    response = gha_send_request(url)
+    response: dict[str, Any] = gha_send_request(url)
 
     # Return the first (most recent) successful run
     if response and response.get("workflow_runs"):
-        return response["workflow_runs"][0]
+        return cast(dict[str, Any], response["workflow_runs"][0])
     return None
 
 
@@ -527,9 +513,7 @@ def gha_query_recent_branch_commits(
         List of commit SHAs, most recent first.
     """
     if max_count > 100:
-        _log(
-            f"Warning: max_count of {max_count} commits to query exceeds API per_page limit of 100"
-        )
+        _log(f"Warning: max_count of {max_count} commits to query exceeds API per_page limit of 100")
 
     url = f"https://api.github.com/repos/{github_repository_name}/commits?sha={branch}&per_page={max_count}"
     response = gha_send_request(url)
@@ -554,8 +538,8 @@ def gha_resolve_git_ref(github_repository: str, ref: str) -> str:
     """
     encoded_ref = quote(ref, safe="")
     url = f"https://api.github.com/repos/{github_repository}/commits/{encoded_ref}"
-    response = gha_send_request(url)
-    return response["sha"]
+    response: dict[str, Any] = gha_send_request(url)
+    return cast(str, response["sha"])
 
 
 def gha_fetch_file_contents(github_repository: str, path: str, ref: str) -> bytes:
@@ -580,25 +564,14 @@ def gha_fetch_file_contents(github_repository: str, path: str, ref: str) -> byte
     """
     encoded_path = quote(path, safe="/")
     encoded_ref = quote(ref, safe="")
-    url = (
-        f"https://api.github.com/repos/{github_repository}/contents/"
-        f"{encoded_path}?ref={encoded_ref}"
-    )
+    url = f"https://api.github.com/repos/{github_repository}/contents/" f"{encoded_path}?ref={encoded_ref}"
     response = gha_send_request(url)
     if not isinstance(response, dict) or response.get("type") != "file":
-        response_type = (
-            response.get("type") if isinstance(response, dict) else type(response)
-        )
+        response_type = response.get("type") if isinstance(response, dict) else type(response)
+        raise GitHubAPIError(f"Expected GitHub contents response for a file at {path!r}, " f"got {response_type!r}")
+    if response.get("encoding") != "base64" or not isinstance(response.get("content"), str):
         raise GitHubAPIError(
-            f"Expected GitHub contents response for a file at {path!r}, "
-            f"got {response_type!r}"
-        )
-    if response.get("encoding") != "base64" or not isinstance(
-        response.get("content"), str
-    ):
-        raise GitHubAPIError(
-            f"Expected base64 GitHub contents response for {path!r}; "
-            "use the Git blobs API for larger files"
+            f"Expected base64 GitHub contents response for {path!r}; " "use the Git blobs API for larger files"
         )
     try:
         return base64.b64decode(response["content"])
@@ -606,17 +579,13 @@ def gha_fetch_file_contents(github_repository: str, path: str, ref: str) -> byte
         raise GitHubAPIError(f"Failed to decode GitHub contents for {path!r}") from e
 
 
-def gha_fetch_text_file_contents(
-    github_repository: str, path: str, ref: str, *, encoding: str = "utf-8"
-) -> str:
+def gha_fetch_text_file_contents(github_repository: str, path: str, ref: str, *, encoding: str = "utf-8") -> str:
     """Fetch and decode a text file from a GitHub repo at a specific ref."""
     contents = gha_fetch_file_contents(github_repository, path, ref)
     try:
         return contents.decode(encoding)
     except UnicodeDecodeError as e:
-        raise GitHubAPIError(
-            f"Failed to decode GitHub contents for {path!r} as {encoding}"
-        ) from e
+        raise GitHubAPIError(f"Failed to decode GitHub contents for {path!r} as {encoding}") from e
 
 
 # TODO: Consider moving str2bool to a general-purpose utils module. It's useful
@@ -626,9 +595,7 @@ def str2bool(value: str | None) -> bool:
     if not value:
         return False
     if not isinstance(value, str):
-        raise ValueError(
-            f"Expected a string value for boolean conversion, got {type(value)}"
-        )
+        raise ValueError(f"Expected a string value for boolean conversion, got {type(value)}")
     value = value.strip().lower()
     if value in (
         "1",
@@ -667,13 +634,12 @@ def str2bool(value: str | None) -> bool:
 # TODO(#3489): Refactor get_visible_gpu_count and get_first_gpu_architecture to share a
 # common helper that runs rocminfo and returns matching lines; both functions duplicate the first ~12 lines.
 def get_visible_gpu_count(env=None, therock_bin_dir: str | None = None) -> int:
-    rocminfo = Path(therock_bin_dir) / "rocminfo"
+    rocminfo = Path(therock_bin_dir) / "rocminfo" if therock_bin_dir else Path("rocminfo")
     rocminfo_cmd = str(rocminfo) if rocminfo.exists() else "rocminfo"
 
     result = subprocess.run(
         [rocminfo_cmd],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         env=env,
         check=False,
@@ -686,13 +652,12 @@ def get_visible_gpu_count(env=None, therock_bin_dir: str | None = None) -> int:
 
 def get_first_gpu_architecture(env=None, therock_bin_dir: str | None = None) -> str:
     """Return the first visible GPU architecture (e.g. 'gfx942') from rocminfo."""
-    rocminfo = Path(therock_bin_dir) / "rocminfo"
+    rocminfo = Path(therock_bin_dir) / "rocminfo" if therock_bin_dir else Path("rocminfo")
     rocminfo_cmd = str(rocminfo) if rocminfo.exists() else "rocminfo"
 
     result = subprocess.run(
         [rocminfo_cmd],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         env=env,
         check=True,
@@ -710,5 +675,5 @@ def get_first_gpu_architecture(env=None, therock_bin_dir: str | None = None) -> 
 
 def is_asan():
     """Using artifact_group, determines if this is an asan build"""
-    ARTIFACT_GROUP = os.getenv("ARTIFACT_GROUP", "")
-    return "asan" in ARTIFACT_GROUP
+    artifact_group = os.getenv("ARTIFACT_GROUP", "")
+    return "asan" in artifact_group
