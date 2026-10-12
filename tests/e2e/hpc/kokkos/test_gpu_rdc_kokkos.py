@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 _CTEST_FAIL_BANNER = "The following tests FAILED"
 
 
-@pytest.mark.runtime.soak
+@pytest.mark.runtime.soak  # type: ignore[attr-defined]
 def test_gpu_rdc_kokkos(
     target_executor,
     rock_dir: str,
@@ -94,9 +94,7 @@ def test_gpu_rdc_kokkos(
     no_tests = f"Kokkos ctest ran no tests — build produced no test targets:\n{result.stdout[-2000:]}"
     assert "No tests were found" not in result.stdout, no_tests
     assert result.stdout.strip(), no_tests
-    assert _CTEST_FAIL_BANNER not in result.stdout, (
-        f"Kokkos ctest reported failing tests:\n{result.stdout[-4000:]}"
-    )
+    assert _CTEST_FAIL_BANNER not in result.stdout, f"Kokkos ctest reported failing tests:\n{result.stdout[-4000:]}"
     assert result.ok, (
         f"Kokkos ctest suite failed (exit={result.exit_code}):\n"
         f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-2000:]}"

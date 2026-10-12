@@ -74,14 +74,14 @@ def _safe_ref_name(ref: str) -> str:
 def _path_exists(path: str, cmake_executor) -> bool:
     """Return True when *path* is a file, transparently for local/remote nodes."""
     if cmake_executor is not None:
-        return cmake_executor.run(f"test -f {path}", timeout=30.0).ok
+        return bool(cmake_executor.run(f"test -f '{path}'", timeout=30.0).ok)
     return os.path.isfile(path)
 
 
 def _read_text(path: str, cmake_executor) -> str:
     """Read a small text file, transparently for local/remote nodes."""
     if cmake_executor is not None:
-        return cmake_executor.run(f"cat {path} 2>/dev/null", timeout=30.0).stdout or ""
+        return cmake_executor.run(f"cat '{path}' 2>/dev/null", timeout=30.0).stdout or ""
     try:
         with open(path, encoding="utf-8") as handle:
             return handle.read()
@@ -92,7 +92,9 @@ def _read_text(path: str, cmake_executor) -> str:
 def _write_text(path: str, value: str, cmake_executor) -> None:
     """Write a small text file, transparently for local/remote nodes."""
     if cmake_executor is not None:
-        cmake_executor.run(f"printf %s {value} > {path}", timeout=30.0)
+        import shlex
+
+        cmake_executor.run(f"printf %s {shlex.quote(value)} > '{path}'", timeout=30.0)
         return
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(value)
@@ -176,10 +178,13 @@ def kokkos_rdc_build(
     # --- resolve GPU arch (explicit flag > node-pool detection > hard fail) ----
     # An RDC device build must target a concrete GFX arch, so a missing arch is a
     # CI misconfiguration, not an optional resource.
+    if not rock_dir:
+        pytest.fail("rock_dir is empty — pass --rock-dir or set ROCK_DIR to the ROCm install path.")
+
     resolved_gpu_arch = gpu_arch
     if not resolved_gpu_arch and node_pool:
         try:
-            resolved_gpu_arch = next(iter(node_pool.gpus)).arch
+            resolved_gpu_arch = next(gpu for alloc in node_pool._allocators.values() for gpu in alloc._pool).arch
         except (StopIteration, AttributeError):
             resolved_gpu_arch = None
     if not resolved_gpu_arch:
