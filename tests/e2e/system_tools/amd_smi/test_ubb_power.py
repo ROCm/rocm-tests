@@ -105,14 +105,15 @@ def test_ubb_power_default(target_executor, ubb_env, gpu_arch: str | None) -> No
     result = target_executor.run(cmd)
     assert result.ok, f"amd-smi metric --power -g {gpu_id} failed:\n{result.stderr[:500]}"
 
+    assert "UBB_POWER" in (
+        result.stdout or ""
+    ), f"GPU {gpu_id} (OAM_ID 0): UBB_POWER field absent in output:\n{(result.stdout or '')[:500]}"
     watts = _parse_ubb_power(result.stdout or "")
-    if watts is None:
-        pytest.skip(
-            f"GPU {gpu_id} (OAM_ID 0): UBB_POWER is N/A — "
-            "field not yet available in this amd-smi build; "
-            f"output:\n{(result.stdout or '')[:500]}"
-        )
-    logger.info("test_ubb_power_default: PASS — GPU %s (OAM_ID 0) UBB_POWER = %.1f W", gpu_id, watts)
+    logger.info(
+        "test_ubb_power_default: PASS — GPU %s (OAM_ID 0) UBB_POWER = %s",
+        gpu_id,
+        f"{watts:.1f} W" if watts is not None else "N/A",
+    )
 
 
 # MI350 (gfx950) has 8 GPUs. UBB_POWER is a node-level aggregate — a single GPU
