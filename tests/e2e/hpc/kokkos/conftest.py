@@ -30,6 +30,7 @@ import logging
 import os
 import pathlib
 import re
+import shlex
 
 import pytest
 
@@ -92,8 +93,6 @@ def _read_text(path: str, cmake_executor) -> str:
 def _write_text(path: str, value: str, cmake_executor) -> None:
     """Write a small text file, transparently for local/remote nodes."""
     if cmake_executor is not None:
-        import shlex
-
         cmake_executor.run(f"printf %s {shlex.quote(value)} > '{path}'", timeout=30.0)
         return
     with open(path, "w", encoding="utf-8") as handle:
@@ -228,11 +227,9 @@ def kokkos_rdc_build(
 
     # --- build environment (never via os.environ) -----------------------------
     hipcc = _resolve_compilers(rock_dir, cmake_executor)
+    _q = shlex.quote(rocm_path)
     env_prefix = (
-        f"ROCM_PATH={rocm_path} "
-        f"HIP_PATH={rocm_path} "
-        f"PATH={rocm_path}/bin:$PATH "
-        f"LD_LIBRARY_PATH={rocm_path}/lib:$LD_LIBRARY_PATH"
+        f"ROCM_PATH={_q} " f"HIP_PATH={_q} " f"PATH={_q}/bin:$PATH " f"LD_LIBRARY_PATH={_q}/lib:$LD_LIBRARY_PATH"
     )
 
     # CPU host arch: a single ``-DKokkos_ARCH_NATIVE=ON`` (compile for the build
@@ -248,7 +245,7 @@ def kokkos_rdc_build(
         "-DKokkos_ENABLE_SERIAL=ON "
         "-DKokkos_ENABLE_TESTS=ON "
         "-DCMAKE_CXX_STANDARD=20 "
-        "-DKokkos_ENABLE_BENCHMARKS=on "
+        "-DKokkos_ENABLE_BENCHMARKS=ON "
         f"-DCMAKE_INSTALL_PREFIX={install_dir} "
         "-DKokkos_ENABLE_HIP_RELOCATABLE_DEVICE_CODE=ON "
         f"{arch_flag}"

@@ -34,6 +34,7 @@ CATEGORY_PROFILE for tests/e2e/hpc/kokkos/):
 """
 
 import logging
+import shlex
 
 import pytest
 
@@ -77,12 +78,15 @@ def test_gpu_rdc_kokkos(
     # injects them). The long per-test --timeout lets a slow-but-valid test
     # (e.g. the ~48 min atomic benchmark) finish rather than being killed.
     ctest_log = f"{build.build_dir}/results.log"
+    _qr = shlex.quote(rock_dir)
+    _qb = shlex.quote(build.build_dir)
+    _qc = shlex.quote(ctest_log)
     cmd = (
-        f"env ROCM_PATH={rock_dir} "
-        f"PATH={rock_dir}/bin:$PATH "
-        f"LD_LIBRARY_PATH={ld}:$LD_LIBRARY_PATH "
-        f"ctest --test-dir {build.build_dir} --output-on-failure "
-        f"--timeout {CTEST_TIMEOUT} --output-log {ctest_log}"
+        f"env ROCM_PATH={_qr} "
+        f"PATH={_qr}/bin:$PATH "
+        f"LD_LIBRARY_PATH={shlex.quote(ld)}:$LD_LIBRARY_PATH "
+        f"ctest --test-dir {_qb} --output-on-failure "
+        f"--timeout {CTEST_TIMEOUT} --output-log {_qc}"
     )
     logger.info("Kokkos ctest starting; full log -> %s (use `pytest -s` for live output)", ctest_log)
 
