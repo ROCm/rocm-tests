@@ -17,6 +17,18 @@ import re
 
 import pytest
 
+# hipBLASLt extended API tests that fail with HIPBLAS_STATUS_INVALID_VALUE due to
+# known issues and some of them needs extra dependencies like dual gpu / asic
+# specific etc. Moving them to excluded list
+_KNOWN_FAILING = (
+    "hipblaslt_gemm_get_algo_by_index_ext|"
+    "hipblaslt_gemm_get_all_algos_ext|"
+    "hipblaslt_gemm_tuning_splitk_ext|"
+    "hipblaslt_gemm_tuning_wgm_ext|"
+    "hipblaslt_gemm_dgelu_bgradb_ext|"
+    "hipblaslt_gemm_ext_bgradb"
+)
+
 # (category id, ctest -R name-regex). Buckets map to the rocm-examples areas by
 # test-name prefix. "tools" (rocgdb/rocprof/rocprofv3) needs debugger/profiler
 # environments and typically fails on a plain runner.
@@ -134,7 +146,7 @@ def test_rocm_examples(
 
     result = target_executor.run(
         f"env PATH={rocm_bin}:$PATH LD_LIBRARY_PATH={ld} ROCM_PATH={rock_dir} "
-        f"ctest --test-dir {rocm_examples_build_dir} --output-on-failure -R {pattern!r}",
+        f"ctest --test-dir {rocm_examples_build_dir} --output-on-failure -R {pattern!r} -E {_KNOWN_FAILING!r}",
         timeout=7200,
     )
     combined = result.stdout + result.stderr
