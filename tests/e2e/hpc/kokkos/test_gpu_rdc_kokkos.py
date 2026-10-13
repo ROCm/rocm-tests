@@ -26,7 +26,7 @@ CATEGORY_PROFILE for tests/e2e/hpc/kokkos/):
     hw.gpu        -- single GPU / single node (from CATEGORY_PROFILE)
     layer.runtime -- validates the HIP compiler's -fgpu-rdc (RDC) toolchain path,
                      not a math library (from CATEGORY_PROFILE)
-    ci.nightly    -- third-party build + full ctest suite (from CATEGORY_PROFILE)
+    ci.weekly     -- third-party build + full ctest suite (from CATEGORY_PROFILE)
     e2e.stack     -- full-stack end-to-end scenario (from CATEGORY_PROFILE)
     os.linux      -- bash/cmake/hipcc build path is Linux-only (from CATEGORY_PROFILE)
     runtime.soak  -- ~50 min total (~6 min build as a session fixture + ~43 min
