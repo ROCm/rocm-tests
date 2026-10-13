@@ -221,20 +221,23 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # amd-smi system tool suite: UBB_POWER/node THRESHOLD power metric checks plus
+    # amd-smi telemetry sampled while RVS IET loads the node. Read-only; nightly.
+    # runtime.* declared per function; tests that qualify every GPU on the node
+    # (RVS clock-violation, UBB power-under-load) declare hw.multi_gpu per function.
+    "tests/e2e/system_tools/amd_smi": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # amd-smi event tests: GPU reset event correctness and concurrency.
     # Weekly cadence (destructive reset); runtime.* is per test function.
     "tests/e2e/system_tools/amd_smi/events": [
         "hw.gpu",
         "layer.runtime",
         "ci.weekly",
-        "e2e.stack",
-        "os.linux",
-    ],
-    # amd-smi telemetry sampled while RVS IET loads every GPU on the node.
-    "tests/e2e/system_tools/amd_smi": [
-        "hw.multi_gpu",
-        "layer.runtime",
-        "ci.nightly",
         "e2e.stack",
         "os.linux",
     ],
@@ -311,6 +314,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ucc": [
         "hw.multi_gpu",
         "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/gpu_monitored": [
+        "hw.multi_gpu",
+        "layer.runtime",
         "ci.nightly",
         "e2e.stack",
         "os.linux",
