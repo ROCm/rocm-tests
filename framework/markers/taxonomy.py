@@ -163,10 +163,12 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     # -fgpu-rdc codegen path (a runtime/toolchain capability); Kokkos is only the
     # vehicle that drives RDC compilation, not the compute-under-test (contrast
     # QUDA/UCX, where the library's own numerics are the thing validated).
+    # ci.weekly: VERBOSE build (~6 min) + full ctest suite (~50 min) exceeds the
+    # 30 min nightly threshold — runtime.soak pairs with ci.weekly per taxonomy.
     "tests/e2e/hpc/kokkos": [
         "hw.gpu",
         "layer.runtime",
-        "ci.nightly",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
