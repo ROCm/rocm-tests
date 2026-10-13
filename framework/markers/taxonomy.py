@@ -221,7 +221,25 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    "tests/e2e/miopen": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/rocm_examples": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # amd-smi system tool suite: UBB_POWER/node THRESHOLD power metric checks plus
+    # amd-smi telemetry sampled while RVS IET loads the node. Read-only; nightly.
+    # runtime.* declared per function; tests that qualify every GPU on the node
+    # (RVS clock-violation, UBB power-under-load) declare hw.multi_gpu per function.
+    "tests/e2e/system_tools/amd_smi": [
         "hw.gpu",
         "layer.runtime",
         "ci.nightly",
@@ -261,6 +279,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # CMake packaging path verifier: checks that ROCm packages ship cmake config
+    # files under lib/cmake/<package>/ without hardcoded /opt/rocm paths.
+    # cpu_only because no GPU computation is needed — pure filesystem inspection.
+    "tests/e2e/system_tools/cmake_path_verifier": [
+        "hw.cpu_only",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # CK (Composable Kernel) tile tests: FMHA dropout and stream-k GEMM.
     # Sparse-clones rocm-libraries; nightly; MI3xx (gfx942/gfx950) only.
     "tests/e2e/ck": [
@@ -279,6 +307,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # ROCm Validation Suite modules: each test drives one RVS module against its
+    # own conf and asserts on the verdicts RVS reports. Every module qualifies
+    # the whole node, hence multi_gpu rather than the system_tools default.
+    "tests/e2e/system_tools/rvs": [
+        "hw.multi_gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # System tools (rocminfo, amd-smi, etc.): validate ROCm stack enumeration and diagnostics.
     "tests/e2e/system_tools": [
         "hw.gpu",
@@ -290,6 +328,13 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/ucc": [
         "hw.multi_gpu",
         "layer.math_lib",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    "tests/e2e/gpu_monitored": [
+        "hw.multi_gpu",
+        "layer.runtime",
         "ci.nightly",
         "e2e.stack",
         "os.linux",
