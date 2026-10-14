@@ -35,6 +35,10 @@ from __future__ import annotations
 from _pytest.mark.structures import MarkDecorator
 import pytest
 
+# Allow pytest to rewrite assertions in os_deps_plugin so error messages are
+# detailed when assertions inside the plugin fail during testing.
+pytest.register_assert_rewrite("framework.plugins.os_deps_plugin")
+
 
 def _mark_getattr(self: MarkDecorator, name: str) -> MarkDecorator:
     """Enable @pytest.mark.dim.val dotted syntax (e.g. @pytest.mark.ci.pr).
