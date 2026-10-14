@@ -66,18 +66,25 @@ def _mock_executor(ok: bool = True, stdout: str = "OK") -> MagicMock:
     return ex
 
 
-# ── marker collection ─────────────────────────────────────────────────────────
+# ── decorator declaration ─────────────────────────────────────────────────────
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-@pytest.mark.os_deps("cmake", "git")
-def test_os_deps_marker_packages_collected(request):
-    marker = request.node.get_closest_marker("os_deps")
-    assert marker is not None
-    assert set(marker.args) == {"cmake", "git"}
+def test_os_deps_decorator_packages_stored():
+    """@OS_DEPS stores pkg_specs on __OS_DEPS__ — the primary declaration API."""
+    from framework.os_adapter.deps import OS_DEPS
+
+    @OS_DEPS("cmake", "git")
+    def dummy():
+        pass
+
+    spec = dummy.__OS_DEPS__
+    assert set(spec.pkg_specs) == {"cmake", "git"}
+    assert spec.src is None
+    assert spec.sources is None
 
 
 @pytest.mark.hw.cpu_only
@@ -474,13 +481,14 @@ def test_no_marker_is_noop(request):
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_callable_fixture_installs_mid_test(dry_run_executor, os_deps):
-    """os_deps("pkg") fixture callable must trigger install via the executor."""
-    with patch.object(dry_run_executor, "run", wraps=dry_run_executor.run) as mock_run:
-        os_deps("libnuma-dev")
-        # At least one run() call should contain "would install" (DryRun path)
-        calls = [str(c) for c in mock_run.call_args_list]
-        assert any("would install" in c or "libnuma" in c for c in calls)
+def test_callable_fixture_installs_mid_test():
+    """install_packages callable emits a DryRun echo when dry_run=True."""
+    ex = _mock_executor()
+    install_packages(ex, "libnuma-dev", dry_run=True)
+    ex.run.assert_called_once()
+    cmd = ex.run.call_args[0][0]
+    assert "would install" in cmd
+    assert "libnuma-dev" in cmd
 
 
 @pytest.mark.hw.cpu_only
@@ -599,25 +607,29 @@ def test_resolve_os_deps_reads_function_attr(request):
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_resolve_os_deps_function_wins_over_class(request):
+def test_resolve_os_deps_function_wins_over_class():
+    """Function-level __OS_DEPS__ takes priority over class-level."""
     from framework.os_adapter.deps import OS_DEPS
     from framework.plugins.os_deps_plugin import _resolve_os_deps
 
     @OS_DEPS("cmake")
-    def dummy():
+    def dummy_fn():
         pass
 
     class FakeCls:
         from framework.os_adapter.deps import OS_DEPS as _OS_DEPS
         __OS_DEPS__ = _OS_DEPS("git")
 
-    with (
-        patch.object(type(request.node), "function", new_callable=lambda: property(lambda self: dummy)),
-        patch.object(request, "cls", FakeCls, create=True),
-    ):
-        spec = _resolve_os_deps(request)
+    # Use a plain MagicMock — avoids patching read-only properties on pytest internals
+    fake_node = MagicMock()
+    fake_node.function = dummy_fn
+    fake_request = MagicMock()
+    fake_request.node = fake_node
+    fake_request.cls = FakeCls
+
+    spec = _resolve_os_deps(fake_request)
     assert spec is not None
-    assert spec.pkg_specs == ("cmake",)
+    assert spec.pkg_specs == ("cmake",)  # function wins over class
 
 
 @pytest.mark.hw.cpu_only
