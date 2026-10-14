@@ -451,105 +451,19 @@ jobs:
               json.dump(counts, f)
           print(f"Counts: {counts}")
 
-      - name: Write per-platform step summary
-        if: always()
-        shell: python
-        run: |
-          import json, os, pathlib
-
-          counts_file = pathlib.Path("test-counts/counts.json")
-          if not counts_file.exists():
-              print("counts.json not found, skipping step summary")
-              import sys; sys.exit(0)
-
-          r = json.loads(counts_file.read_text())
-          platform = r["platform"]
-          ok = r["failed"] == 0 and r["error"] == 0 and r["total"] > 0
-          status = "✅ Passed" if ok else "❌ Failed"
-          has_skip = r.get("skipped", 0) > 0
-
-          lines = []
-          lines.append(f"## Test summary - {platform}")
-          lines.append("")
-
-          if has_skip:
-              lines.append("| Platform | Tests Run | Pass | Skip | Fail | Error | Status |")
-              lines.append("|---|--:|--:|--:|--:|--:|---|")
-              lines.append(
-                  f"| {platform} | {r['total']} | {r['passed']} | "
-                  f"{r.get('skipped', 0)} | {r['failed']} | {r['error']} | {status} |"
-              )
-          else:
-              lines.append("| Platform | Tests Run | Pass | Fail | Error | Status |")
-              lines.append("|---|--:|--:|--:|--:|---|")
-              lines.append(
-                  f"| {platform} | {r['total']} | {r['passed']} | "
-                  f"{r['failed']} | {r['error']} | {status} |"
-              )
-
-          lines.append("")
-          lines.append("---")
-          lines.append("")
-
-          md_path = pathlib.Path("md_summary.md")
-          if md_path.exists():
-              lines.append(f"<details open><summary>Full Test Report for {platform}</summary>")
-              lines.append("")
-              lines.append(md_path.read_text())
-              lines.append("")
-              lines.append("</details>")
-          else:
-              lines.append("_No summary file generated._")
-
-          lines.append("")
-
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-              f.write("\n".join(lines) + "\n")
-
       - name: Upload test artifacts
         if: always()
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: ./.github/actions/upload-test-artifacts
         with:
-          name: ${{ inputs.artifact_prefix }}-${{ inputs.name }}-${{ github.run_id }}
-          path: |
-            nightly_report.html
-            md_summary.md
-            output/artifacts/
-            test-counts/
-          retention-days: 30
-          if-no-files-found: ignore
+          artifact_prefix: ${{ inputs.artifact_prefix }}
+          platform_name:   ${{ inputs.name }}
+          run_id:          ${{ github.run_id }}
 
-      - name: Upload test counts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: test-counts-${{ inputs.name }}
-          path: test-counts/counts.json
-          retention-days: 1
-          if-no-files-found: ignore
-
-      - name: Upload json test report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: test-report-${{ inputs.name }}
-          path: test_report.json
-          retention-days: 1
-          if-no-files-found: ignore
-
-      - name: Add report download link to summary
+      - name: Write per-platform step summary
         if: always()
         env:
+          MODE: platform
           PLATFORM_NAME: ${{ inputs.name }}
-          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
-        run: |
-          url="${ARTIFACT_URL}"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$url" ]; then
-            echo "### ⬇ [Download test report — ${PLATFORM_NAME}]($url)" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "### ⬇ Download test report — ${PLATFORM_NAME}" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "> Zip archive — extract \`nightly_report.html\` and open locally." >> "$GITHUB_STEP_SUMMARY"
+          ARTIFACT_URL:  ${{ steps.upload.outputs.artifact_url }}
+        run: python3 .github/scripts/write_step_summary.py
