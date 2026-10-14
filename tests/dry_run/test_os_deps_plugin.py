@@ -873,3 +873,84 @@ def test_install_method_dry_run_with_extra_args():
     assert "torch==2.1" in cmd
     assert "command=pip" in cmd
     assert "extra_args" in cmd
+
+
+# ── Real install integration tests ────────────────────────────────────────────
+#
+# @OS_DEPS applied directly to the test function — the autouse fixture reads
+# test_fn.__OS_DEPS__ and installs the packages before the test body runs.
+# The test body then verifies the package is actually usable.
+#
+# ci.pr  → packages already present on any dev box; probe skips the install
+# ci.nightly → packages that may need a real install on a fresh node
+
+
+@OS_DEPS("cmake", "git", "curl")
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_common_build_tools_installed(target_executor):
+    """cmake / git / curl are installed (or already present) and functional.
+
+    Probe fires first — on a standard dev machine all three are present and
+    apt-get is never called. On a fresh CI node they get installed.
+    """
+    for tool, flag in [("cmake", "--version"), ("git", "--version"), ("curl", "--version")]:
+        result = target_executor.run(f"{tool} {flag}")
+        assert result.ok, f"{tool} not found after OS_DEPS install: {result.stderr}"
+        assert tool in result.stdout.lower(), f"Unexpected {tool} output: {result.stdout}"
+
+
+@OS_DEPS({"apt": "libnuma-dev", "dnf": "numactl-devel", "zypper": "libnuma-devel", "*": "libnuma-dev"})
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_libnuma_dev_installed_cross_distro(target_executor):
+    """libnuma-dev (apt) / numactl-devel (dnf/zypper) installed via dict spec.
+
+    Each distro uses the correct package name; '*' covers any unlisted PM.
+    After install the NUMA header must be locatable on the file system.
+    """
+    result = target_executor.run(
+        "find /usr/include -name 'numa.h' 2>/dev/null | head -1"
+    )
+    assert result.ok
+    assert result.stdout.strip(), "libnuma-dev installed but numa.h not found under /usr/include"
+
+
+@OS_DEPS({"apt": "libdrm-dev", "dnf": "libdrm-devel", "zypper": "libdrm-devel", "*": "libdrm-dev"})
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_libdrm_dev_installed_cross_distro(target_executor):
+    """libdrm-dev (apt) / libdrm-devel (dnf/zypper) installed via dict spec.
+
+    After install, the DRM header must be present. This is a real dependency
+    for any HIP/GPU userspace stack and validates cross-distro name mapping.
+    """
+    result = target_executor.run(
+        "find /usr/include -name 'drm.h' -path '*/drm/*' 2>/dev/null | head -1"
+    )
+    assert result.ok
+    assert result.stdout.strip(), "libdrm-dev installed but drm.h not found under /usr/include"
+
+
+@OS_DEPS("packaging", command="pip", extra_args=["--quiet"])
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_pip_install_packaging_library(target_executor):
+    """'packaging' Python library installed via pip with --quiet flag.
+
+    'packaging' is a tiny, dependency-free PyPI package used by pip itself —
+    safe to install on any machine. Verifies command= and extra_args= paths.
+    """
+    result = target_executor.run(
+        "python3 -c 'import packaging; print(packaging.__version__)'"
+    )
+    assert result.ok, f"packaging import failed: {result.stderr}"
+    assert result.stdout.strip(), "packaging version string is empty"
