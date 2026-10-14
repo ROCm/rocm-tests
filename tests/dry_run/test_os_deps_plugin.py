@@ -34,14 +34,16 @@ from framework.os_adapter.pkg_manager import (
     Backend,
     _apk_install,
     _apt_install,
+    _cache_backend,
+    _candidate_names,
     _choco_install,
     _dnf_install,
+    _resolve_spec,
     _scoop_install,
     _winget_install,
     _yum_install,
     _zypper_install,
     install_packages,
-    resolve_pkg_names,
 )
 import framework.plugins.os_deps_plugin as plugin
 
@@ -82,79 +84,115 @@ def test_os_deps_marker_packages_collected(request):
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-@pytest.mark.os_deps("mypkg", src="https://custom-repo.example.com/apt")
-def test_os_deps_marker_src_kwarg_collected(request):
-    marker = request.node.get_closest_marker("os_deps")
-    assert marker is not None
-    assert "mypkg" in marker.args
-    assert marker.kwargs.get("src") == "https://custom-repo.example.com/apt"
+def test_os_deps_decorator_with_src():
+    """Verify @OS_DEPS stores src= and sources= on the function's __OS_DEPS__ attribute."""
+    from framework.os_adapter.deps import OS_DEPS
 
+    @OS_DEPS("mypkg", src="https://custom-repo.example.com/apt")
+    def dummy():
+        pass
 
-# ── alias resolution ──────────────────────────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_alias_resolves_apt():
-    assert resolve_pkg_names(["libdrm-dev"], "apt") == ["libdrm-dev"]
-    assert resolve_pkg_names(["libnuma-dev"], "apt") == ["libnuma-dev"]
+    spec = dummy.__OS_DEPS__
+    assert "mypkg" in spec.pkg_specs
+    assert spec.src == "https://custom-repo.example.com/apt"
+    assert spec.sources is None
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_alias_resolves_dnf():
-    assert resolve_pkg_names(["libdrm-dev"], "dnf") == ["libdrm-devel"]
-    assert resolve_pkg_names(["g++"], "dnf") == ["gcc-c++"]
+def test_os_deps_decorator_with_sources():
+    """Verify @OS_DEPS stores per-manager sources= dict."""
+    from framework.os_adapter.deps import OS_DEPS
+
+    @OS_DEPS("cmake", sources={"apt": "https://apt-repo/", "dnf": "https://rhel-repo/"})
+    def dummy():
+        pass
+
+    spec = dummy.__OS_DEPS__
+    assert "cmake" in spec.pkg_specs
+    assert spec.src is None
+    assert spec.sources == {"apt": "https://apt-repo/", "dnf": "https://rhel-repo/"}
+
+
+# ── auto-heuristic and dict spec resolution ───────────────────────────────────
+
+
+def _make_backend(key: str) -> Backend:
+    fn_map = {"apt": _apt_install, "dnf": _dnf_install, "yum": _yum_install,
+               "zypper": _zypper_install, "apk": _apk_install}
+    return Backend(key=key, detect_cmd=f"command -v {key}", install_fn=fn_map.get(key, _apt_install))
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_alias_resolves_zypper():
-    assert resolve_pkg_names(["libdrm-dev"], "zypper") == ["libdrm-devel"]
-    assert resolve_pkg_names(["build-essential"], "zypper") == ["patterns-devel-base-devel_basis"]
+def test_auto_heuristic_dev_on_dnf_adds_devel():
+    assert _candidate_names("libdrm-dev", _make_backend("dnf")) == ["libdrm-dev", "libdrm-devel"]
+    assert _candidate_names("libnuma-dev", _make_backend("yum")) == ["libnuma-dev", "libnuma-devel"]
+    assert _candidate_names("libdrm-dev", _make_backend("zypper")) == ["libdrm-dev", "libdrm-devel"]
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_alias_resolves_winget():
-    assert resolve_pkg_names(["cmake"], "winget") == ["Kitware.CMake"]
-    assert resolve_pkg_names(["git"], "winget") == ["Git.Git"]
+def test_auto_heuristic_dev_on_apt_single():
+    assert _candidate_names("libdrm-dev", _make_backend("apt")) == ["libdrm-dev"]
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_alias_resolves_choco():
-    assert resolve_pkg_names(["cmake"], "choco") == ["cmake"]
-    assert resolve_pkg_names(["g++"], "choco") == ["mingw"]
+def test_auto_heuristic_non_dev_single_everywhere():
+    for key in ("apt", "dnf", "yum", "zypper"):
+        assert _candidate_names("cmake", _make_backend(key)) == ["cmake"]
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_alias_resolves_scoop():
-    assert resolve_pkg_names(["cmake"], "scoop") == ["cmake"]
-    assert resolve_pkg_names(["git"], "scoop") == ["git"]
+def test_resolve_spec_plain_string():
+    assert _resolve_spec("cmake", _make_backend("apt")) == "cmake"
+    assert _resolve_spec("cmake", _make_backend("dnf")) == "cmake"
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_alias_unknown_passthrough():
-    """Unknown package names pass through unchanged for all backends."""
-    for mgr in ("apt", "dnf", "yum", "zypper", "apk", "pacman", "winget", "choco", "scoop"):
-        assert resolve_pkg_names(["totally-unknown-pkg"], mgr) == ["totally-unknown-pkg"]
+def test_resolve_spec_dict_key_found():
+    assert _resolve_spec({"dnf": "libtiff-devel", "*": "libtiff-dev"}, _make_backend("dnf")) == "libtiff-devel"
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_resolve_spec_dict_fallback_to_star():
+    spec = {"dnf": "libtiff-devel", "*": "libtiff-dev"}
+    assert _resolve_spec(spec, _make_backend("apt")) == "libtiff-dev"
+    assert _resolve_spec(spec, _make_backend("zypper")) == "libtiff-dev"
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_resolve_spec_dict_no_star_returns_empty():
+    assert _resolve_spec({"apt": "x", "dnf": "y"}, _make_backend("zypper")) == ""
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_resolve_spec_unknown_passthrough():
+    assert _resolve_spec("totally-unknown-pkg", _make_backend("dnf")) == "totally-unknown-pkg"
 
 
 # ── Linux command generation ──────────────────────────────────────────────────
@@ -354,7 +392,7 @@ def test_scoop_command_with_src():
 def test_dry_run_does_not_exec_real_command(dry_run_executor):
     """DryRun install must call executor.run with an echo, not a real install command."""
     with patch.object(dry_run_executor, "run", wraps=dry_run_executor.run) as mock_run:
-        install_packages(dry_run_executor, ["cmake"], dry_run=True)
+        install_packages(dry_run_executor, "cmake", dry_run=True)
         assert mock_run.call_count == 1
         cmd = mock_run.call_args[0][0]
         assert "cmake" in cmd
@@ -370,7 +408,7 @@ def test_dry_run_does_not_exec_real_command(dry_run_executor):
 @pytest.mark.runtime.fast
 def test_dry_run_with_src_includes_src_in_echo(dry_run_executor):
     with patch.object(dry_run_executor, "run", wraps=dry_run_executor.run) as mock_run:
-        install_packages(dry_run_executor, ["mypkg"], dry_run=True, src="https://my-repo/")
+        install_packages(dry_run_executor, "mypkg", dry_run=True, src="https://my-repo/")
         cmd = mock_run.call_args[0][0]
         assert "would install" in cmd
         assert "src=" in cmd
@@ -383,7 +421,7 @@ def test_dry_run_with_src_includes_src_in_echo(dry_run_executor):
 @pytest.mark.runtime.fast
 def test_install_packages_noop_on_empty_list(dry_run_executor):
     with patch.object(dry_run_executor, "run") as mock_run:
-        install_packages(dry_run_executor, [], dry_run=True)
+        install_packages(dry_run_executor, dry_run=True)
         mock_run.assert_not_called()
 
 
@@ -465,8 +503,7 @@ def test_callable_fixture_with_src(dry_run_executor, os_deps):
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_backend_cached_on_executor_after_detection():
-    """After detection the backend is stored on the executor to skip re-probing."""
-    from framework.os_adapter.pkg_manager import _BACKEND_ATTR, _apt_install, _cache_backend
+    from framework.os_adapter.pkg_manager import _BACKEND_ATTR
 
     ex = _mock_executor()
     fake_backend = Backend(
@@ -552,8 +589,8 @@ def test_resolve_os_deps_reads_function_attr(request):
     def dummy():
         pass
 
-    request.node.function = dummy
-    spec = _resolve_os_deps(request)
+    with patch.object(type(request.node), "function", new_callable=lambda: property(lambda self: dummy)):
+        spec = _resolve_os_deps(request)
     assert spec is not None
     assert spec.pkg_specs == ("cmake",)
 
@@ -570,8 +607,15 @@ def test_resolve_os_deps_function_wins_over_class(request):
     def dummy():
         pass
 
-    request.node.function = dummy
-    spec = _resolve_os_deps(request)
+    class FakeCls:
+        from framework.os_adapter.deps import OS_DEPS as _OS_DEPS
+        __OS_DEPS__ = _OS_DEPS("git")
+
+    with (
+        patch.object(type(request.node), "function", new_callable=lambda: property(lambda self: dummy)),
+        patch.object(request, "cls", FakeCls, create=True),
+    ):
+        spec = _resolve_os_deps(request)
     assert spec is not None
     assert spec.pkg_specs == ("cmake",)
 
@@ -586,6 +630,6 @@ def test_resolve_os_deps_none_when_no_attr(request):
     def dummy():
         pass
 
-    request.node.function = dummy
-    spec = _resolve_os_deps(request)
+    with patch.object(type(request.node), "function", new_callable=lambda: property(lambda self: dummy)):
+        spec = _resolve_os_deps(request)
     assert spec is None
