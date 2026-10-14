@@ -141,24 +141,95 @@ def test_decorator_sets_dunder_on_function():
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_decorator_stores_src_sources_command_extra_args():
-    @OS_DEPS(
-        "cmake",
-        src="https://my-repo/",
-        sources={"apt": "deb https://apt-repo/ stable main"},
-        command="pip",
-        extra_args=["--quiet"],
-        on_missing="skip",
-    )
-    def dummy():
+def test_decorator_with_single_src_url():
+    """ROCm repo added as a single apt source for all managers."""
+
+    @OS_DEPS("rocm-smi", src="https://repo.radeon.com/rocm/apt/6.3/")
+    def test_rocm_smi_version():
         pass
 
-    s = dummy.__OS_DEPS__
-    assert s.src == "https://my-repo/"
-    assert s.sources == {"apt": "deb https://apt-repo/ stable main"}
+    s = test_rocm_smi_version.__OS_DEPS__
+    assert s.pkg_specs == ("rocm-smi",)
+    assert s.src == "https://repo.radeon.com/rocm/apt/6.3/"
+    assert s.sources is None  # src= applies globally, no per-manager override
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_decorator_with_per_manager_sources():
+    """libdrm-dev installed from distro-specific custom repos via sources=."""
+
+    @OS_DEPS(
+        {"apt": "libdrm-dev", "dnf": "libdrm-devel", "*": "libdrm-dev"},
+        sources={
+            "apt": "deb https://apt.custom-drm-repo.example.com/ stable main",
+            "dnf": "https://dnf.custom-drm-repo.example.com/rhel/",
+        },
+    )
+    def test_drm_device_access():
+        pass
+
+    s = test_drm_device_access.__OS_DEPS__
+    assert s.pkg_specs == ({"apt": "libdrm-dev", "dnf": "libdrm-devel", "*": "libdrm-dev"},)
+    assert s.src is None  # per-manager sources only, no global fallback
+    assert s.sources["apt"] == "deb https://apt.custom-drm-repo.example.com/ stable main"
+    assert s.sources["dnf"] == "https://dnf.custom-drm-repo.example.com/rhel/"
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_decorator_with_pip_command_and_extra_args():
+    """onnxruntime-rocm is a Python package — installed via pip with a custom index URL."""
+
+    @OS_DEPS(
+        "onnxruntime-rocm",
+        command="pip",
+        extra_args=["--index-url", "https://aiinfra.pkgs.visualstudio.com/PublicPackages/"],
+    )
+    def test_onnx_rocm_provider():
+        pass
+
+    s = test_onnx_rocm_provider.__OS_DEPS__
+    assert s.pkg_specs == ("onnxruntime-rocm",)
     assert s.command == "pip"
-    assert s.extra_args == ["--quiet"]
+    assert "--index-url" in s.extra_args
+    assert s.src is None  # pip manages its own index, src= is for OS PMs
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_decorator_with_on_missing_skip():
+    """CUDA dev headers are optional — skip the test gracefully if not present."""
+
+    @OS_DEPS("libcuda-dev", on_missing="skip")
+    def test_cuda_interop():
+        pass
+
+    s = test_cuda_interop.__OS_DEPS__
+    assert s.pkg_specs == ("libcuda-dev",)
     assert s.on_missing == "skip"
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_decorator_with_on_missing_fail():
+    """hipcc is mandatory — hard fail if not installed."""
+
+    @OS_DEPS("hipcc", on_missing="fail")
+    def test_hipcc_available():
+        pass
+
+    s = test_hipcc_available.__OS_DEPS__
+    assert s.pkg_specs == ("hipcc",)
+    assert s.on_missing == "fail"
 
 
 @pytest.mark.hw.cpu_only
