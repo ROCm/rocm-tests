@@ -495,12 +495,15 @@ def test_callable_fixture_installs_mid_test():
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_callable_fixture_with_src(dry_run_executor, os_deps):
-    """os_deps("pkg", src="url") should include src note in DryRun echo."""
-    with patch.object(dry_run_executor, "run", wraps=dry_run_executor.run) as mock_run:
-        os_deps("mypkg", src="https://custom-repo.example.com/")
-        calls = [str(c) for c in mock_run.call_args_list]
-        assert any("custom-repo" in c or "mypkg" in c for c in calls)
+def test_callable_fixture_with_src():
+    """install_packages with src= emits the URL in the DryRun echo."""
+    ex = _mock_executor()
+    install_packages(ex, "mypkg", dry_run=True, src="https://custom-repo.example.com/")
+    ex.run.assert_called_once()
+    cmd = ex.run.call_args[0][0]
+    assert "would install" in cmd
+    assert "mypkg" in cmd
+    assert "custom-repo.example.com" in cmd
 
 
 # ── backend caching ───────────────────────────────────────────────────────────
