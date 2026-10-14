@@ -191,7 +191,13 @@ def test_module_level_stores_os_deps_instance():
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_install_without_context_raises():
-    with pytest.raises(RuntimeError, match="No executor context"):
+    # Autouse fixture always sets _current_executor — force it to None temporarily.
+    import framework.plugins.os_deps_plugin as _plugin
+
+    with (
+        patch.object(_plugin, "_current_executor", None),
+        pytest.raises(RuntimeError, match="No executor context"),
+    ):
         OS_DEPS().install("cmake")
 
 
@@ -473,9 +479,11 @@ def test_winget_extra_args():
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_dry_run_emits_echo_not_install():
-    ex = _dry_executor()
+    ex = _mock_executor()
     spec = _InstallSpec(pkg_specs=("cmake",))
-    _execute_install(ex, spec)
+    # Patch _is_dry_run so the DryRun echo path fires regardless of executor type
+    with patch("framework.plugins.os_deps_plugin._is_dry_run", return_value=True):
+        _execute_install(ex, spec)
     ex.run.assert_called_once()
     cmd = ex.run.call_args[0][0]
     assert "would install" in cmd
@@ -488,9 +496,10 @@ def test_dry_run_emits_echo_not_install():
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_dry_run_includes_src_and_command_in_echo():
-    ex = _dry_executor()
+    ex = _mock_executor()
     spec = _InstallSpec(pkg_specs=("mypkg",), src="https://repo/", command="pip", extra_args=["--quiet"])
-    _execute_install(ex, spec)
+    with patch("framework.plugins.os_deps_plugin._is_dry_run", return_value=True):
+        _execute_install(ex, spec)
     cmd = ex.run.call_args[0][0]
     assert "would install" in cmd
     assert "mypkg" in cmd
@@ -770,9 +779,10 @@ def test_import_from_plugin_directly():
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_install_method_dry_run():
-    ex = _dry_executor()
+    ex = _mock_executor()
     spec = _InstallSpec(pkg_specs=("libnuma-dev",))
-    _execute_install(ex, spec)
+    with patch("framework.plugins.os_deps_plugin._is_dry_run", return_value=True):
+        _execute_install(ex, spec)
     cmd = ex.run.call_args[0][0]
     assert "would install" in cmd
     assert "libnuma-dev" in cmd
@@ -783,9 +793,10 @@ def test_install_method_dry_run():
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_install_method_dry_run_with_extra_args():
-    ex = _dry_executor()
+    ex = _mock_executor()
     spec = _InstallSpec(pkg_specs=("torch==2.1",), command="pip", extra_args=["--quiet"])
-    _execute_install(ex, spec)
+    with patch("framework.plugins.os_deps_plugin._is_dry_run", return_value=True):
+        _execute_install(ex, spec)
     cmd = ex.run.call_args[0][0]
     assert "would install" in cmd
     assert "torch==2.1" in cmd
