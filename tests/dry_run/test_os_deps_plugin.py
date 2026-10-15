@@ -542,6 +542,73 @@ def test_winget_extra_args():
     assert "machine" in cmd
 
 
+# ── sudo probe ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_sudo_probe_not_found_returns_empty_prefix():
+    """When sudo binary is absent (e.g. plain Docker root), prefix must be empty."""
+    from framework.plugins.os_deps_plugin import _resolve_sudo_prefix
+
+    ex = _mock_executor(stdout="NO")  # command -v sudo → not found
+    prefix = _resolve_sudo_prefix(ex, _backend("apt"))
+    assert prefix == ""
+    ex.run.assert_called_once()  # probe fired exactly once
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_sudo_probe_found_returns_sudo_n_prefix():
+    """When sudo -n works (standard fleet node), prefix must be 'sudo -n '."""
+    from framework.plugins.os_deps_plugin import _resolve_sudo_prefix
+
+    ex = _mock_executor(stdout="OK")  # command -v sudo && sudo -n true → OK
+    prefix = _resolve_sudo_prefix(ex, _backend("apt"))
+    assert prefix == "sudo -n "
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_sudo_probe_cached_after_first_call():
+    """Sudo probe must fire only once; subsequent calls use the cached prefix."""
+    from framework.plugins.os_deps_plugin import _resolve_sudo_prefix
+
+    ex = _mock_executor(stdout="OK")
+    b = _backend("apt")
+    _resolve_sudo_prefix(ex, b)  # first call — probes
+    _resolve_sudo_prefix(ex, b)  # second call — must use cache
+    assert ex.run.call_count == 1  # only one probe, not two
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_sudo_probe_skipped_for_windows_backends():
+    """Windows backends (needs_sudo=False) must not probe sudo at all."""
+    from framework.plugins.os_deps_plugin import _resolve_sudo_prefix, _winget_cmd
+
+    win_backend = _Backend(
+        key="winget",
+        detect_cmd="winget --version",
+        probe_cmd_fn=lambda p: p,
+        install_cmd_fn=_winget_cmd,
+        needs_sudo=False,
+        platform="windows",
+    )
+    ex = _mock_executor()
+    prefix = _resolve_sudo_prefix(ex, win_backend)
+    assert prefix == ""
+    ex.run.assert_not_called()  # no probe for Windows
+
+
 # ── DryRun safety ─────────────────────────────────────────────────────────────
 
 
