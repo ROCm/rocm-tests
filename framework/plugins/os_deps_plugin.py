@@ -955,12 +955,10 @@ class _SubprocessExecutor:
     host = "localhost"
     _dry_run = False
 
-    def run(self, command: str, timeout: float = 300.0, **_):  # type: ignore[return]
+    def run(self, command: str, timeout: float = 300.0, **_):  # noqa: ANN201
         import subprocess
 
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=timeout, check=False
-        )
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout, check=False)
 
         class _Result:
             ok = result.returncode == 0
