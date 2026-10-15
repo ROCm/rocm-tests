@@ -943,22 +943,8 @@ def _is_dry_run(executor) -> bool:
 
 
 def _resolve_executor(request: pytest.FixtureRequest):
-    """Return the best executor for package installation.
-
-    When --no-gpu is active, target_executor becomes DryRunExecutor which
-    would skip real package installs. For this plugin we fall back to
-    cpu_executor (real local subprocess, no GPU needed) so that package
-    managers (apt, winget, pip, etc.) actually run even without a GPU.
-    """
     try:
-        executor = request.getfixturevalue("target_executor")
-        if _is_dry_run(executor):
-            # --no-gpu active: use cpu_executor so installs are real
-            try:
-                return request.getfixturevalue("cpu_executor")
-            except pytest.FixtureLookupError:
-                pass  # cpu_executor unavailable — stay with DryRun
-        return executor
+        return request.getfixturevalue("target_executor")
     except pytest.FixtureLookupError:
         return request.getfixturevalue("dry_run_executor")
 
