@@ -42,7 +42,8 @@ _RVS_REF = os.environ.get("ROCM_TEST_RVS_REF", "master")
 # ``CC=$(CROSS_COMPILE)gcc``, yet rvslib compiles ``#include <pci/pci.h>``
 # against the system headers rather than the vendored copy. EPEL is where the
 # RHEL family keeps yaml-cpp; SLES has yaml-cpp-devel only in the
-# subscription-gated Development module.
+# subscription-gated Development module, and ``--no-gpg-checks`` keeps a node
+# whose repo signing key is untrusted from stalling the install.
 _PREREQ_SCRIPT = (
     "if [ -f /usr/include/yaml-cpp/yaml.h ] && [ -f /usr/include/numa.h ] "
     "&& ls /usr/include/pci/pci.h /usr/include/*/pci/pci.h 2>/dev/null | grep -q . "
@@ -55,7 +56,7 @@ _PREREQ_SCRIPT = (
     "  $SUDO $DNF install -y epel-release || true; "
     "  $SUDO $DNF install -y yaml-cpp-devel yaml-cpp-static numactl-devel pciutils-devel gcc; "
     "elif command -v zypper >/dev/null 2>&1; then "
-    "  $SUDO zypper --non-interactive install yaml-cpp-devel libnuma-devel pciutils-devel gcc; "
+    "  $SUDO zypper --non-interactive --no-gpg-checks install yaml-cpp-devel libnuma-devel pciutils-devel gcc; "
     "else "
     '  echo "no supported package manager (apt-get/dnf/yum/zypper)" >&2; exit 1; '
     "fi"
