@@ -922,7 +922,24 @@ def _dry_run_label(spec: _InstallSpec) -> str:
 
 
 def _is_dry_run(executor) -> bool:
-    return type(executor).__name__ == "DryRunExecutor" or bool(getattr(executor, "_dry_run", False))
+    """Return True when the executor (or its inner executor) is a DryRunExecutor.
+
+    NodeExecutorGroup wraps the real executor — we must look inside it so
+    that --no-gpu mode is correctly detected even through the group wrapper.
+    """
+    if type(executor).__name__ == "DryRunExecutor" or bool(getattr(executor, "_dry_run", False)):
+        return True
+    # Peek inside NodeExecutorGroup to check the wrapped executor
+    try:
+        from framework.executors.executor_group import NodeExecutorGroup
+
+        if isinstance(executor, NodeExecutorGroup):
+            inner = next(iter(executor), None)
+            if inner is not None:
+                return _is_dry_run(inner)
+    except ImportError:
+        pass
+    return False
 
 
 def _resolve_executor(request: pytest.FixtureRequest):

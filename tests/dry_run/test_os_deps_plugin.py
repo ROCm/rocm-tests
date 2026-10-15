@@ -33,6 +33,7 @@ from framework.os_adapter import OS_DEPS
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
+@pytest.mark.os.linux
 def test_apt_install_common_build_tools(target_executor):
     """Install cmake, git, curl via apt and verify each is functional.
 
@@ -48,9 +49,6 @@ def test_apt_install_common_build_tools(target_executor):
         "curl",
     }, f"Not all packages accounted for: {result.all_packages}"
 
-    if result.dry_run:
-        pytest.skip("DryRun mode — skipping real output verification")
-
     for tool, flag in [("cmake", "--version"), ("git", "--version"), ("curl", "--version")]:
         r = target_executor.run(f"{tool} {flag}")
         assert r.ok, f"{tool} not usable after install: {r.stderr}"
@@ -61,6 +59,7 @@ def test_apt_install_common_build_tools(target_executor):
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
+@pytest.mark.os.linux
 def test_apt_install_version_pinned(target_executor):
     """Install a version-pinned package (cmake==3.22) and verify the installed version."""
     result = OS_DEPS().install("cmake==3.22", on_missing="skip")
@@ -77,6 +76,7 @@ def test_apt_install_version_pinned(target_executor):
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
+@pytest.mark.os.linux
 def test_apt_install_list_of_packages(target_executor):
     """Install multiple packages in one call and verify each is present."""
     result = OS_DEPS().install({"apt": ["wget", "unzip", "file"], "*": "wget"})
@@ -91,6 +91,7 @@ def test_apt_install_list_of_packages(target_executor):
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
+@pytest.mark.os.linux
 def test_apt_already_installed_skips_install(target_executor):
     """Packages already on the node must show up in already_present, not installed."""
     # git is almost always pre-installed — this validates probe correctness
@@ -110,6 +111,7 @@ def test_apt_already_installed_skips_install(target_executor):
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
+@pytest.mark.os.linux
 def test_dnf_install_development_tools(target_executor):
     """Install dnf-specific packages; skips on apt/zypper nodes.
 
@@ -133,6 +135,7 @@ def test_dnf_install_development_tools(target_executor):
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
+@pytest.mark.os.linux
 def test_dnf_install_openssl_devel(target_executor):
     """Install openssl-devel (RHEL name) with dict spec cross-distro mapping."""
     result = OS_DEPS().install(
@@ -163,6 +166,7 @@ def test_dnf_install_openssl_devel(target_executor):
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
+@pytest.mark.os.linux
 def test_zypper_install_libdrm(target_executor):
     """Install libdrm-devel via zypper; skips on apt/dnf nodes.
 
@@ -186,6 +190,7 @@ def test_zypper_install_libdrm(target_executor):
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
+@pytest.mark.os.linux
 def test_zypper_install_libnuma(target_executor):
     """Install libnuma-devel via zypper with cross-distro dict spec."""
     result = OS_DEPS().install(
@@ -221,6 +226,7 @@ def test_zypper_install_libnuma(target_executor):
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
+@pytest.mark.os.linux
 def test_invalid_package_raises_error(target_executor):
     """Attempt to install a package that does not exist in any repository.
 
@@ -229,11 +235,6 @@ def test_invalid_package_raises_error(target_executor):
       - XFAIL  → test raised RuntimeError as expected  (counts as pass)
       - XPASS  → package somehow installed, which should never happen
     """
-    # DryRun mode never executes real commands so no RuntimeError is raised —
-    # skip to avoid XPASS(strict) which shows as a failure.
-    probe = OS_DEPS().install("git", on_missing="probe")
-    if probe.dry_run:
-        pytest.skip("DryRun mode — cannot validate error path")
     # on_missing="install" so ROCM_TEST_PKG_ON_MISSING cannot mask the RuntimeError.
     OS_DEPS().install("rocmtest-this-package-does-not-exist-12345", on_missing="install")
 
@@ -253,9 +254,6 @@ def test_invalid_pip_package_raises_error(target_executor):
     pip exits non-zero when the package is not found, which must
     surface as a RuntimeError from the framework.
     """
-    probe = OS_DEPS().install("git", on_missing="probe")
-    if probe.dry_run:
-        pytest.skip("DryRun mode — cannot validate error path")
     OS_DEPS().install("rocmtest-nonexistent-pip-package-12345", command="pip", on_missing="install")
 
 
