@@ -111,13 +111,16 @@ class InstallResult:
 
     Attributes:
         installed:      Packages that were missing and successfully installed.
-        already_present: Packages that were already installed (probe passed, no install run).
+        already_present: Packages already on the node (probe passed, no install run).
+        versions:       Versions of all accounted packages {pkg: version}.
+                        Populated for both installed and already_present packages.
         dry_run:        True when running in DryRun mode — nothing was actually installed.
         command:        Custom installer used ("pip", "snap", etc.) or None for OS PM.
     """
 
     installed: list[str] = field(default_factory=list)
     already_present: list[str] = field(default_factory=list)
+    versions: dict[str, str] = field(default_factory=dict)
     dry_run: bool = False
     command: str | None = None
 
@@ -130,6 +133,16 @@ class InstallResult:
     def all_packages(self) -> list[str]:
         """All packages accounted for (installed + already present)."""
         return self.installed + self.already_present
+
+    def version_summary(self) -> str:
+        """Human-readable version string, e.g. 'cmake=3.28.3, git=2.43.0'."""
+        if not self.versions:
+            return ", ".join(self.all_packages)
+        parts = []
+        for pkg in self.all_packages:
+            ver = self.versions.get(pkg)
+            parts.append(f"{pkg}={ver}" if ver else pkg)
+        return ", ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +330,26 @@ def _probe_apk(pkg_name: str) -> str:
 
 
 def _probe_none(_: str) -> str:
-    return "false"  # always attempt install (Windows PMs, pip, snap, etc.)
+    return "false"  # fallback: always attempt install
+
+
+# Windows probe functions — run via cmd.exe (no bash on Windows)
+def _probe_winget(pkg_name: str) -> str:
+    base, _ = _parse_version(pkg_name)
+    # winget list --id exits 0 if the package is installed, non-zero if not
+    return f"winget list --id {shlex.quote(base)} --exact >NUL 2>&1"
+
+
+def _probe_choco(pkg_name: str) -> str:
+    base, _ = _parse_version(pkg_name)
+    # choco list --local-only exits 0 with output if installed
+    return f"choco list --local-only --exact {shlex.quote(base)} >NUL 2>&1"
+
+
+def _probe_scoop(pkg_name: str) -> str:
+    base, _ = _parse_version(pkg_name)
+    # scoop list exits 0 and prints the package if installed
+    return f"scoop list {shlex.quote(base)} >NUL 2>&1"
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +576,7 @@ _WINDOWS_BACKENDS: list[_Backend] = [
     _Backend(
         key="winget",
         detect_cmd="winget --version",
-        probe_cmd_fn=_probe_none,
+        probe_cmd_fn=_probe_winget,
         install_cmd_fn=_winget_cmd,
         bootstrap_fn=_bootstrap_winget,
         needs_sudo=False,
@@ -553,7 +585,7 @@ _WINDOWS_BACKENDS: list[_Backend] = [
     _Backend(
         key="choco",
         detect_cmd="choco --version",
-        probe_cmd_fn=_probe_none,
+        probe_cmd_fn=_probe_choco,
         install_cmd_fn=_choco_cmd,
         bootstrap_fn=_bootstrap_choco,
         needs_sudo=False,
@@ -562,7 +594,7 @@ _WINDOWS_BACKENDS: list[_Backend] = [
     _Backend(
         key="scoop",
         detect_cmd="scoop --version",
-        probe_cmd_fn=_probe_none,
+        probe_cmd_fn=_probe_scoop,
         install_cmd_fn=_scoop_cmd,
         bootstrap_fn=_bootstrap_scoop,
         needs_sudo=False,
@@ -630,16 +662,19 @@ def _cache_backend(executor, backend: _Backend) -> None:
 def _probe_missing(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
     """Return the subset of pkgs not yet installed on the executor's host.
 
-    All probes are batched into a single shell command to produce one
-    log line instead of one per package, and to minimise round-trips.
-    Each package probe exits 0 (present) or 1 (missing); results are
-    collected as a space-separated token list on stdout.
+    Linux: batches all probes into one bash compound command (one log line).
+    Windows: runs each probe individually via cmd.exe (no bash available).
     """
     if not pkgs:
         return []
 
-    # Build a single compound command:
-    #   for each pkg: run probe; if present echo "OK:<pkg>", else echo "MISS:<pkg>"
+    if backend.platform == "windows":
+        return _probe_missing_windows(executor, backend, pkgs)
+    return _probe_missing_linux(executor, backend, pkgs)
+
+
+def _probe_missing_linux(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
+    """Batch all probes into a single bash compound command — one round-trip."""
     parts = []
     for pkg in pkgs:
         probe = backend.probe_cmd_fn(pkg)
@@ -649,8 +684,7 @@ def _probe_missing(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
     compound = "bash -c '" + "; ".join(parts) + "'"
     result = executor.run(compound)
 
-    missing = []
-    present = []
+    missing, present = [], []
     for line in result.stdout.splitlines():
         line = line.strip()
         if line.startswith("OK:"):
@@ -658,9 +692,6 @@ def _probe_missing(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
         elif line.startswith("MISS:"):
             missing.append(line[5:])
 
-    # If the compound command returned no OK:/MISS: tokens (e.g. the executor
-    # failed entirely, or a test mock returns a fixed result), treat all
-    # packages as missing so the caller can decide what to do.
     if not missing and not present:
         logger.debug("os_deps: probe returned no tokens — treating all as missing: %s", pkgs)
         return list(pkgs)
@@ -670,6 +701,109 @@ def _probe_missing(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
     if missing:
         logger.debug("os_deps: probe MISSING — %s", missing)
     return missing
+
+
+def _probe_missing_windows(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
+    """Run each Windows PM probe individually via cmd.exe (no bash on Windows)."""
+    missing, present = [], []
+    for pkg in pkgs:
+        probe = backend.probe_cmd_fn(pkg)
+        result = executor.run(probe)
+        if result.ok:
+            present.append(pkg)
+        else:
+            missing.append(pkg)
+    if present:
+        logger.debug("os_deps: probe PRESENT — %s", present)
+    if missing:
+        logger.debug("os_deps: probe MISSING — %s", missing)
+    return missing
+
+
+def _get_installed_versions_linux(executor, backend: _Backend, pkgs: list[str]) -> dict[str, str]:  # noqa: C901
+    """Query installed versions on Linux — one batched command."""
+    versions: dict[str, str] = {}
+    pkg_str = " ".join(shlex.quote(p) for p in pkgs)
+
+    if backend.key == "apt":
+        result = executor.run(
+            f"dpkg-query -W -f='${{Package}}\\t${{Version}}\\n' {pkg_str} 2>/dev/null"
+        )
+        for line in result.stdout.splitlines():
+            parts = line.strip().split("\t", 1)
+            if len(parts) == 2 and parts[1].strip():
+                versions[parts[0].strip()] = parts[1].strip()
+
+    elif backend.key in ("dnf", "yum", "zypper"):
+        result = executor.run(
+            f"rpm -q --queryformat '%{{NAME}}\\t%{{VERSION}}-%{{RELEASE}}\\n' {pkg_str} 2>/dev/null"
+        )
+        for line in result.stdout.splitlines():
+            parts = line.strip().split("\t", 1)
+            if len(parts) == 2 and "not installed" not in parts[1]:
+                versions[parts[0].strip()] = parts[1].strip()
+
+    elif backend.key == "apk":
+        result = executor.run(f"apk info -v {pkg_str} 2>/dev/null")
+        for line in result.stdout.splitlines():
+            # apk info -v outputs "pkgname-version" format
+            line = line.strip()
+            for pkg in pkgs:
+                base, _ = _parse_version(pkg)
+                if line.startswith(base + "-"):
+                    versions[base] = line[len(base) + 1:]
+
+    elif backend.key == "pacman":
+        result = executor.run(f"pacman -Q {pkg_str} 2>/dev/null")
+        for line in result.stdout.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                versions[parts[0]] = parts[1]
+
+    return versions
+
+
+def _get_installed_versions_windows(executor, backend: _Backend, pkgs: list[str]) -> dict[str, str]:  # noqa: C901
+    """Query installed versions on Windows — one query per package."""
+    versions: dict[str, str] = {}
+    for pkg in pkgs:
+        base, _ = _parse_version(pkg)
+        if backend.key == "winget":
+            result = executor.run(f"winget list --id {shlex.quote(base)} --exact 2>NUL")
+            for line in result.stdout.splitlines():
+                if base.lower() in line.lower():
+                    cols = line.split()
+                    if len(cols) >= 3:
+                        versions[base] = cols[2]  # Name Id Version ...
+                    break
+        elif backend.key == "choco":
+            result = executor.run(
+                f"choco list --local-only --exact {shlex.quote(base)} 2>NUL"
+            )
+            for line in result.stdout.splitlines():
+                if base.lower() in line.lower():
+                    parts = line.strip().split(None, 1)
+                    if len(parts) == 2:
+                        versions[base] = parts[1]
+                    break
+        elif backend.key == "scoop":
+            result = executor.run(f"scoop list {shlex.quote(base)} 2>NUL")
+            for line in result.stdout.splitlines():
+                if base.lower() in line.lower():
+                    cols = line.split()
+                    if len(cols) >= 2:
+                        versions[base] = cols[1]
+                    break
+    return versions
+
+
+def _get_installed_versions(executor, backend: _Backend, pkgs: list[str]) -> dict[str, str]:
+    """Dispatch version query to Linux or Windows helper."""
+    if not pkgs:
+        return {}
+    if backend.platform == "windows":
+        return _get_installed_versions_windows(executor, backend, pkgs)
+    return _get_installed_versions_linux(executor, backend, pkgs)
 
 
 # ---------------------------------------------------------------------------
@@ -815,15 +949,37 @@ def _execute_install(executor, spec: _InstallSpec) -> InstallResult:
         already_present = [p for p in resolved_pkgs if p not in missing]
 
         if already_present:
-            logger.debug("os_deps: already installed (skipping): %s", already_present)
+            # Query versions of already-present packages and log at INFO
+            present_versions = _get_installed_versions(executor, backend, already_present)
+            present_summary = ", ".join(
+                f"{p}={present_versions[p]}" if p in present_versions else p
+                for p in already_present
+            )
+            logger.info("os_deps: already installed — %s", present_summary)
+
         if not missing:
             logger.debug("os_deps: all packages already present — no install needed")
-            return InstallResult(already_present=already_present)
+            return InstallResult(
+                already_present=already_present,
+                versions=_get_installed_versions(executor, backend, already_present),
+            )
 
         logger.debug("os_deps: [%s] installing missing packages: %s", backend.key, missing)
         _run_install_cmd(executor, backend, missing, resolved_src, spec.extra_args)
-        logger.info("os_deps: installed %s via %s", missing, backend.key)
-        return InstallResult(installed=missing, already_present=already_present)
+
+        # Query versions of newly installed packages
+        installed_versions = _get_installed_versions(executor, backend, missing)
+        installed_summary = ", ".join(
+            f"{p}={installed_versions[p]}" if p in installed_versions else p
+            for p in missing
+        )
+        logger.info("os_deps: installed via %s — %s", backend.key, installed_summary)
+
+        all_versions = {
+            **_get_installed_versions(executor, backend, already_present),
+            **installed_versions,
+        }
+        return InstallResult(installed=missing, already_present=already_present, versions=all_versions)
 
     # Non-install modes: probe only
     logger.debug("os_deps: on_missing='%s' — probing only, no install", spec.on_missing)
