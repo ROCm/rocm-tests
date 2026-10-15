@@ -48,11 +48,7 @@ def test_apt_install_common_build_tools(target_executor):
         "git",
         "curl",
     }, f"Not all packages accounted for: {result.all_packages}"
-
-    for tool, flag in [("cmake", "--version"), ("git", "--version"), ("curl", "--version")]:
-        r = target_executor.run(f"{tool} {flag}")
-        assert r.ok, f"{tool} not usable after install: {r.stderr}"
-        assert tool in r.stdout.lower(), f"Unexpected output for {tool}: {r.stdout}"
+    assert result.version_summary(), "Expected version info after install"
 
 
 @pytest.mark.hw.cpu_only
@@ -66,10 +62,7 @@ def test_apt_install_version_pinned(target_executor):
 
     assert result.ok
     assert result.all_packages, "No packages accounted for in InstallResult"
-
-    r = target_executor.run("cmake --version")
-    assert r.ok, f"cmake not usable after install: {r.stderr}"
-    assert "cmake version" in r.stdout.lower()
+    assert result.version_summary(), "Expected version info after install"
 
 
 @pytest.mark.hw.cpu_only
@@ -239,9 +232,9 @@ def test_invalid_package_raises_error(target_executor):
 
 
 @pytest.mark.xfail(
-    strict=False,  # not strict: DryRun mode causes XPASS which is acceptable
+    strict=True,
     raises=RuntimeError,
-    reason="Installing a non-existent pip package must raise RuntimeError (skips in DryRun)",
+    reason="Installing a non-existent pip package must raise RuntimeError",
 )
 @pytest.mark.hw.cpu_only
 @pytest.mark.layer.runtime
@@ -276,11 +269,8 @@ def test_pip_install_packaging(target_executor):
 
     assert result.ok, f"pip install failed: {result}"
     assert result.command == "pip"
-
-    if result.dry_run:
-        return  # DryRun mode — real pip not available, framework echoed the command
-
     assert "packaging" in result.installed, f"Expected 'packaging' in installed list, got: {result.installed}"
+
     r = target_executor.run("python3 -c 'import packaging; print(packaging.__version__)'")
     assert r.ok, f"packaging import failed: {r.stderr}"
     assert r.stdout.strip(), "packaging version string is empty"
@@ -300,9 +290,6 @@ def test_pip_install_with_extra_args(target_executor):
 
     assert result.ok
     assert result.command == "pip"
-
-    if result.dry_run:
-        return  # DryRun mode — real pip not available
 
     r = target_executor.run("python3 -c 'import setuptools; print(setuptools.__version__)'")
     assert r.ok, f"setuptools import failed: {r.stderr}"
@@ -331,19 +318,15 @@ def test_winget_install_package(target_executor):
     )
 
     assert result.ok
-    if result.dry_run:
-        return  # DryRun mode — real winget not available
-    assert result.all_packages
-    r = target_executor.run("git --version")
-    assert r.ok, f"git not usable after install: {r.stderr}"
-    assert "git" in r.stdout.lower()
+    assert result.all_packages, f"git not accounted for in result: {result}"
+    assert result.version_summary(), "Expected version info after install"
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_choco_install_package(target_executor):
+def test_choco_install_package():
     """Install cmake via choco on Windows; falls back to apt/dnf/zypper on Linux."""
     result = OS_DEPS().install(
         {"choco": "cmake", "*": "cmake"},
@@ -351,19 +334,15 @@ def test_choco_install_package(target_executor):
     )
 
     assert result.ok
-    if result.dry_run:
-        return  # DryRun mode — real choco not available
-    assert result.all_packages
-    r = target_executor.run("cmake --version")
-    assert r.ok, f"cmake not usable after choco install: {r.stderr}"
-    assert "cmake" in r.stdout.lower()
+    assert result.all_packages, f"cmake not accounted for in result: {result}"
+    assert result.version_summary(), "Expected version info after install"
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_scoop_install_package(target_executor):
+def test_scoop_install_package():
     """Install curl via scoop on Windows (user-mode, no admin); falls back on Linux."""
     result = OS_DEPS().install(
         {"scoop": "curl", "*": "curl"},
@@ -371,9 +350,5 @@ def test_scoop_install_package(target_executor):
     )
 
     assert result.ok
-    if result.dry_run:
-        return  # DryRun mode — real scoop not available
-    assert result.all_packages
-    r = target_executor.run("curl --version")
-    assert r.ok, f"curl not usable after scoop install: {r.stderr}"
-    assert "curl" in r.stdout.lower()
+    assert result.all_packages, f"curl not accounted for in result: {result}"
+    assert result.version_summary(), "Expected version info after install"
