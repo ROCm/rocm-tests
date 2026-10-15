@@ -48,6 +48,9 @@ def test_apt_install_common_build_tools(target_executor):
         "curl",
     }, f"Not all packages accounted for: {result.all_packages}"
 
+    if result.dry_run:
+        pytest.skip("DryRun mode — skipping real output verification")
+
     for tool, flag in [("cmake", "--version"), ("git", "--version"), ("curl", "--version")]:
         r = target_executor.run(f"{tool} {flag}")
         assert r.ok, f"{tool} not usable after install: {r.stderr}"
@@ -226,8 +229,12 @@ def test_invalid_package_raises_error(target_executor):
       - XFAIL  → test raised RuntimeError as expected  (counts as pass)
       - XPASS  → package somehow installed, which should never happen
     """
-    # on_missing="install" is explicit so the env var ROCM_TEST_PKG_ON_MISSING
-    # cannot override it to "skip" and mask the expected RuntimeError.
+    # DryRun mode never executes real commands so no RuntimeError is raised —
+    # skip to avoid XPASS(strict) which shows as a failure.
+    probe = OS_DEPS().install("git", on_missing="probe")
+    if probe.dry_run:
+        pytest.skip("DryRun mode — cannot validate error path")
+    # on_missing="install" so ROCM_TEST_PKG_ON_MISSING cannot mask the RuntimeError.
     OS_DEPS().install("rocmtest-this-package-does-not-exist-12345", on_missing="install")
 
 
@@ -246,6 +253,9 @@ def test_invalid_pip_package_raises_error(target_executor):
     pip exits non-zero when the package is not found, which must
     surface as a RuntimeError from the framework.
     """
+    probe = OS_DEPS().install("git", on_missing="probe")
+    if probe.dry_run:
+        pytest.skip("DryRun mode — cannot validate error path")
     OS_DEPS().install("rocmtest-nonexistent-pip-package-12345", command="pip", on_missing="install")
 
 
