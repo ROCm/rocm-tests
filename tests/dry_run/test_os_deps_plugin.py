@@ -193,6 +193,49 @@ def test_zypper_install_libnuma(target_executor):
 
 
 # ---------------------------------------------------------------------------
+# Error handling — invalid package name (xfail)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=RuntimeError,
+    reason="Installing a non-existent package must raise RuntimeError — validates error path",
+)
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_invalid_package_raises_error(target_executor):
+    """Attempt to install a package that does not exist in any repository.
+
+    Expected to fail with RuntimeError because the package manager will
+    report a 'package not found' error.  Marked xfail(strict=True) so:
+      - XFAIL  → test raised RuntimeError as expected  (counts as pass)
+      - XPASS  → package somehow installed, which should never happen
+    """
+    OS_DEPS().install("rocmtest-this-package-does-not-exist-12345")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=RuntimeError,
+    reason="Installing a non-existent pip package must raise RuntimeError",
+)
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_invalid_pip_package_raises_error(target_executor):
+    """Attempt to install a non-existent PyPI package via pip.
+
+    pip exits non-zero when the package is not found, which must
+    surface as a RuntimeError from the framework.
+    """
+    OS_DEPS().install("rocmtest-nonexistent-pip-package-12345", command="pip")
+
+
+# ---------------------------------------------------------------------------
 # Python packages via pip (any platform)
 # ---------------------------------------------------------------------------
 
