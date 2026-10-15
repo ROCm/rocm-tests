@@ -658,6 +658,13 @@ def _probe_missing(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
         elif line.startswith("MISS:"):
             missing.append(line[5:])
 
+    # If the compound command returned no OK:/MISS: tokens (e.g. the executor
+    # failed entirely, or a test mock returns a fixed result), treat all
+    # packages as missing so the caller can decide what to do.
+    if not missing and not present:
+        logger.debug("os_deps: probe returned no tokens — treating all as missing: %s", pkgs)
+        return list(pkgs)
+
     if present:
         logger.debug("os_deps: probe PRESENT — %s", present)
     if missing:
