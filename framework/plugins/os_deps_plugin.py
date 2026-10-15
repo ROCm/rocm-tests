@@ -209,9 +209,9 @@ class OS_DEPS:  # noqa: N801
 class _Backend:
     key: str
     detect_cmd: str
-    install_fn: object  # (pkgs, sudo, src, extra_args) -> str
-    probe_cmds: dict  # {pm_key: Callable[[pkg_name], str]}
-    bootstrap_fn: object | None = None
+    install_fn: Callable  # (pkgs, sudo, src, extra_args) -> str
+    probe_cmds: dict[str, Callable[[str], str]]  # pm_key → probe command builder
+    bootstrap_fn: Callable | None = None
     needs_sudo: bool = True
     platform: str = "linux"
 

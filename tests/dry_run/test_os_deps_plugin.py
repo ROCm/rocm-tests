@@ -42,9 +42,11 @@ def test_apt_install_common_build_tools(target_executor):
     result = OS_DEPS().install("cmake", "git", "curl")
 
     assert result.ok, "OS_DEPS install returned failure"
-    assert set(result.all_packages) >= {"cmake", "git", "curl"}, (
-        f"Not all packages accounted for: {result.all_packages}"
-    )
+    assert set(result.all_packages) >= {
+        "cmake",
+        "git",
+        "curl",
+    }, f"Not all packages accounted for: {result.all_packages}"
 
     for tool, flag in [("cmake", "--version"), ("git", "--version"), ("curl", "--version")]:
         r = target_executor.run(f"{tool} {flag}")
@@ -131,8 +133,13 @@ def test_dnf_install_development_tools(target_executor):
 def test_dnf_install_openssl_devel(target_executor):
     """Install openssl-devel (RHEL name) with dict spec cross-distro mapping."""
     result = OS_DEPS().install(
-        {"apt": "libssl-dev", "dnf": "openssl-devel", "yum": "openssl-devel",
-         "zypper": "libopenssl-devel", "*": "libssl-dev"},
+        {
+            "apt": "libssl-dev",
+            "dnf": "openssl-devel",
+            "yum": "openssl-devel",
+            "zypper": "libopenssl-devel",
+            "*": "libssl-dev",
+        },
         on_missing="skip",
     )
 
@@ -160,8 +167,7 @@ def test_zypper_install_libdrm(target_executor):
     (required for SLES) and that the header lands on the filesystem.
     """
     result = OS_DEPS().install(
-        {"apt": "libdrm-dev", "dnf": "libdrm-devel", "zypper": "libdrm-devel",
-         "*": "libdrm-dev"},
+        {"apt": "libdrm-dev", "dnf": "libdrm-devel", "zypper": "libdrm-devel", "*": "libdrm-dev"},
         on_missing="skip",
     )
 
@@ -180,8 +186,13 @@ def test_zypper_install_libdrm(target_executor):
 def test_zypper_install_libnuma(target_executor):
     """Install libnuma-devel via zypper with cross-distro dict spec."""
     result = OS_DEPS().install(
-        {"apt": "libnuma-dev", "dnf": "numactl-devel", "yum": "numactl-devel",
-         "zypper": "libnuma-devel", "*": "libnuma-dev"},
+        {
+            "apt": "libnuma-dev",
+            "dnf": "numactl-devel",
+            "yum": "numactl-devel",
+            "zypper": "libnuma-devel",
+            "*": "libnuma-dev",
+        },
         on_missing="skip",
     )
 
@@ -257,9 +268,7 @@ def test_pip_install_packaging(target_executor):
 
     assert result.ok, f"pip install failed: {result}"
     assert result.command == "pip"
-    assert "packaging" in result.installed, (
-        f"Expected 'packaging' in installed list, got: {result.installed}"
-    )
+    assert "packaging" in result.installed, f"Expected 'packaging' in installed list, got: {result.installed}"
 
     r = target_executor.run("python3 -c 'import packaging; print(packaging.__version__)'")
     assert r.ok, f"packaging import failed: {r.stderr}"
