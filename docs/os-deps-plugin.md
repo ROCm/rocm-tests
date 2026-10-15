@@ -1,35 +1,19 @@
 # OS Package Dependencies — Developer Guide
 
-Tests often need specific OS packages installed on the execution node before they can run.
-This guide explains how to declare those dependencies so the framework handles installation
-automatically, wherever the test runs.
+`os_deps_plugin` lets test authors declare OS package dependencies directly on
+test functions and classes. The framework installs them automatically before the
+test runs, using the native package manager of the target node — without any
+manual intervention or environment-specific configuration.
 
 ---
 
-## The Problem
-
-Before this feature, there were two ways to get OS packages onto a test node:
-
-1. **`--pre-install pkg=cmake,git`** at the CLI — installs fleet-wide before any tests run.
-   Works fine for packages every single test needs, but you can't scope it to one test.
-
-2. **Ad-hoc install in conftest** — someone writes a distro-specific `apt-get install` call
-   inside a fixture. Fragile, untraceable, and breaks the moment the test runs on RHEL.
-
-Neither approach is declarative. You can't tell by reading a test file what it needs.
-
----
-
-## The Solution
-
-Declare dependencies directly on the test. The framework installs them before the test body
-runs, using whatever package manager the node has.
+## How It Works
 
 ```
 Test declares @OS_DEPS("cmake", "libnuma-dev")
          │
          ▼
-Framework reads declaration before test runs
+Framework reads declaration before test body runs
          │
          ▼
 Probes node: are these packages already installed?
