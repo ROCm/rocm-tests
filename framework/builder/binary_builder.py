@@ -203,7 +203,7 @@ class BinaryBuilder:
             deadline = time.monotonic() + lock_timeout
             while True:
                 try:
-                    fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+                    fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except OSError as exc:
                     if exc.errno not in (errno.EACCES, errno.EAGAIN):
@@ -241,7 +241,7 @@ class BinaryBuilder:
                 return output
 
             finally:
-                fcntl.flock(lock_fh, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+                fcntl.flock(lock_fh, fcntl.LOCK_UN)
 
     # ---------------------------------------------------------------------------
     # Internal helpers
@@ -1374,7 +1374,7 @@ def external_build_lock(build_dir: str, *, timeout: float = 7200.0):
         deadline = time.monotonic() + timeout
         while True:
             try:
-                fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+                fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except OSError as exc:
                 if exc.errno not in (errno.EACCES, errno.EAGAIN):
@@ -1388,7 +1388,7 @@ def external_build_lock(build_dir: str, *, timeout: float = 7200.0):
         try:
             yield
         finally:
-            fcntl.flock(lock_fh, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
 
 
 def _path_is_file(path: str, remote_executor) -> bool:
