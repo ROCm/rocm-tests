@@ -584,13 +584,13 @@ def _detect_backend(executor) -> _Backend:
         result = executor.run(f"bash -c '{backend.detect_cmd} >/dev/null 2>&1 && echo OK || echo NO'")
         if result.ok and "OK" in result.stdout:
             _cache_backend(executor, backend)
-            logger.info("os_deps: detected package manager: '%s'", backend.key)
+            logger.debug("os_deps: detected package manager: '%s'", backend.key)
             return backend
     for backend in _WINDOWS_BACKENDS:
         result = executor.run(f"{backend.detect_cmd} >NUL 2>&1 && echo OK || echo NO")
         if result.ok and "OK" in result.stdout:
             _cache_backend(executor, backend)
-            logger.info("os_deps: detected package manager: '%s'", backend.key)
+            logger.debug("os_deps: detected package manager: '%s'", backend.key)
             return backend
         if backend.bootstrap_fn is not None:
             logger.info("os_deps: '%s' not found — attempting bootstrap", backend.key)
@@ -662,7 +662,7 @@ def _resolve_sudo_prefix(executor, backend: _Backend) -> str:
     if prefix:
         logger.debug("os_deps: sudo available — will use 'sudo -n' prefix")
     else:
-        logger.info("os_deps: sudo not available — running without sudo (likely root or container)")
+        logger.debug("os_deps: sudo not available — running without sudo (likely root or container)")
     with contextlib.suppress(AttributeError, TypeError):
         object.__setattr__(executor, _SUDO_ATTR, prefix)
     return prefix
@@ -719,7 +719,7 @@ def _run_custom_cmd(executor, pkg_specs: tuple, command: str, extra_args: list[s
     pkg_str = " ".join(shlex.quote(p) for p in flat)
     extra = (" " + " ".join(extra_args)) if extra_args else ""
     cmd = f"{command} install {pkg_str}{extra}"
-    logger.info("os_deps: [%s] installing %s", command, flat)
+    logger.debug("os_deps: [%s] installing %s", command, flat)
     result = executor.run(cmd)
     if not result.ok:
         logger.error(
@@ -735,7 +735,7 @@ def _run_custom_cmd(executor, pkg_specs: tuple, command: str, extra_args: list[s
         )
     if result.stderr.strip():
         logger.warning("os_deps: [%s] install warnings for %s:\n%s", command, flat, result.stderr.strip())
-    logger.info("os_deps: [%s] installed successfully: %s", command, flat)
+    logger.info("os_deps: installed %s via %s", flat, command)
     return flat
 
 
@@ -763,7 +763,7 @@ def _execute_install(executor, spec: _InstallSpec) -> InstallResult:
 
     # Custom command — bypass OS PM entirely
     if spec.command:
-        logger.info("os_deps: using custom installer '%s' for %s", spec.command, spec.pkg_specs)
+        logger.debug("os_deps: using custom installer '%s' for %s", spec.command, spec.pkg_specs)
         installed = _run_custom_cmd(executor, spec.pkg_specs, spec.command, spec.extra_args)
         return InstallResult(installed=installed, command=spec.command)
 
@@ -782,21 +782,21 @@ def _execute_install(executor, spec: _InstallSpec) -> InstallResult:
         already_present = [p for p in resolved_pkgs if p not in missing]
 
         if already_present:
-            logger.info("os_deps: already installed (skipping): %s", already_present)
+            logger.debug("os_deps: already installed (skipping): %s", already_present)
         if not missing:
-            logger.info("os_deps: all packages already present — no install needed")
+            logger.debug("os_deps: all packages already present — no install needed")
             return InstallResult(already_present=already_present)
 
-        logger.info("os_deps: [%s] installing missing packages: %s", backend.key, missing)
+        logger.debug("os_deps: [%s] installing missing packages: %s", backend.key, missing)
         _run_install_cmd(executor, backend, missing, resolved_src, spec.extra_args)
-        logger.info("os_deps: [%s] installation complete: %s", backend.key, missing)
+        logger.info("os_deps: installed %s via %s", missing, backend.key)
         return InstallResult(installed=missing, already_present=already_present)
 
     # Non-install modes: probe only
     logger.debug("os_deps: on_missing='%s' — probing only, no install", spec.on_missing)
     missing = _probe_missing(executor, backend, resolved_pkgs)
     if not missing:
-        logger.info("os_deps: all packages present (on_missing=%s)", spec.on_missing)
+        logger.debug("os_deps: all packages present (on_missing=%s)", spec.on_missing)
         return InstallResult(already_present=resolved_pkgs)
 
     names = ", ".join(missing)
@@ -809,7 +809,7 @@ def _execute_install(executor, spec: _InstallSpec) -> InstallResult:
         logger.warning("os_deps: skipping test — missing packages: %s", missing)
         pytest.skip(msg)
     elif spec.on_missing == "fail":
-        logger.error("os_deps: failing test — missing packages: %s", missing)
+        logger.warning("os_deps: failing test (on_missing=fail) — missing packages: %s", missing)
         pytest.fail(msg)
     elif spec.on_missing == "probe":
         logger.warning("os_deps: missing packages (probe-only, not gating): %s", missing)
