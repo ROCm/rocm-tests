@@ -296,7 +296,9 @@ def _resolve_pkgs(pkg_specs: tuple, backend: _Backend) -> list[str]:
 
 def _probe_apt(pkg_name: str) -> str:
     base, _ = _parse_version(pkg_name)
-    return f"dpkg-query -W -f='${{Status}}' {shlex.quote(base)} 2>/dev/null | grep -q 'install ok installed'"
+    # dpkg-query -W exits 0 if installed, 1 if not — no format string avoids quoting conflicts
+    # when this probe string is embedded inside bash -c '...'
+    return f"dpkg-query -W {shlex.quote(base)} >/dev/null 2>&1"
 
 
 def _probe_rpm(pkg_name: str) -> str:
@@ -626,16 +628,40 @@ def _cache_backend(executor, backend: _Backend) -> None:
 
 
 def _probe_missing(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
-    """Return the subset of pkgs not yet installed on the executor's host."""
-    missing = []
+    """Return the subset of pkgs not yet installed on the executor's host.
+
+    All probes are batched into a single shell command to produce one
+    log line instead of one per package, and to minimise round-trips.
+    Each package probe exits 0 (present) or 1 (missing); results are
+    collected as a space-separated token list on stdout.
+    """
+    if not pkgs:
+        return []
+
+    # Build a single compound command:
+    #   for each pkg: run probe; if present echo "OK:<pkg>", else echo "MISS:<pkg>"
+    parts = []
     for pkg in pkgs:
         probe = backend.probe_cmd_fn(pkg)
-        result = executor.run(f"bash -c '{probe}' 2>/dev/null")
-        if result.ok:
-            logger.debug("os_deps: probe PRESENT — %s", pkg)
-        else:
-            logger.debug("os_deps: probe MISSING — %s", pkg)
-            missing.append(pkg)
+        escaped_pkg = pkg.replace("'", "\\'")
+        parts.append(f"( {probe} && echo OK:{escaped_pkg} || echo MISS:{escaped_pkg} )")
+
+    compound = "bash -c '" + "; ".join(parts) + "'"
+    result = executor.run(compound)
+
+    missing = []
+    present = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("OK:"):
+            present.append(line[3:])
+        elif line.startswith("MISS:"):
+            missing.append(line[5:])
+
+    if present:
+        logger.debug("os_deps: probe PRESENT — %s", present)
+    if missing:
+        logger.debug("os_deps: probe MISSING — %s", missing)
     return missing
 
 
