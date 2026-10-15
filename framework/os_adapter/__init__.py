@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 
 from framework.os_adapter.abstract_adapter import AbstractOsAdapter
+from framework.plugins.os_deps_plugin import OS_DEPS as OS_DEPS, InstallResult as InstallResult
 
 
 def os_adapter_factory() -> AbstractOsAdapter:
