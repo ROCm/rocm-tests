@@ -99,10 +99,42 @@ _BACKEND_ATTR = "_os_deps_backend"
 _SUDO_ATTR = "_os_deps_sudo_prefix"  # cached "sudo -n " or ""
 
 # ---------------------------------------------------------------------------
-# Internal spec
+# Public result type
 # ---------------------------------------------------------------------------
 
 PkgSpec = str | dict
+
+
+@dataclass
+class InstallResult:
+    """Result of an OS_DEPS installation attempt.
+
+    Attributes:
+        installed:      Packages that were missing and successfully installed.
+        already_present: Packages that were already installed (probe passed, no install run).
+        dry_run:        True when running in DryRun mode — nothing was actually installed.
+        command:        Custom installer used ("pip", "snap", etc.) or None for OS PM.
+    """
+
+    installed: list[str] = field(default_factory=list)
+    already_present: list[str] = field(default_factory=list)
+    dry_run: bool = False
+    command: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        """True when all requested packages are available (installed or already present)."""
+        return True  # reaching here means no RuntimeError was raised
+
+    @property
+    def all_packages(self) -> list[str]:
+        """All packages accounted for (installed + already present)."""
+        return self.installed + self.already_present
+
+
+# ---------------------------------------------------------------------------
+# Internal spec
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -157,11 +189,19 @@ class OS_DEPS:  # noqa: N801
         command: str | None = None,
         extra_args: list[str] | None = None,
         on_missing: str = _ENV_POLICY,
-    ) -> None:
+    ) -> InstallResult:
         """Install packages immediately using the current test's executor.
 
         Reads executor from the autouse fixture context — no argument needed.
         Accepts all the same pkg_spec forms as the decorator.
+
+        Returns:
+            InstallResult — assert result.ok or check result.installed / result.already_present.
+
+        Example:
+            result = OS_DEPS().install("cmake", "git")
+            assert result.ok
+            assert "cmake" in result.all_packages
         """
         if _current_executor is None:
             raise RuntimeError(
@@ -176,7 +216,7 @@ class OS_DEPS:  # noqa: N801
             extra_args=extra_args or [],
             on_missing=on_missing,
         )
-        _execute_install(_current_executor, spec)
+        return _execute_install(_current_executor, spec)
 
 
 # ---------------------------------------------------------------------------
@@ -536,28 +576,38 @@ _WINDOWS_BACKENDS: list[_Backend] = [
 
 def _detect_backend(executor) -> _Backend:
     cached = getattr(executor, _BACKEND_ATTR, None)
-    if cached is not None:
+    if isinstance(cached, _Backend):
+        logger.debug("os_deps: using cached backend '%s'", cached.key)
         return cached
+    logger.debug("os_deps: probing for package manager on executor")
     for backend in _LINUX_BACKENDS:
         result = executor.run(f"bash -c '{backend.detect_cmd} >/dev/null 2>&1 && echo OK || echo NO'")
         if result.ok and "OK" in result.stdout:
             _cache_backend(executor, backend)
-            logger.debug("os_deps: detected backend '%s'", backend.key)
+            logger.info("os_deps: detected package manager: '%s'", backend.key)
             return backend
     for backend in _WINDOWS_BACKENDS:
         result = executor.run(f"{backend.detect_cmd} >NUL 2>&1 && echo OK || echo NO")
         if result.ok and "OK" in result.stdout:
             _cache_backend(executor, backend)
+            logger.info("os_deps: detected package manager: '%s'", backend.key)
             return backend
         if backend.bootstrap_fn is not None:
+            logger.info("os_deps: '%s' not found — attempting bootstrap", backend.key)
             try:
                 backend.bootstrap_fn(executor)
                 result2 = executor.run(f"{backend.detect_cmd} >NUL 2>&1 && echo OK || echo NO")
                 if result2.ok and "OK" in result2.stdout:
                     _cache_backend(executor, backend)
+                    logger.info("os_deps: bootstrapped and using '%s'", backend.key)
                     return backend
             except RuntimeError as exc:
                 logger.warning("os_deps: bootstrap of '%s' failed: %s", backend.key, exc)
+    logger.error(
+        "os_deps: no supported package manager found. "
+        "Tried: apt-get, dnf, yum, zypper, apk, pacman (Linux); "
+        "winget, choco, scoop (Windows)."
+    )
     raise RuntimeError(
         "os_deps: no supported package manager found. "
         "Tried: apt-get, dnf, yum, zypper, apk, pacman (Linux); "
@@ -581,7 +631,10 @@ def _probe_missing(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
     for pkg in pkgs:
         probe = backend.probe_cmd_fn(pkg)
         result = executor.run(f"bash -c '{probe}' 2>/dev/null")
-        if not result.ok:
+        if result.ok:
+            logger.debug("os_deps: probe PRESENT — %s", pkg)
+        else:
+            logger.debug("os_deps: probe MISSING — %s", pkg)
             missing.append(pkg)
     return missing
 
@@ -606,9 +659,12 @@ def _resolve_sudo_prefix(executor, backend: _Backend) -> str:
         return cached
     result = executor.run("bash -c 'command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null && echo OK || echo NO'")
     prefix = "sudo -n " if (result.ok and "OK" in result.stdout) else ""
+    if prefix:
+        logger.debug("os_deps: sudo available — will use 'sudo -n' prefix")
+    else:
+        logger.info("os_deps: sudo not available — running without sudo (likely root or container)")
     with contextlib.suppress(AttributeError, TypeError):
         object.__setattr__(executor, _SUDO_ATTR, prefix)
-    logger.debug("os_deps: sudo prefix resolved: %r", prefix)
     return prefix
 
 
@@ -645,8 +701,11 @@ def _resolve_src(backend: _Backend, src: str | None, sources: dict[str, str] | N
 # ---------------------------------------------------------------------------
 
 
-def _run_custom_cmd(executor, pkg_specs: tuple, command: str, extra_args: list[str]) -> None:
-    """Install via a custom command (pip/snap/conda/etc.) instead of OS PM."""
+def _run_custom_cmd(executor, pkg_specs: tuple, command: str, extra_args: list[str]) -> list[str]:
+    """Install via a custom command (pip/snap/conda/etc.) instead of OS PM.
+
+    Returns the list of packages passed to the command.
+    """
     flat: list[str] = []
     for spec in pkg_specs:
         if isinstance(spec, str):
@@ -660,12 +719,24 @@ def _run_custom_cmd(executor, pkg_specs: tuple, command: str, extra_args: list[s
     pkg_str = " ".join(shlex.quote(p) for p in flat)
     extra = (" " + " ".join(extra_args)) if extra_args else ""
     cmd = f"{command} install {pkg_str}{extra}"
+    logger.info("os_deps: [%s] installing %s", command, flat)
     result = executor.run(cmd)
     if not result.ok:
+        logger.error(
+            "os_deps: [%s] install failed for %s — exit=%d\nstderr: %s",
+            command,
+            flat,
+            result.exit_code,
+            result.stderr[-500:],
+        )
         raise RuntimeError(
             f"os_deps: '{command} install' failed for {flat}.\n"
             f"exit_code: {result.exit_code}\nstderr: {result.stderr[-1000:]}"
         )
+    if result.stderr.strip():
+        logger.warning("os_deps: [%s] install warnings for %s:\n%s", command, flat, result.stderr.strip())
+    logger.info("os_deps: [%s] installed successfully: %s", command, flat)
+    return flat
 
 
 # ---------------------------------------------------------------------------
@@ -673,40 +744,61 @@ def _run_custom_cmd(executor, pkg_specs: tuple, command: str, extra_args: list[s
 # ---------------------------------------------------------------------------
 
 
-def _execute_install(executor, spec: _InstallSpec) -> None:
-    """Install packages described by spec through executor."""
+def _execute_install(executor, spec: _InstallSpec) -> InstallResult:
+    """Install packages described by spec through executor.
+
+    Returns:
+        InstallResult with .installed, .already_present, .dry_run, .command.
+        Callers can assert result.ok or check result.installed directly.
+    """
     if not spec.pkg_specs:
-        return
+        logger.debug("os_deps: no packages specified — nothing to do")
+        return InstallResult()
 
     if _is_dry_run(executor):
         flat = _dry_run_label(spec)
+        logger.info("os_deps: [DryRun] would install: %s", flat)
         executor.run(f"echo '[os_deps DryRun] would install: {flat}'")
-        return
+        return InstallResult(dry_run=True, command=spec.command)
 
     # Custom command — bypass OS PM entirely
     if spec.command:
-        _run_custom_cmd(executor, spec.pkg_specs, spec.command, spec.extra_args)
-        return
+        logger.info("os_deps: using custom installer '%s' for %s", spec.command, spec.pkg_specs)
+        installed = _run_custom_cmd(executor, spec.pkg_specs, spec.command, spec.extra_args)
+        return InstallResult(installed=installed, command=spec.command)
 
     backend = _detect_backend(executor)
+    logger.debug("os_deps: backend detected: '%s'", backend.key)
     resolved_src = _resolve_src(backend, spec.src, spec.sources)
     resolved_pkgs = _resolve_pkgs(spec.pkg_specs, backend)
 
     if not resolved_pkgs:
-        return
+        logger.debug("os_deps: no packages resolved for backend '%s'", backend.key)
+        return InstallResult()
 
     if spec.on_missing == "install":
+        logger.debug("os_deps: probing installed state for %s", resolved_pkgs)
         missing = _probe_missing(executor, backend, resolved_pkgs)
+        already_present = [p for p in resolved_pkgs if p not in missing]
+
+        if already_present:
+            logger.info("os_deps: already installed (skipping): %s", already_present)
         if not missing:
-            logger.debug("os_deps: all already installed — skipping: %s", resolved_pkgs)
-            return
+            logger.info("os_deps: all packages already present — no install needed")
+            return InstallResult(already_present=already_present)
+
+        logger.info("os_deps: [%s] installing missing packages: %s", backend.key, missing)
         _run_install_cmd(executor, backend, missing, resolved_src, spec.extra_args)
-        return
+        logger.info("os_deps: [%s] installation complete: %s", backend.key, missing)
+        return InstallResult(installed=missing, already_present=already_present)
 
     # Non-install modes: probe only
+    logger.debug("os_deps: on_missing='%s' — probing only, no install", spec.on_missing)
     missing = _probe_missing(executor, backend, resolved_pkgs)
     if not missing:
-        return
+        logger.info("os_deps: all packages present (on_missing=%s)", spec.on_missing)
+        return InstallResult(already_present=resolved_pkgs)
+
     names = ", ".join(missing)
     msg = (
         f"Required OS packages not installed: [{names}]\n"
@@ -714,13 +806,17 @@ def _execute_install(executor, spec: _InstallSpec) -> None:
         f"  --pre-install pkg={','.join(missing)}"
     )
     if spec.on_missing == "skip":
+        logger.warning("os_deps: skipping test — missing packages: %s", missing)
         pytest.skip(msg)
     elif spec.on_missing == "fail":
+        logger.error("os_deps: failing test — missing packages: %s", missing)
         pytest.fail(msg)
     elif spec.on_missing == "probe":
         logger.warning("os_deps: missing packages (probe-only, not gating): %s", missing)
     else:
         raise ValueError(f"Unknown on_missing value: {spec.on_missing!r}")
+
+    return InstallResult(already_present=[p for p in resolved_pkgs if p not in missing])
 
 
 def _dry_run_label(spec: _InstallSpec) -> str:

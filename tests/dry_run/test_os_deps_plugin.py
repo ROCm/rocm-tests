@@ -920,7 +920,11 @@ def test_install_method_dry_run():
     ex = _mock_executor()
     spec = _InstallSpec(pkg_specs=("libnuma-dev",))
     with patch("framework.plugins.os_deps_plugin._is_dry_run", return_value=True):
-        _execute_install(ex, spec)
+        result = _execute_install(ex, spec)
+    assert result.ok
+    assert result.dry_run is True
+    assert result.installed == []
+    assert result.already_present == []
     cmd = ex.run.call_args[0][0]
     assert "would install" in cmd
     assert "libnuma-dev" in cmd
@@ -934,7 +938,10 @@ def test_install_method_dry_run_with_extra_args():
     ex = _mock_executor()
     spec = _InstallSpec(pkg_specs=("torch==2.1",), command="pip", extra_args=["--quiet"])
     with patch("framework.plugins.os_deps_plugin._is_dry_run", return_value=True):
-        _execute_install(ex, spec)
+        result = _execute_install(ex, spec)
+    assert result.ok
+    assert result.dry_run is True
+    assert result.command == "pip"
     cmd = ex.run.call_args[0][0]
     assert "would install" in cmd
     assert "torch==2.1" in cmd
@@ -952,24 +959,30 @@ def test_install_method_dry_run_with_extra_args():
 # ci.nightly → packages that may need a real install on a fresh node
 
 
-@OS_DEPS("cmake", "git", "curl")
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_common_build_tools_installed(target_executor):
-    """cmake / git / curl are installed (or already present) and functional.
+    """cmake / git / curl installed (or already present) and functional.
 
-    Probe fires first — on a standard dev machine all three are present and
-    apt-get is never called. On a fresh CI node they get installed.
+    Uses OS_DEPS().install() directly so the result can be asserted on.
+    Probe fires first — on a standard dev machine all three are present
+    and apt-get is never called. On a fresh CI node they get installed.
     """
+    install_result = OS_DEPS().install("cmake", "git", "curl")
+    assert install_result.ok, "OS_DEPS install returned not-ok"
+    assert set(install_result.all_packages) >= {
+        "cmake",
+        "git",
+        "curl",
+    }, f"Expected all three in result, got: {install_result.all_packages}"
     for tool, flag in [("cmake", "--version"), ("git", "--version"), ("curl", "--version")]:
         result = target_executor.run(f"{tool} {flag}")
-        assert result.ok, f"{tool} not found after OS_DEPS install: {result.stderr}"
+        assert result.ok, f"{tool} not usable after install: {result.stderr}"
         assert tool in result.stdout.lower(), f"Unexpected {tool} output: {result.stdout}"
 
 
-@OS_DEPS({"apt": "libnuma-dev", "dnf": "numactl-devel", "zypper": "libnuma-devel", "*": "libnuma-dev"})
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
@@ -977,17 +990,19 @@ def test_common_build_tools_installed(target_executor):
 def test_libnuma_dev_installed_cross_distro(target_executor):
     """libnuma-dev (apt) / numactl-devel (dnf/zypper) installed via dict spec.
 
-    Each distro uses the correct package name; '*' covers any unlisted PM.
-    After install the NUMA header must be locatable on the file system.
+    Result asserts confirm installation verdict before checking the header.
     """
-    result = target_executor.run(
-        "find /usr/include -name 'numa.h' 2>/dev/null | head -1"
+    install_result = OS_DEPS().install(
+        {"apt": "libnuma-dev", "dnf": "numactl-devel", "zypper": "libnuma-devel", "*": "libnuma-dev"}
     )
+    assert install_result.ok, "libnuma-dev install reported failure"
+    assert install_result.all_packages, "No packages accounted for in InstallResult"
+
+    result = target_executor.run("find /usr/include -name 'numa.h' 2>/dev/null | head -1")
     assert result.ok
     assert result.stdout.strip(), "libnuma-dev installed but numa.h not found under /usr/include"
 
 
-@OS_DEPS({"apt": "libdrm-dev", "dnf": "libdrm-devel", "zypper": "libdrm-devel", "*": "libdrm-dev"})
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
@@ -995,17 +1010,19 @@ def test_libnuma_dev_installed_cross_distro(target_executor):
 def test_libdrm_dev_installed_cross_distro(target_executor):
     """libdrm-dev (apt) / libdrm-devel (dnf/zypper) installed via dict spec.
 
-    After install, the DRM header must be present. This is a real dependency
-    for any HIP/GPU userspace stack and validates cross-distro name mapping.
+    Result asserts confirm installation verdict before checking the header.
     """
-    result = target_executor.run(
-        "find /usr/include -name 'drm.h' -path '*/drm/*' 2>/dev/null | head -1"
+    install_result = OS_DEPS().install(
+        {"apt": "libdrm-dev", "dnf": "libdrm-devel", "zypper": "libdrm-devel", "*": "libdrm-dev"}
     )
+    assert install_result.ok, "libdrm-dev install reported failure"
+    assert install_result.all_packages, "No packages accounted for in InstallResult"
+
+    result = target_executor.run("find /usr/include -name 'drm.h' -path '*/drm/*' 2>/dev/null | head -1")
     assert result.ok
     assert result.stdout.strip(), "libdrm-dev installed but drm.h not found under /usr/include"
 
 
-@OS_DEPS("packaging", command="pip", extra_args=["--quiet"])
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
@@ -1013,11 +1030,13 @@ def test_libdrm_dev_installed_cross_distro(target_executor):
 def test_pip_install_packaging_library(target_executor):
     """'packaging' Python library installed via pip with --quiet flag.
 
-    'packaging' is a tiny, dependency-free PyPI package used by pip itself —
-    safe to install on any machine. Verifies command= and extra_args= paths.
+    Result asserts confirm pip installed it before verifying the import.
     """
-    result = target_executor.run(
-        "python3 -c 'import packaging; print(packaging.__version__)'"
-    )
-    assert result.ok, f"packaging import failed: {result.stderr}"
+    install_result = OS_DEPS().install("packaging", command="pip", extra_args=["--quiet"])
+    assert install_result.ok, "pip install packaging reported failure"
+    assert install_result.command == "pip"
+    assert "packaging" in install_result.installed, f"'packaging' not in installed list: {install_result.installed}"
+
+    result = target_executor.run("python3 -c 'import packaging; print(packaging.__version__)'")
+    assert result.ok, f"packaging import failed after install: {result.stderr}"
     assert result.stdout.strip(), "packaging version string is empty"
