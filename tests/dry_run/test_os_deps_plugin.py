@@ -223,7 +223,6 @@ def test_zypper_install_libnuma(target_executor):
     reason="Installing a non-existent package must raise RuntimeError — validates error path",
 )
 @pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 @pytest.mark.os.linux
@@ -245,7 +244,6 @@ def test_invalid_package_raises_error(target_executor):
     reason="Installing a non-existent pip package must raise RuntimeError",
 )
 @pytest.mark.hw.cpu_only
-@pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_invalid_pip_package_raises_error(target_executor):
