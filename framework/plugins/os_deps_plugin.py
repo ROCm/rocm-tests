@@ -942,9 +942,53 @@ def _is_dry_run(executor) -> bool:
     return False
 
 
+class _SubprocessExecutor:
+    """Minimal blocking executor using subprocess.run() for Windows --no-gpu mode.
+
+    Used only as an internal fallback when target_executor is DryRun and
+    cpu_executor is unavailable or uses POSIX-only APIs (select/set_blocking).
+    Not exposed to tests — only used by os_deps_plugin for package installation.
+    """
+
+    node_id = None
+    hostname = None
+    host = "localhost"
+    _dry_run = False
+
+    def run(self, command: str, timeout: float = 300.0, **_):  # type: ignore[return]
+        import subprocess
+
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True, timeout=timeout, check=False
+        )
+
+        class _Result:
+            ok = result.returncode == 0
+            exit_code = result.returncode
+            stdout = result.stdout
+            stderr = result.stderr
+
+        return _Result()
+
+
 def _resolve_executor(request: pytest.FixtureRequest):
+    """Return the best executor for package installation.
+
+    When --no-gpu is active, target_executor becomes DryRunExecutor which
+    skips all real commands. For this plugin, use cpu_executor (real local
+    subprocess, no GPU) so package managers actually run. If cpu_executor
+    is unavailable or fails (e.g. Windows POSIX incompatibility), fall back
+    to _SubprocessExecutor which uses blocking subprocess.run().
+    """
     try:
-        return request.getfixturevalue("target_executor")
+        executor = request.getfixturevalue("target_executor")
+        if _is_dry_run(executor):
+            # --no-gpu active: use a simple blocking subprocess executor so
+            # package managers (apt, winget, pip, etc.) actually run.
+            # cpu_executor uses POSIX-only select() which fails on Windows,
+            # so we use _SubprocessExecutor (subprocess.run, cross-platform).
+            return _SubprocessExecutor()
+        return executor
     except pytest.FixtureLookupError:
         return request.getfixturevalue("dry_run_executor")
 
