@@ -245,7 +245,7 @@ def test_invalid_package_raises_error(target_executor):
     reason="Installing a non-existent pip package must raise RuntimeError",
 )
 @pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
+@pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_invalid_pip_package_raises_error(target_executor):
