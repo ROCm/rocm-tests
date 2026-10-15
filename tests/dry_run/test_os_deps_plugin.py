@@ -214,7 +214,9 @@ def test_invalid_package_raises_error(target_executor):
       - XFAIL  → test raised RuntimeError as expected  (counts as pass)
       - XPASS  → package somehow installed, which should never happen
     """
-    OS_DEPS().install("rocmtest-this-package-does-not-exist-12345")
+    # on_missing="install" is explicit so the env var ROCM_TEST_PKG_ON_MISSING
+    # cannot override it to "skip" and mask the expected RuntimeError.
+    OS_DEPS().install("rocmtest-this-package-does-not-exist-12345", on_missing="install")
 
 
 @pytest.mark.xfail(
@@ -232,7 +234,7 @@ def test_invalid_pip_package_raises_error(target_executor):
     pip exits non-zero when the package is not found, which must
     surface as a RuntimeError from the framework.
     """
-    OS_DEPS().install("rocmtest-nonexistent-pip-package-12345", command="pip")
+    OS_DEPS().install("rocmtest-nonexistent-pip-package-12345", command="pip", on_missing="install")
 
 
 # ---------------------------------------------------------------------------
@@ -293,14 +295,14 @@ def test_pip_install_with_extra_args(target_executor):
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_winget_install_package(target_executor):
-    """Install Git.Git via winget; skips on non-Windows nodes.
+    """Install git via winget on Windows; falls back to apt/dnf on Linux.
 
-    winget is not available on Linux — _detect_backend raises RuntimeError
-    which the autouse fixture converts to pytest.skip.
+    No command= — the framework detects the PM and picks the right entry
+    from the dict. On Windows it uses winget with 'Git.Git'; on Linux it
+    uses the '*' fallback ('git') via apt/dnf/zypper.
     """
     result = OS_DEPS().install(
         {"winget": "Git.Git", "*": "git"},
-        command="winget",
         on_missing="skip",
     )
 
@@ -308,7 +310,7 @@ def test_winget_install_package(target_executor):
     assert result.all_packages
 
     r = target_executor.run("git --version")
-    assert r.ok, f"git not usable after winget install: {r.stderr}"
+    assert r.ok, f"git not usable after install: {r.stderr}"
     assert "git" in r.stdout.lower()
 
 
@@ -317,10 +319,9 @@ def test_winget_install_package(target_executor):
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_choco_install_package(target_executor):
-    """Install cmake via Chocolatey; skips on non-Windows nodes."""
+    """Install cmake via choco on Windows; falls back to apt/dnf/zypper on Linux."""
     result = OS_DEPS().install(
         {"choco": "cmake", "*": "cmake"},
-        command="choco",
         on_missing="skip",
     )
 
@@ -337,10 +338,9 @@ def test_choco_install_package(target_executor):
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
 def test_scoop_install_package(target_executor):
-    """Install curl via Scoop (user-mode, no admin); skips on non-Windows nodes."""
+    """Install curl via scoop on Windows (user-mode, no admin); falls back on Linux."""
     result = OS_DEPS().install(
         {"scoop": "curl", "*": "curl"},
-        command="scoop",
         on_missing="skip",
     )
 
