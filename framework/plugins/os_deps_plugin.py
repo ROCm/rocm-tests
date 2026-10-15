@@ -6,11 +6,10 @@ os_deps_plugin.py — OS package auto-install for rocm-tests.
 
 Self-contained: copy this single file to use in another repo.
 
-Public API (import from framework.os_adapter.deps for convenience):
-    from framework.os_adapter.deps import OS_DEPS
+Public API (import from framework.os_adapter for convenience):
+    from framework.os_adapter import OS_DEPS
 
 Usage:
-    # Function/method decorator
     @OS_DEPS("cmake", "git")
     @OS_DEPS("cmake==3.26")
     @OS_DEPS({"apt": "libssl-dev", "dnf": "openssl-devel", "*": "libssl-dev"})
@@ -20,57 +19,39 @@ Usage:
     @OS_DEPS("pkg", src="https://my-repo/")
     @OS_DEPS("pkg", sources={"apt": "deb https://...", "dnf": "https://..."})
 
-    # Class-level (applies to all methods)
     class TestFoo:
-        __OS_DEPS__ = OS_DEPS("cmake", "git")
+        __OS_DEPS__ = OS_DEPS("cmake", "git")   # class-level
 
-    # Module-level (applies to all tests in file)
-    __OS_DEPS__ = OS_DEPS("cmake")
+    __OS_DEPS__ = OS_DEPS("cmake")               # module-level
 
-    # Mid-test — same arg forms as decorator
-    OS_DEPS().install("cmake")
-    OS_DEPS().install("cmake==3.26", "git")
-    OS_DEPS().install({"apt": "libssl-dev", "dnf": "openssl-devel", "*": "libssl-dev"})
-    OS_DEPS().install({"apt": ["libssl-dev", "libdrm-dev"], "dnf": ["openssl-devel", "libdrm-devel"]})
-    OS_DEPS().install(*LIST_OF_PKGS, command="pip", extra_args=["--quiet"])
-    OS_DEPS().install("node --classic", command="snap")
+    OS_DEPS().install("cmake")                   # mid-test; same arg forms
 
-pkg_spec forms (str or dict, same everywhere):
+pkg_spec forms:
     "cmake"              plain name, auto-detect PM
-    "cmake==3.26"        version pin; translated per PM:
-                           apt → cmake=3.26*
-                           dnf/yum → cmake-3.26
-                           zypper/apk/pacman → cmake=3.26
-    {"apt": "libssl-dev", "dnf": "openssl-devel", "*": "libssl-dev"}   per-PM str value
-    {"apt": ["libssl-dev", "libdrm-dev"], "dnf": ["openssl-devel"]}    per-PM list value
+    "cmake==3.26"        version pin (translated per PM)
+    {"apt": "libssl-dev", "dnf": "openssl-devel", "*": "libssl-dev"}
+    {"apt": ["libssl-dev", "libdrm-dev"], "dnf": ["openssl-devel"]}
 
 command= values:
-    None (default)  auto-detect OS PM (apt/dnf/yum/zypper/apk/pacman/winget/choco/scoop)
-    "pip"           pip install <pkgs> [extra_args]
-    "snap"          snap install <pkgs> [extra_args]
-    "conda"         conda install <pkgs> [extra_args]
-    any str         <command> install <pkgs> [extra_args]
+    None (default)  auto-detect OS PM
+    "pip" / "snap" / "conda" / any string
 
 extra_args=:
-    List of additional flags passed verbatim to the package manager.
-    Examples: ["--no-install-recommends"], ["--best", "--allowerasing"],
-              ["--index-url", "https://..."]
+    Extra flags passed verbatim to the package manager.
 
 on_missing (env: ROCM_TEST_PKG_ON_MISSING, default "install"):
-    "install"   probe then install missing packages
-    "skip"      pytest.skip if any missing
-    "fail"      pytest.fail if any missing
-    "probe"     log warning only, do not gate test
+    "install" / "skip" / "fail" / "probe"
 
 Resolution priority: function.__OS_DEPS__ > class.__OS_DEPS__ > module.__OS_DEPS__
 
 Platform support:
-    Linux:   apt/apt-get, dnf, yum, zypper, apk, pacman (auto-detected)
+    Linux:   apt, dnf, yum, zypper, apk, pacman (auto-detected)
     Windows: winget, choco, scoop (auto-detected; bootstrapped if missing)
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import contextlib
 from dataclasses import dataclass, field
 import hashlib
@@ -91,12 +72,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _current_executor: AbstractExecutor | None = None
 
-# Env-var policy
 _ENV_POLICY = os.environ.get("ROCM_TEST_PKG_ON_MISSING", "install").lower()
 
-# Cache attributes on executor to avoid repeated probes
 _BACKEND_ATTR = "_os_deps_backend"
-_SUDO_ATTR = "_os_deps_sudo_prefix"  # cached "sudo -n " or ""
+_SUDO_ATTR = "_os_deps_sudo_prefix"
 
 # ---------------------------------------------------------------------------
 # Public result type
@@ -111,11 +90,10 @@ class InstallResult:
 
     Attributes:
         installed:      Packages that were missing and successfully installed.
-        already_present: Packages already on the node (probe passed, no install run).
-        versions:       Versions of all accounted packages {pkg: version}.
-                        Populated for both installed and already_present packages.
-        dry_run:        True when running in DryRun mode — nothing was actually installed.
-        command:        Custom installer used ("pip", "snap", etc.) or None for OS PM.
+        already_present: Packages already on the node (probe passed).
+        versions:       {pkg: version} for all accounted packages.
+        dry_run:        True when running in DryRun mode.
+        command:        Custom installer used ("pip", "snap", …) or None for OS PM.
     """
 
     installed: list[str] = field(default_factory=list)
@@ -126,23 +104,19 @@ class InstallResult:
 
     @property
     def ok(self) -> bool:
-        """True when all requested packages are available (installed or already present)."""
-        return True  # reaching here means no RuntimeError was raised
+        """True when all requested packages are available (no RuntimeError raised)."""
+        return True
 
     @property
     def all_packages(self) -> list[str]:
-        """All packages accounted for (installed + already present)."""
+        """installed + already_present."""
         return self.installed + self.already_present
 
     def version_summary(self) -> str:
-        """Human-readable version string, e.g. 'cmake=3.28.3, git=2.43.0'."""
+        """Human-readable string: 'cmake=3.28.3, git=2.43.0'."""
         if not self.versions:
             return ", ".join(self.all_packages)
-        parts = []
-        for pkg in self.all_packages:
-            ver = self.versions.get(pkg)
-            parts.append(f"{pkg}={ver}" if ver else pkg)
-        return ", ".join(parts)
+        return ", ".join(f"{p}={self.versions[p]}" if p in self.versions else p for p in self.all_packages)
 
 
 # ---------------------------------------------------------------------------
@@ -206,15 +180,9 @@ class OS_DEPS:  # noqa: N801
         """Install packages immediately using the current test's executor.
 
         Reads executor from the autouse fixture context — no argument needed.
-        Accepts all the same pkg_spec forms as the decorator.
 
         Returns:
             InstallResult — assert result.ok or check result.installed / result.already_present.
-
-        Example:
-            result = OS_DEPS().install("cmake", "git")
-            assert result.ok
-            assert "cmake" in result.all_packages
         """
         if _current_executor is None:
             raise RuntimeError(
@@ -241,15 +209,15 @@ class OS_DEPS:  # noqa: N801
 class _Backend:
     key: str
     detect_cmd: str
-    probe_cmd_fn: object
-    install_cmd_fn: object
+    install_fn: object  # (pkgs, sudo, src, extra_args) -> str
+    probe_cmds: dict  # {pm_key: Callable[[pkg_name], str]}
     bootstrap_fn: object | None = None
     needs_sudo: bool = True
     platform: str = "linux"
 
 
 # ---------------------------------------------------------------------------
-# Version parsing and translation
+# Version parsing helpers (shared by both PM classes)
 # ---------------------------------------------------------------------------
 
 
@@ -262,7 +230,7 @@ def _parse_version(pkg: str) -> tuple[str, str | None]:
 
 
 def _versioned(name: str, version: str | None, pm_key: str) -> str:
-    """Apply version syntax per package manager."""
+    """Translate a version pin to the correct syntax for a given PM."""
     if not version:
         return name
     if pm_key == "apt":
@@ -275,12 +243,418 @@ def _versioned(name: str, version: str | None, pm_key: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Resolve pkg_specs → flat list of PM-specific package name strings
+# _LinuxPM — all Linux package manager logic
 # ---------------------------------------------------------------------------
 
 
+class _LinuxPM:
+    """Linux PM logic: apt, dnf, yum, zypper, apk, pacman."""
+
+    # Probe commands — each exits 0 if the package is installed, 1 if not.
+    # Embedded inside bash -c '...' so must not contain single quotes.
+    PROBE_CMDS: dict[str, Callable[[str], str]] = {
+        "apt": lambda pkg: f"dpkg-query -W {shlex.quote(_parse_version(pkg)[0])} >/dev/null 2>&1",
+        "dnf": lambda pkg: f"rpm -q {shlex.quote(_parse_version(pkg)[0])} >/dev/null 2>&1",
+        "yum": lambda pkg: f"rpm -q {shlex.quote(_parse_version(pkg)[0])} >/dev/null 2>&1",
+        "zypper": lambda pkg: f"rpm -q {shlex.quote(_parse_version(pkg)[0])} >/dev/null 2>&1",
+        "apk": lambda pkg: f"apk info -e {shlex.quote(_parse_version(pkg)[0])} >/dev/null 2>&1",
+        "pacman": lambda pkg: f"pacman -Q {shlex.quote(_parse_version(pkg)[0])} >/dev/null 2>&1",
+    }
+
+    # ── Install command builders ──────────────────────────────────────────────
+
+    @staticmethod
+    def apt_install(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
+        pkg_str = " ".join(shlex.quote(p) for p in pkgs)
+        extra = (" " + " ".join(extra_args)) if extra_args else ""
+        if src:
+            if src.endswith(".deb"):
+                return (
+                    f"bash -c '{sudo}wget -q -O /tmp/_os_deps.deb {shlex.quote(src)} && "
+                    f"{sudo}dpkg -i /tmp/_os_deps.deb && {sudo}apt-get install -f -y 2>&1'"
+                )
+            repo_hash = hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
+            repo_file = f"/etc/apt/sources.list.d/os_deps_{repo_hash}.list"
+            return (
+                f"bash -c 'grep -qF {shlex.quote(src)} {repo_file} 2>/dev/null || "
+                f"echo {shlex.quote(src)} | {sudo}tee {repo_file} >/dev/null; "
+                f"{sudo}apt-get update -q -y && "
+                f"{sudo}apt-get install -y --no-install-recommends {pkg_str}{extra} 2>&1'"
+            )
+        return f"bash -c '{sudo}apt-get install -y --no-install-recommends {pkg_str}{extra} 2>&1'"
+
+    @staticmethod
+    def dnf_install(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
+        pkg_str = " ".join(shlex.quote(p) for p in pkgs)
+        extra = (" " + " ".join(extra_args)) if extra_args else ""
+        if src:
+            if src.endswith(".rpm"):
+                return f"bash -c '{sudo}dnf install -y {shlex.quote(src)}{extra} 2>&1'"
+            repo_hash = hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
+            repo_file = f"/etc/yum.repos.d/os_deps_{repo_hash}.repo"
+            content = f"[os_deps_{repo_hash}]\\nname=os_deps custom\\nbaseurl={src}\\nenabled=1\\ngpgcheck=0"
+            return (
+                f"bash -c 'echo -e {shlex.quote(content)} | {sudo}tee {repo_file} >/dev/null && "
+                f"{sudo}dnf install -y {pkg_str}{extra} 2>&1'"
+            )
+        return f"bash -c '{sudo}dnf install -y {pkg_str}{extra} 2>&1'"
+
+    @staticmethod
+    def yum_install(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
+        pkg_str = " ".join(shlex.quote(p) for p in pkgs)
+        extra = (" " + " ".join(extra_args)) if extra_args else ""
+        if src:
+            if src.endswith(".rpm"):
+                return f"bash -c '{sudo}yum install -y {shlex.quote(src)}{extra} 2>&1'"
+            repo_hash = hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
+            repo_file = f"/etc/yum.repos.d/os_deps_{repo_hash}.repo"
+            content = f"[os_deps_{repo_hash}]\\nname=os_deps custom\\nbaseurl={src}\\nenabled=1\\ngpgcheck=0"
+            return (
+                f"bash -c 'echo -e {shlex.quote(content)} | {sudo}tee {repo_file} >/dev/null && "
+                f"{sudo}yum install -y {pkg_str}{extra} 2>&1'"
+            )
+        return f"bash -c '{sudo}yum install -y {pkg_str}{extra} 2>&1'"
+
+    @staticmethod
+    def zypper_install(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
+        pkg_str = " ".join(shlex.quote(p) for p in pkgs)
+        extra = (" " + " ".join(extra_args)) if extra_args else ""
+        if src:
+            repo_hash = hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
+            alias = f"os_deps_{repo_hash}"
+            return (
+                f"bash -c '{sudo}zypper --non-interactive addrepo --no-gpgcheck "
+                f"{shlex.quote(src)} {alias} 2>&1; "
+                f"{sudo}zypper --non-interactive refresh 2>&1 && "
+                f"{sudo}zypper --non-interactive install -y --no-recommends --no-gpg-checks "
+                f"{pkg_str}{extra} 2>&1'"
+            )
+        return (
+            f"bash -c '{sudo}zypper --non-interactive install -y "
+            f"--no-recommends --no-gpg-checks {pkg_str}{extra} 2>&1'"
+        )
+
+    @staticmethod
+    def apk_install(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
+        pkg_str = " ".join(shlex.quote(p) for p in pkgs)
+        extra = (" " + " ".join(extra_args)) if extra_args else ""
+        if src:
+            return f"bash -c '{sudo}apk add --no-cache --repository {shlex.quote(src)} {pkg_str}{extra} 2>&1'"
+        return f"bash -c '{sudo}apk add --no-cache {pkg_str}{extra} 2>&1'"
+
+    @staticmethod
+    def pacman_install(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
+        pkg_str = " ".join(shlex.quote(p) for p in pkgs)
+        extra = (" " + " ".join(extra_args)) if extra_args else ""
+        if src:
+            logger.warning("os_deps: pacman does not support src= URL; ignoring %s", src)
+        return f"bash -c '{sudo}pacman -S --noconfirm {pkg_str}{extra} 2>&1'"
+
+    # ── Probe orchestration ───────────────────────────────────────────────────
+
+    @classmethod
+    def probe_missing(cls, executor, backend: _Backend, pkgs: list[str]) -> list[str]:
+        """Batch all probes into one bash compound command — one round-trip."""
+        parts = []
+        for pkg in pkgs:
+            probe = backend.probe_cmds[backend.key](pkg)
+            escaped = pkg.replace("'", "\\'")
+            parts.append(f"( {probe} && echo OK:{escaped} || echo MISS:{escaped} )")
+
+        result = executor.run("bash -c '" + "; ".join(parts) + "'")
+
+        missing, present = [], []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("OK:"):
+                present.append(line[3:])
+            elif line.startswith("MISS:"):
+                missing.append(line[5:])
+
+        if not missing and not present:
+            logger.debug("os_deps: probe returned no tokens — treating all as missing: %s", pkgs)
+            return list(pkgs)
+
+        if present:
+            logger.debug("os_deps: probe PRESENT — %s", present)
+        if missing:
+            logger.debug("os_deps: probe MISSING — %s", missing)
+        return missing
+
+    # ── Version queries ───────────────────────────────────────────────────────
+
+    @classmethod
+    def query_versions(cls, executor, backend: _Backend, pkgs: list[str]) -> dict[str, str]:  # noqa: C901
+        """Query installed version per package using dpkg-query / rpm -q / etc."""
+        versions: dict[str, str] = {}
+        pkg_str = " ".join(shlex.quote(p) for p in pkgs)
+
+        if backend.key == "apt":
+            result = executor.run(f"dpkg-query -W -f='${{Package}}\\t${{Version}}\\n' {pkg_str} 2>/dev/null")
+            for line in result.stdout.splitlines():
+                parts = line.strip().split("\t", 1)
+                if len(parts) == 2 and parts[1].strip():
+                    versions[parts[0].strip()] = parts[1].strip()
+
+        elif backend.key in ("dnf", "yum", "zypper"):
+            result = executor.run(
+                f"rpm -q --queryformat '%{{NAME}}\\t%{{VERSION}}-%{{RELEASE}}\\n' {pkg_str} 2>/dev/null"
+            )
+            for line in result.stdout.splitlines():
+                parts = line.strip().split("\t", 1)
+                if len(parts) == 2 and "not installed" not in parts[1]:
+                    versions[parts[0].strip()] = parts[1].strip()
+
+        elif backend.key == "apk":
+            result = executor.run(f"apk info -v {pkg_str} 2>/dev/null")
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                for pkg in pkgs:
+                    base, _ = _parse_version(pkg)
+                    if line.startswith(base + "-"):
+                        versions[base] = line[len(base) + 1 :]
+
+        elif backend.key == "pacman":
+            result = executor.run(f"pacman -Q {pkg_str} 2>/dev/null")
+            for line in result.stdout.splitlines():
+                parts = line.strip().split(None, 1)
+                if len(parts) == 2:
+                    versions[parts[0]] = parts[1]
+
+        return versions
+
+
+# ---------------------------------------------------------------------------
+# _WindowsPM — all Windows package manager logic
+# ---------------------------------------------------------------------------
+
+
+class _WindowsPM:
+    """Windows PM logic: winget, choco, scoop."""
+
+    # Probe commands — run via cmd.exe; exit 0 if installed, non-zero if not.
+    PROBE_CMDS: dict[str, Callable[[str], str]] = {
+        "winget": lambda pkg: f"winget list --id {shlex.quote(_parse_version(pkg)[0])} --exact >NUL 2>&1",
+        "choco": lambda pkg: f"choco list --local-only --exact {shlex.quote(_parse_version(pkg)[0])} >NUL 2>&1",
+        "scoop": lambda pkg: f"scoop list {shlex.quote(_parse_version(pkg)[0])} >NUL 2>&1",
+    }
+
+    # ── Install command builders ──────────────────────────────────────────────
+
+    @staticmethod
+    def winget_install(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
+        base = "winget install --silent --accept-package-agreements --accept-source-agreements"
+        extra = (" " + " ".join(extra_args)) if extra_args else ""
+        cmds = []
+        for pkg in pkgs:
+            if src:
+                cmds.append(f"{base} --source {shlex.quote(src)} --id {shlex.quote(pkg)}{extra}")
+            else:
+                cmds.append(f"{base} --id {shlex.quote(pkg)}{extra}")
+        return " && ".join(cmds)
+
+    @staticmethod
+    def choco_install(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
+        pkg_str = " ".join(shlex.quote(p) for p in pkgs)
+        extra = (" " + " ".join(extra_args)) if extra_args else ""
+        if src:
+            return f"choco install -y {pkg_str} --source {shlex.quote(src)}{extra}"
+        return f"choco install -y {pkg_str}{extra}"
+
+    @staticmethod
+    def scoop_install(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
+        extra = (" " + " ".join(extra_args)) if extra_args else ""
+        if src:
+            bucket = f"os_deps_{hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]}"
+            add = f"scoop bucket add {shlex.quote(bucket)} {shlex.quote(src)}"
+            install = " && ".join(f"scoop install {shlex.quote(p)}{extra}" for p in pkgs)
+            return f"{add} && {install}"
+        return " && ".join(f"scoop install {shlex.quote(p)}{extra}" for p in pkgs)
+
+    # ── Bootstrappers ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def bootstrap_winget(executor) -> None:
+        logger.info("os_deps: winget not found — bootstrapping App Installer")
+        url = (
+            "https://github.com/microsoft/winget-cli/releases/latest/download/"
+            "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
+        )
+        result = executor.run(
+            f"powershell -NoProfile -ExecutionPolicy Bypass -Command \"Add-AppxPackage -Path '{url}'\""
+        )
+        if not result.ok:
+            raise RuntimeError(
+                f"os_deps: failed to bootstrap winget.\n"
+                f"exit_code: {result.exit_code}\nstderr: {result.stderr[-500:]}"
+            )
+
+    @staticmethod
+    def bootstrap_choco(executor) -> None:
+        logger.info("os_deps: Chocolatey not found — bootstrapping")
+        result = executor.run(
+            "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+            '"Set-ExecutionPolicy Bypass -Scope Process -Force; '
+            "[System.Net.ServicePointManager]::SecurityProtocol = "
+            "[System.Net.ServicePointManager]::SecurityProtocol -bor 3072; "
+            "iex ((New-Object System.Net.WebClient).DownloadString("
+            "'https://community.chocolatey.org/install.ps1'))\""
+        )
+        if not result.ok:
+            raise RuntimeError(
+                f"os_deps: failed to bootstrap Chocolatey.\n"
+                f"exit_code: {result.exit_code}\nstderr: {result.stderr[-500:]}"
+            )
+
+    @staticmethod
+    def bootstrap_scoop(executor) -> None:
+        logger.info("os_deps: Scoop not found — bootstrapping")
+        result = executor.run('powershell -NoProfile -ExecutionPolicy RemoteSigned -Command "irm get.scoop.sh | iex"')
+        if not result.ok:
+            raise RuntimeError(
+                f"os_deps: failed to bootstrap Scoop.\n"
+                f"exit_code: {result.exit_code}\nstderr: {result.stderr[-500:]}"
+            )
+
+    # ── Probe orchestration ───────────────────────────────────────────────────
+
+    @classmethod
+    def probe_missing(cls, executor, backend: _Backend, pkgs: list[str]) -> list[str]:
+        """Probe each package individually via cmd.exe (no bash on Windows)."""
+        missing, present = [], []
+        for pkg in pkgs:
+            probe = backend.probe_cmds[backend.key](pkg)
+            result = executor.run(probe)
+            if result.ok:
+                present.append(pkg)
+            else:
+                missing.append(pkg)
+        if present:
+            logger.debug("os_deps: probe PRESENT — %s", present)
+        if missing:
+            logger.debug("os_deps: probe MISSING — %s", missing)
+        return missing
+
+    # ── Version queries ───────────────────────────────────────────────────────
+
+    @classmethod
+    def query_versions(cls, executor, backend: _Backend, pkgs: list[str]) -> dict[str, str]:  # noqa: C901
+        """Query installed version per package via winget/choco/scoop list."""
+        versions: dict[str, str] = {}
+        for pkg in pkgs:
+            base, _ = _parse_version(pkg)
+            if backend.key == "winget":
+                result = executor.run(f"winget list --id {shlex.quote(base)} --exact 2>NUL")
+                for line in result.stdout.splitlines():
+                    if base.lower() in line.lower():
+                        cols = line.split()
+                        if len(cols) >= 3:
+                            versions[base] = cols[2]  # Name  Id  Version  …
+                        break
+            elif backend.key == "choco":
+                result = executor.run(f"choco list --local-only --exact {shlex.quote(base)} 2>NUL")
+                for line in result.stdout.splitlines():
+                    if base.lower() in line.lower():
+                        parts = line.strip().split(None, 1)
+                        if len(parts) == 2:
+                            versions[base] = parts[1]
+                        break
+            elif backend.key == "scoop":
+                result = executor.run(f"scoop list {shlex.quote(base)} 2>NUL")
+                for line in result.stdout.splitlines():
+                    if base.lower() in line.lower():
+                        cols = line.split()
+                        if len(cols) >= 2:
+                            versions[base] = cols[1]
+                        break
+        return versions
+
+
+# ---------------------------------------------------------------------------
+# Backend registry
+# ---------------------------------------------------------------------------
+
+_LPC = _LinuxPM.PROBE_CMDS  # shorthand for the registry below
+_WPC = _WindowsPM.PROBE_CMDS
+
+
+def _linux(key: str, detect: str, install_fn) -> _Backend:
+    return _Backend(
+        key=key, detect_cmd=detect, install_fn=install_fn, probe_cmds=_LPC, needs_sudo=True, platform="linux"
+    )
+
+
+_LINUX_BACKENDS: list[_Backend] = [
+    _linux("apt", "command -v apt-get", _LinuxPM.apt_install),
+    _linux("dnf", "command -v dnf", _LinuxPM.dnf_install),
+    _linux("yum", "command -v yum", _LinuxPM.yum_install),
+    _linux("zypper", "command -v zypper", _LinuxPM.zypper_install),
+    _linux("apk", "command -v apk", _LinuxPM.apk_install),
+    _linux("pacman", "command -v pacman", _LinuxPM.pacman_install),
+]
+
+_WINDOWS_BACKENDS: list[_Backend] = [
+    _Backend(
+        key="winget",
+        detect_cmd="winget --version",
+        install_fn=_WindowsPM.winget_install,
+        probe_cmds=_WPC,
+        bootstrap_fn=_WindowsPM.bootstrap_winget,
+        needs_sudo=False,
+        platform="windows",
+    ),
+    _Backend(
+        key="choco",
+        detect_cmd="choco --version",
+        install_fn=_WindowsPM.choco_install,
+        probe_cmds=_WPC,
+        bootstrap_fn=_WindowsPM.bootstrap_choco,
+        needs_sudo=False,
+        platform="windows",
+    ),
+    _Backend(
+        key="scoop",
+        detect_cmd="scoop --version",
+        install_fn=_WindowsPM.scoop_install,
+        probe_cmds=_WPC,
+        bootstrap_fn=_WindowsPM.bootstrap_scoop,
+        needs_sudo=False,
+        platform="windows",
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Top-level dispatcher functions (thin wrappers over PM classes)
+# ---------------------------------------------------------------------------
+
+
+def _probe_missing(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
+    """Dispatch to _LinuxPM or _WindowsPM probe_missing."""
+    if not pkgs:
+        return []
+    if backend.platform == "windows":
+        return _WindowsPM.probe_missing(executor, backend, pkgs)
+    return _LinuxPM.probe_missing(executor, backend, pkgs)
+
+
+def _get_installed_versions(executor, backend: _Backend, pkgs: list[str]) -> dict[str, str]:
+    """Dispatch to _LinuxPM or _WindowsPM query_versions."""
+    if not pkgs:
+        return {}
+    if backend.platform == "windows":
+        return _WindowsPM.query_versions(executor, backend, pkgs)
+    return _LinuxPM.query_versions(executor, backend, pkgs)
+
+
+def _resolve_src(backend: _Backend, src: str | None, sources: dict[str, str] | None) -> str | None:
+    if sources and backend.key in sources:
+        return sources[backend.key]
+    return src
+
+
 def _resolve_pkgs(pkg_specs: tuple, backend: _Backend) -> list[str]:
-    """Resolve all pkg_specs to PM-specific package names for the detected backend."""
+    """Resolve all pkg_specs to PM-specific package name strings."""
     result = []
     for spec in pkg_specs:
         if isinstance(spec, str):
@@ -300,307 +674,6 @@ def _resolve_pkgs(pkg_specs: tuple, backend: _Backend) -> list[str]:
         else:
             raise TypeError(f"pkg_spec must be str or dict, got {type(spec).__name__!r}")
     return result
-
-
-# ---------------------------------------------------------------------------
-# Probe functions — check if a package is already installed
-# ---------------------------------------------------------------------------
-
-
-def _probe_apt(pkg_name: str) -> str:
-    base, _ = _parse_version(pkg_name)
-    # dpkg-query -W exits 0 if installed, 1 if not — no format string avoids quoting conflicts
-    # when this probe string is embedded inside bash -c '...'
-    return f"dpkg-query -W {shlex.quote(base)} >/dev/null 2>&1"
-
-
-def _probe_rpm(pkg_name: str) -> str:
-    base, _ = _parse_version(pkg_name)
-    return f"rpm -q {shlex.quote(base)} >/dev/null 2>&1"
-
-
-def _probe_pacman(pkg_name: str) -> str:
-    base, _ = _parse_version(pkg_name)
-    return f"pacman -Q {shlex.quote(base)} >/dev/null 2>&1"
-
-
-def _probe_apk(pkg_name: str) -> str:
-    base, _ = _parse_version(pkg_name)
-    return f"apk info -e {shlex.quote(base)} >/dev/null 2>&1"
-
-
-def _probe_none(_: str) -> str:
-    return "false"  # fallback: always attempt install
-
-
-# Windows probe functions — run via cmd.exe (no bash on Windows)
-def _probe_winget(pkg_name: str) -> str:
-    base, _ = _parse_version(pkg_name)
-    # winget list --id exits 0 if the package is installed, non-zero if not
-    return f"winget list --id {shlex.quote(base)} --exact >NUL 2>&1"
-
-
-def _probe_choco(pkg_name: str) -> str:
-    base, _ = _parse_version(pkg_name)
-    # choco list --local-only exits 0 with output if installed
-    return f"choco list --local-only --exact {shlex.quote(base)} >NUL 2>&1"
-
-
-def _probe_scoop(pkg_name: str) -> str:
-    base, _ = _parse_version(pkg_name)
-    # scoop list exits 0 and prints the package if installed
-    return f"scoop list {shlex.quote(base)} >NUL 2>&1"
-
-
-# ---------------------------------------------------------------------------
-# Install command functions — return a shell command string
-# ---------------------------------------------------------------------------
-
-
-def _apt_cmd(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
-    pkg_str = " ".join(shlex.quote(p) for p in pkgs)
-    extra = (" " + " ".join(extra_args)) if extra_args else ""
-    if src:
-        if src.endswith(".deb"):
-            return (
-                f"bash -c '{sudo}wget -q -O /tmp/_os_deps.deb {shlex.quote(src)} && "
-                f"{sudo}dpkg -i /tmp/_os_deps.deb && {sudo}apt-get install -f -y 2>&1'"
-            )
-        repo_hash = hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
-        repo_file = f"/etc/apt/sources.list.d/os_deps_{repo_hash}.list"
-        return (
-            f"bash -c 'grep -qF {shlex.quote(src)} {repo_file} 2>/dev/null || "
-            f"echo {shlex.quote(src)} | {sudo}tee {repo_file} >/dev/null; "
-            f"{sudo}apt-get update -q -y && "
-            f"{sudo}apt-get install -y --no-install-recommends {pkg_str}{extra} 2>&1'"
-        )
-    return f"bash -c '{sudo}apt-get install -y --no-install-recommends {pkg_str}{extra} 2>&1'"
-
-
-def _dnf_cmd(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
-    pkg_str = " ".join(shlex.quote(p) for p in pkgs)
-    extra = (" " + " ".join(extra_args)) if extra_args else ""
-    if src:
-        if src.endswith(".rpm"):
-            return f"bash -c '{sudo}dnf install -y {shlex.quote(src)}{extra} 2>&1'"
-        repo_hash = hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
-        repo_file = f"/etc/yum.repos.d/os_deps_{repo_hash}.repo"
-        content = f"[os_deps_{repo_hash}]\\nname=os_deps custom\\nbaseurl={src}\\nenabled=1\\ngpgcheck=0"
-        return (
-            f"bash -c 'echo -e {shlex.quote(content)} | {sudo}tee {repo_file} >/dev/null && "
-            f"{sudo}dnf install -y {pkg_str}{extra} 2>&1'"
-        )
-    return f"bash -c '{sudo}dnf install -y {pkg_str}{extra} 2>&1'"
-
-
-def _yum_cmd(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
-    pkg_str = " ".join(shlex.quote(p) for p in pkgs)
-    extra = (" " + " ".join(extra_args)) if extra_args else ""
-    if src:
-        if src.endswith(".rpm"):
-            return f"bash -c '{sudo}yum install -y {shlex.quote(src)}{extra} 2>&1'"
-        repo_hash = hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
-        repo_file = f"/etc/yum.repos.d/os_deps_{repo_hash}.repo"
-        content = f"[os_deps_{repo_hash}]\\nname=os_deps custom\\nbaseurl={src}\\nenabled=1\\ngpgcheck=0"
-        return (
-            f"bash -c 'echo -e {shlex.quote(content)} | {sudo}tee {repo_file} >/dev/null && "
-            f"{sudo}yum install -y {pkg_str}{extra} 2>&1'"
-        )
-    return f"bash -c '{sudo}yum install -y {pkg_str}{extra} 2>&1'"
-
-
-def _zypper_cmd(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
-    pkg_str = " ".join(shlex.quote(p) for p in pkgs)
-    extra = (" " + " ".join(extra_args)) if extra_args else ""
-    if src:
-        repo_hash = hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
-        alias = f"os_deps_{repo_hash}"
-        return (
-            f"bash -c '{sudo}zypper --non-interactive addrepo --no-gpgcheck "
-            f"{shlex.quote(src)} {alias} 2>&1; "
-            f"{sudo}zypper --non-interactive refresh 2>&1 && "
-            f"{sudo}zypper --non-interactive install -y --no-recommends --no-gpg-checks "
-            f"{pkg_str}{extra} 2>&1'"
-        )
-    return (
-        f"bash -c '{sudo}zypper --non-interactive install -y " f"--no-recommends --no-gpg-checks {pkg_str}{extra} 2>&1'"
-    )
-
-
-def _apk_cmd(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
-    pkg_str = " ".join(shlex.quote(p) for p in pkgs)
-    extra = (" " + " ".join(extra_args)) if extra_args else ""
-    if src:
-        return f"bash -c '{sudo}apk add --no-cache --repository {shlex.quote(src)} {pkg_str}{extra} 2>&1'"
-    return f"bash -c '{sudo}apk add --no-cache {pkg_str}{extra} 2>&1'"
-
-
-def _pacman_cmd(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
-    pkg_str = " ".join(shlex.quote(p) for p in pkgs)
-    extra = (" " + " ".join(extra_args)) if extra_args else ""
-    if src:
-        logger.warning("os_deps: pacman does not support src= URL; ignoring %s", src)
-    return f"bash -c '{sudo}pacman -S --noconfirm {pkg_str}{extra} 2>&1'"
-
-
-def _winget_cmd(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
-    base = "winget install --silent --accept-package-agreements --accept-source-agreements"
-    extra = (" " + " ".join(extra_args)) if extra_args else ""
-    cmds = []
-    for pkg in pkgs:
-        if src:
-            cmds.append(f"{base} --source {shlex.quote(src)} --id {shlex.quote(pkg)}{extra}")
-        else:
-            cmds.append(f"{base} --id {shlex.quote(pkg)}{extra}")
-    return " && ".join(cmds)
-
-
-def _choco_cmd(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
-    pkg_str = " ".join(shlex.quote(p) for p in pkgs)
-    extra = (" " + " ".join(extra_args)) if extra_args else ""
-    if src:
-        return f"choco install -y {pkg_str} --source {shlex.quote(src)}{extra}"
-    return f"choco install -y {pkg_str}{extra}"
-
-
-def _scoop_cmd(pkgs: list[str], sudo: str, src: str | None, extra_args: list[str]) -> str:
-    extra = (" " + " ".join(extra_args)) if extra_args else ""
-    if src:
-        bucket = f"os_deps_{hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]}"
-        add = f"scoop bucket add {shlex.quote(bucket)} {shlex.quote(src)}"
-        install = " && ".join(f"scoop install {shlex.quote(p)}{extra}" for p in pkgs)
-        return f"{add} && {install}"
-    return " && ".join(f"scoop install {shlex.quote(p)}{extra}" for p in pkgs)
-
-
-# ---------------------------------------------------------------------------
-# Windows bootstrappers
-# ---------------------------------------------------------------------------
-
-
-def _bootstrap_winget(executor) -> None:
-    logger.info("os_deps: winget not found — bootstrapping App Installer")
-    url = (
-        "https://github.com/microsoft/winget-cli/releases/latest/download/"
-        "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
-    )
-    result = executor.run(f"powershell -NoProfile -ExecutionPolicy Bypass -Command \"Add-AppxPackage -Path '{url}'\"")
-    if not result.ok:
-        raise RuntimeError(
-            f"os_deps: failed to bootstrap winget.\n" f"exit_code: {result.exit_code}\nstderr: {result.stderr[-500:]}"
-        )
-
-
-def _bootstrap_choco(executor) -> None:
-    logger.info("os_deps: Chocolatey not found — bootstrapping")
-    result = executor.run(
-        "powershell -NoProfile -ExecutionPolicy Bypass -Command "
-        '"Set-ExecutionPolicy Bypass -Scope Process -Force; '
-        "[System.Net.ServicePointManager]::SecurityProtocol = "
-        "[System.Net.ServicePointManager]::SecurityProtocol -bor 3072; "
-        "iex ((New-Object System.Net.WebClient).DownloadString("
-        "'https://community.chocolatey.org/install.ps1'))\""
-    )
-    if not result.ok:
-        raise RuntimeError(
-            f"os_deps: failed to bootstrap Chocolatey.\n"
-            f"exit_code: {result.exit_code}\nstderr: {result.stderr[-500:]}"
-        )
-
-
-def _bootstrap_scoop(executor) -> None:
-    logger.info("os_deps: Scoop not found — bootstrapping")
-    result = executor.run('powershell -NoProfile -ExecutionPolicy RemoteSigned -Command "irm get.scoop.sh | iex"')
-    if not result.ok:
-        raise RuntimeError(
-            f"os_deps: failed to bootstrap Scoop.\n" f"exit_code: {result.exit_code}\nstderr: {result.stderr[-500:]}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Backend registry
-# ---------------------------------------------------------------------------
-
-_LINUX_BACKENDS: list[_Backend] = [
-    _Backend(
-        key="apt",
-        detect_cmd="command -v apt-get",
-        probe_cmd_fn=_probe_apt,
-        install_cmd_fn=_apt_cmd,
-        needs_sudo=True,
-        platform="linux",
-    ),
-    _Backend(
-        key="dnf",
-        detect_cmd="command -v dnf",
-        probe_cmd_fn=_probe_rpm,
-        install_cmd_fn=_dnf_cmd,
-        needs_sudo=True,
-        platform="linux",
-    ),
-    _Backend(
-        key="yum",
-        detect_cmd="command -v yum",
-        probe_cmd_fn=_probe_rpm,
-        install_cmd_fn=_yum_cmd,
-        needs_sudo=True,
-        platform="linux",
-    ),
-    _Backend(
-        key="zypper",
-        detect_cmd="command -v zypper",
-        probe_cmd_fn=_probe_rpm,
-        install_cmd_fn=_zypper_cmd,
-        needs_sudo=True,
-        platform="linux",
-    ),
-    _Backend(
-        key="apk",
-        detect_cmd="command -v apk",
-        probe_cmd_fn=_probe_apk,
-        install_cmd_fn=_apk_cmd,
-        needs_sudo=True,
-        platform="linux",
-    ),
-    _Backend(
-        key="pacman",
-        detect_cmd="command -v pacman",
-        probe_cmd_fn=_probe_pacman,
-        install_cmd_fn=_pacman_cmd,
-        needs_sudo=True,
-        platform="linux",
-    ),
-]
-
-_WINDOWS_BACKENDS: list[_Backend] = [
-    _Backend(
-        key="winget",
-        detect_cmd="winget --version",
-        probe_cmd_fn=_probe_winget,
-        install_cmd_fn=_winget_cmd,
-        bootstrap_fn=_bootstrap_winget,
-        needs_sudo=False,
-        platform="windows",
-    ),
-    _Backend(
-        key="choco",
-        detect_cmd="choco --version",
-        probe_cmd_fn=_probe_choco,
-        install_cmd_fn=_choco_cmd,
-        bootstrap_fn=_bootstrap_choco,
-        needs_sudo=False,
-        platform="windows",
-    ),
-    _Backend(
-        key="scoop",
-        detect_cmd="scoop --version",
-        probe_cmd_fn=_probe_scoop,
-        install_cmd_fn=_scoop_cmd,
-        bootstrap_fn=_bootstrap_scoop,
-        needs_sudo=False,
-        platform="windows",
-    ),
-]
 
 
 # ---------------------------------------------------------------------------
@@ -655,196 +728,40 @@ def _cache_backend(executor, backend: _Backend) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Probe missing packages
-# ---------------------------------------------------------------------------
-
-
-def _probe_missing(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
-    """Return the subset of pkgs not yet installed on the executor's host.
-
-    Linux: batches all probes into one bash compound command (one log line).
-    Windows: runs each probe individually via cmd.exe (no bash available).
-    """
-    if not pkgs:
-        return []
-
-    if backend.platform == "windows":
-        return _probe_missing_windows(executor, backend, pkgs)
-    return _probe_missing_linux(executor, backend, pkgs)
-
-
-def _probe_missing_linux(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
-    """Batch all probes into a single bash compound command — one round-trip."""
-    parts = []
-    for pkg in pkgs:
-        probe = backend.probe_cmd_fn(pkg)
-        escaped_pkg = pkg.replace("'", "\\'")
-        parts.append(f"( {probe} && echo OK:{escaped_pkg} || echo MISS:{escaped_pkg} )")
-
-    compound = "bash -c '" + "; ".join(parts) + "'"
-    result = executor.run(compound)
-
-    missing, present = [], []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if line.startswith("OK:"):
-            present.append(line[3:])
-        elif line.startswith("MISS:"):
-            missing.append(line[5:])
-
-    if not missing and not present:
-        logger.debug("os_deps: probe returned no tokens — treating all as missing: %s", pkgs)
-        return list(pkgs)
-
-    if present:
-        logger.debug("os_deps: probe PRESENT — %s", present)
-    if missing:
-        logger.debug("os_deps: probe MISSING — %s", missing)
-    return missing
-
-
-def _probe_missing_windows(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
-    """Run each Windows PM probe individually via cmd.exe (no bash on Windows)."""
-    missing, present = [], []
-    for pkg in pkgs:
-        probe = backend.probe_cmd_fn(pkg)
-        result = executor.run(probe)
-        if result.ok:
-            present.append(pkg)
-        else:
-            missing.append(pkg)
-    if present:
-        logger.debug("os_deps: probe PRESENT — %s", present)
-    if missing:
-        logger.debug("os_deps: probe MISSING — %s", missing)
-    return missing
-
-
-def _get_installed_versions_linux(executor, backend: _Backend, pkgs: list[str]) -> dict[str, str]:  # noqa: C901
-    """Query installed versions on Linux — one batched command."""
-    versions: dict[str, str] = {}
-    pkg_str = " ".join(shlex.quote(p) for p in pkgs)
-
-    if backend.key == "apt":
-        result = executor.run(
-            f"dpkg-query -W -f='${{Package}}\\t${{Version}}\\n' {pkg_str} 2>/dev/null"
-        )
-        for line in result.stdout.splitlines():
-            parts = line.strip().split("\t", 1)
-            if len(parts) == 2 and parts[1].strip():
-                versions[parts[0].strip()] = parts[1].strip()
-
-    elif backend.key in ("dnf", "yum", "zypper"):
-        result = executor.run(
-            f"rpm -q --queryformat '%{{NAME}}\\t%{{VERSION}}-%{{RELEASE}}\\n' {pkg_str} 2>/dev/null"
-        )
-        for line in result.stdout.splitlines():
-            parts = line.strip().split("\t", 1)
-            if len(parts) == 2 and "not installed" not in parts[1]:
-                versions[parts[0].strip()] = parts[1].strip()
-
-    elif backend.key == "apk":
-        result = executor.run(f"apk info -v {pkg_str} 2>/dev/null")
-        for line in result.stdout.splitlines():
-            # apk info -v outputs "pkgname-version" format
-            line = line.strip()
-            for pkg in pkgs:
-                base, _ = _parse_version(pkg)
-                if line.startswith(base + "-"):
-                    versions[base] = line[len(base) + 1:]
-
-    elif backend.key == "pacman":
-        result = executor.run(f"pacman -Q {pkg_str} 2>/dev/null")
-        for line in result.stdout.splitlines():
-            parts = line.strip().split(None, 1)
-            if len(parts) == 2:
-                versions[parts[0]] = parts[1]
-
-    return versions
-
-
-def _get_installed_versions_windows(executor, backend: _Backend, pkgs: list[str]) -> dict[str, str]:  # noqa: C901
-    """Query installed versions on Windows — one query per package."""
-    versions: dict[str, str] = {}
-    for pkg in pkgs:
-        base, _ = _parse_version(pkg)
-        if backend.key == "winget":
-            result = executor.run(f"winget list --id {shlex.quote(base)} --exact 2>NUL")
-            for line in result.stdout.splitlines():
-                if base.lower() in line.lower():
-                    cols = line.split()
-                    if len(cols) >= 3:
-                        versions[base] = cols[2]  # Name Id Version ...
-                    break
-        elif backend.key == "choco":
-            result = executor.run(
-                f"choco list --local-only --exact {shlex.quote(base)} 2>NUL"
-            )
-            for line in result.stdout.splitlines():
-                if base.lower() in line.lower():
-                    parts = line.strip().split(None, 1)
-                    if len(parts) == 2:
-                        versions[base] = parts[1]
-                    break
-        elif backend.key == "scoop":
-            result = executor.run(f"scoop list {shlex.quote(base)} 2>NUL")
-            for line in result.stdout.splitlines():
-                if base.lower() in line.lower():
-                    cols = line.split()
-                    if len(cols) >= 2:
-                        versions[base] = cols[1]
-                    break
-    return versions
-
-
-def _get_installed_versions(executor, backend: _Backend, pkgs: list[str]) -> dict[str, str]:
-    """Dispatch version query to Linux or Windows helper."""
-    if not pkgs:
-        return {}
-    if backend.platform == "windows":
-        return _get_installed_versions_windows(executor, backend, pkgs)
-    return _get_installed_versions_linux(executor, backend, pkgs)
-
-
-# ---------------------------------------------------------------------------
-# Install command execution
+# Privilege escalation (cached per executor instance)
 # ---------------------------------------------------------------------------
 
 
 def _resolve_sudo_prefix(executor, backend: _Backend) -> str:
-    """Return the correct sudo prefix for this executor, probing once and caching.
+    """Return the correct sudo prefix — probes once and caches the result.
 
-    Checks in order:
-      1. sudo not needed (Windows backends, running as root) → ""
-      2. sudo exists and -n works (standard fleet nodes) → "sudo -n "
-      3. sudo binary missing (plain Docker root) → ""
+    Returns "sudo -n " on fleet nodes, "" on Docker root or Windows.
     """
     if not backend.needs_sudo:
         return ""
     cached = getattr(executor, _SUDO_ATTR, None)
-    if isinstance(cached, str):  # real cached value; MagicMock/None both skipped
+    if isinstance(cached, str):
         return cached
     result = executor.run("bash -c 'command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null && echo OK || echo NO'")
     prefix = "sudo -n " if (result.ok and "OK" in result.stdout) else ""
     if prefix:
         logger.debug("os_deps: sudo available — will use 'sudo -n' prefix")
     else:
-        logger.debug("os_deps: sudo not available — running without sudo (likely root or container)")
+        logger.debug("os_deps: sudo not available — running without sudo (root or container)")
     with contextlib.suppress(AttributeError, TypeError):
         object.__setattr__(executor, _SUDO_ATTR, prefix)
     return prefix
 
 
-def _run_install_cmd(
-    executor,
-    backend: _Backend,
-    pkgs: list[str],
-    src: str | None,
-    extra_args: list[str],
-) -> None:
-    """Run the install command with the correct privilege prefix."""
+# ---------------------------------------------------------------------------
+# Install execution
+# ---------------------------------------------------------------------------
+
+
+def _run_install_cmd(executor, backend: _Backend, pkgs: list[str], src: str | None, extra_args: list[str]) -> None:
+    """Run the OS PM install command with the correct privilege prefix."""
     sudo = _resolve_sudo_prefix(executor, backend)
-    cmd = backend.install_cmd_fn(pkgs, sudo, src, extra_args)
+    cmd = backend.install_fn(pkgs, sudo, src, extra_args)
     result = executor.run(cmd)
     if result.ok:
         return
@@ -857,21 +774,10 @@ def _run_install_cmd(
     )
 
 
-def _resolve_src(backend: _Backend, src: str | None, sources: dict[str, str] | None) -> str | None:
-    if sources and backend.key in sources:
-        return sources[backend.key]
-    return src
-
-
-# ---------------------------------------------------------------------------
-# Custom command installer (pip, snap, conda, any string)
-# ---------------------------------------------------------------------------
-
-
 def _run_custom_cmd(executor, pkg_specs: tuple, command: str, extra_args: list[str]) -> list[str]:
-    """Install via a custom command (pip/snap/conda/etc.) instead of OS PM.
+    """Install via a custom command (pip/snap/conda/etc.) instead of an OS PM.
 
-    Returns the list of packages passed to the command.
+    Returns the list of package names passed to the command.
     """
     flat: list[str] = []
     for spec in pkg_specs:
@@ -879,10 +785,7 @@ def _run_custom_cmd(executor, pkg_specs: tuple, command: str, extra_args: list[s
             flat.append(spec)
         elif isinstance(spec, dict):
             raw = spec.get("*") or next(iter(spec.values()), "")
-            if isinstance(raw, list):
-                flat.extend(raw)
-            else:
-                flat.append(str(raw))
+            flat.extend(raw if isinstance(raw, list) else [str(raw)])
     pkg_str = " ".join(shlex.quote(p) for p in flat)
     extra = (" " + " ".join(extra_args)) if extra_args else ""
     cmd = f"{command} install {pkg_str}{extra}"
@@ -914,9 +817,7 @@ def _run_custom_cmd(executor, pkg_specs: tuple, command: str, extra_args: list[s
 def _execute_install(executor, spec: _InstallSpec) -> InstallResult:
     """Install packages described by spec through executor.
 
-    Returns:
-        InstallResult with .installed, .already_present, .dry_run, .command.
-        Callers can assert result.ok or check result.installed directly.
+    Returns InstallResult with .installed, .already_present, .versions, .dry_run, .command.
     """
     if not spec.pkg_specs:
         logger.debug("os_deps: no packages specified — nothing to do")
@@ -928,7 +829,6 @@ def _execute_install(executor, spec: _InstallSpec) -> InstallResult:
         executor.run(f"echo '[os_deps DryRun] would install: {flat}'")
         return InstallResult(dry_run=True, command=spec.command)
 
-    # Custom command — bypass OS PM entirely
     if spec.command:
         logger.debug("os_deps: using custom installer '%s' for %s", spec.command, spec.pkg_specs)
         installed = _run_custom_cmd(executor, spec.pkg_specs, spec.command, spec.extra_args)
@@ -949,11 +849,9 @@ def _execute_install(executor, spec: _InstallSpec) -> InstallResult:
         already_present = [p for p in resolved_pkgs if p not in missing]
 
         if already_present:
-            # Query versions of already-present packages and log at INFO
             present_versions = _get_installed_versions(executor, backend, already_present)
             present_summary = ", ".join(
-                f"{p}={present_versions[p]}" if p in present_versions else p
-                for p in already_present
+                f"{p}={present_versions[p]}" if p in present_versions else p for p in already_present
             )
             logger.info("os_deps: already installed — %s", present_summary)
 
@@ -967,12 +865,8 @@ def _execute_install(executor, spec: _InstallSpec) -> InstallResult:
         logger.debug("os_deps: [%s] installing missing packages: %s", backend.key, missing)
         _run_install_cmd(executor, backend, missing, resolved_src, spec.extra_args)
 
-        # Query versions of newly installed packages
         installed_versions = _get_installed_versions(executor, backend, missing)
-        installed_summary = ", ".join(
-            f"{p}={installed_versions[p]}" if p in installed_versions else p
-            for p in missing
-        )
+        installed_summary = ", ".join(f"{p}={installed_versions[p]}" if p in installed_versions else p for p in missing)
         logger.info("os_deps: installed via %s — %s", backend.key, installed_summary)
 
         all_versions = {
@@ -1051,8 +945,6 @@ def _resolve_os_deps(request: pytest.FixtureRequest) -> _InstallSpec | None:
     )
     if raw is None:
         return None
-    # Function decorator sets fn.__OS_DEPS__ = _InstallSpec (via __call__)
-    # Class/module attr sets __OS_DEPS__ = OS_DEPS(...) instance — extract ._spec
     if isinstance(raw, _InstallSpec):
         return raw
     if isinstance(raw, OS_DEPS):
