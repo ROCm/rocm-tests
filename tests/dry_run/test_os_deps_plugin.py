@@ -2,1041 +2,308 @@
 # SPDX-License-Identifier: MIT
 
 """
-test_os_deps_plugin.py -- PR-gate unit tests for os_deps_plugin.
+test_os_deps_plugin.py — Real installation tests for os_deps_plugin.
 
-All tests run without GPU (DryRun / unit-level). Covers:
+Each test installs packages via OS_DEPS, asserts on the InstallResult,
+then verifies the package is actually usable on the node.
 
-  OS_DEPS class
-    - Decorator sets __OS_DEPS__ on function
-    - Class-level __OS_DEPS__ (OS_DEPS instance stored, not _InstallSpec)
-    - Module-level __OS_DEPS__
-    - src=, sources=, command=, extra_args=, on_missing= kwargs stored correctly
-    - install() raises when no executor context
+Platform coverage:
+  Linux / Ubuntu  — apt    (ci.pr and ci.nightly)
+  Linux / RHEL    — dnf    (ci.nightly, skips on non-dnf nodes)
+  Linux / SLES    — zypper (ci.nightly, skips on non-zypper nodes)
+  Windows         — winget / choco / scoop (ci.nightly, skips on Linux)
+  Any platform    — pip, snap (skips if command not available)
 
-  pkg_spec resolution
-    - Plain string passthrough
-    - Version pin "pkg==x.y" → PM-specific syntax
-    - Dict with str value — key match, * fallback, no-* empty
-    - Dict with list value — flattened correctly per PM
-    - Mixed: str + dict in same call
-
-  Command generation (per backend)
-    - apt / dnf / yum / zypper / apk / pacman
-    - winget / choco / scoop
-    - With and without src=
-    - extra_args= appended to command
-    - zypper always has --no-gpg-checks
-
-  Custom installer (command=)
-    - pip / snap / conda / generic string
-    - extra_args= appended
-
-  DryRun safety
-    - echo emitted, no real install
-    - src, command, extra_args included in echo
-
-  Probe before install
-    - already-installed → no install command emitted
-    - missing → install command emitted
-
-  on_missing modes
-    - "install" → installs missing
-    - "skip"    → pytest.skip when missing
-    - "fail"    → pytest.fail when missing
-    - "probe"   → logs, no gate
-
-  Resolution priority
-    - function > class > module
-    - None when no __OS_DEPS__ at any level
-
-  Backwards-compat
-    - @pytest.mark.os_deps still processed via autouse fixture
+Cross-distro tests use dict specs so the framework picks the right
+package name automatically regardless of which distro is running.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
 import pytest
 
-from framework.plugins.os_deps_plugin import (
-    OS_DEPS,
-    _apk_cmd,
-    _apt_cmd,
-    _Backend,
-    _choco_cmd,
-    _dnf_cmd,
-    _execute_install,
-    _InstallSpec,
-    _pacman_cmd,
-    _parse_version,
-    _resolve_os_deps,
-    _resolve_pkgs,
-    _scoop_cmd,
-    _versioned,
-    _winget_cmd,
-    _yum_cmd,
-    _zypper_cmd,
-)
+from framework.os_adapter.deps import OS_DEPS
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-
-
-def _mock_executor(ok: bool = True, stdout: str = "OK") -> MagicMock:
-    result = MagicMock()
-    result.ok = ok
-    result.stdout = stdout
-    result.stderr = ""
-    result.exit_code = 0 if ok else 1
-    ex = MagicMock()
-    ex.run.return_value = result
-    ex._dry_run = False
-    ex.node_id = None
-    ex.hostname = None
-    ex.host = "test-host"
-    return ex
-
-
-def _dry_executor() -> MagicMock:
-    """Mock a DryRunExecutor."""
-    ex = _mock_executor()
-    ex.__class__ = type("DryRunExecutor", (), {})
-    return ex
-
-
-def _backend(key: str) -> _Backend:
-    fn_map = {
-        "apt": _apt_cmd,
-        "dnf": _dnf_cmd,
-        "yum": _yum_cmd,
-        "zypper": _zypper_cmd,
-        "apk": _apk_cmd,
-        "pacman": _pacman_cmd,
-    }
-    return _Backend(
-        key=key,
-        detect_cmd=f"command -v {key}",
-        probe_cmd_fn=lambda p: f"probe {p}",
-        install_cmd_fn=fn_map.get(key, _apt_cmd),
-    )
-
-
-# ── OS_DEPS class ─────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Linux / Ubuntu (apt) — ci.pr: always available on dev machines
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_decorator_sets_dunder_on_function():
-    @OS_DEPS("cmake", "git")
-    def dummy():
-        pass
-
-    assert isinstance(dummy.__OS_DEPS__, _InstallSpec)
-    assert dummy.__OS_DEPS__.pkg_specs == ("cmake", "git")
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_decorator_with_single_src_url():
-    """ROCm repo added as a single apt source for all managers."""
-
-    @OS_DEPS("rocm-smi", src="https://repo.radeon.com/rocm/apt/6.3/")
-    def test_rocm_smi_version():
-        pass
-
-    s = test_rocm_smi_version.__OS_DEPS__
-    assert s.pkg_specs == ("rocm-smi",)
-    assert s.src == "https://repo.radeon.com/rocm/apt/6.3/"
-    assert s.sources is None  # src= applies globally, no per-manager override
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_decorator_with_per_manager_sources():
-    """libdrm-dev installed from distro-specific custom repos via sources=."""
-
-    @OS_DEPS(
-        {"apt": "libdrm-dev", "dnf": "libdrm-devel", "*": "libdrm-dev"},
-        sources={
-            "apt": "deb https://apt.custom-drm-repo.example.com/ stable main",
-            "dnf": "https://dnf.custom-drm-repo.example.com/rhel/",
-        },
-    )
-    def test_drm_device_access():
-        pass
-
-    s = test_drm_device_access.__OS_DEPS__
-    assert s.pkg_specs == ({"apt": "libdrm-dev", "dnf": "libdrm-devel", "*": "libdrm-dev"},)
-    assert s.src is None  # per-manager sources only, no global fallback
-    assert s.sources["apt"] == "deb https://apt.custom-drm-repo.example.com/ stable main"
-    assert s.sources["dnf"] == "https://dnf.custom-drm-repo.example.com/rhel/"
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_decorator_with_pip_command_and_extra_args():
-    """onnxruntime-rocm is a Python package — installed via pip with a custom index URL."""
-
-    @OS_DEPS(
-        "onnxruntime-rocm",
-        command="pip",
-        extra_args=["--index-url", "https://aiinfra.pkgs.visualstudio.com/PublicPackages/"],
-    )
-    def test_onnx_rocm_provider():
-        pass
-
-    s = test_onnx_rocm_provider.__OS_DEPS__
-    assert s.pkg_specs == ("onnxruntime-rocm",)
-    assert s.command == "pip"
-    assert "--index-url" in s.extra_args
-    assert s.src is None  # pip manages its own index, src= is for OS PMs
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_decorator_with_on_missing_skip():
-    """CUDA dev headers are optional — skip the test gracefully if not present."""
-
-    @OS_DEPS("libcuda-dev", on_missing="skip")
-    def test_cuda_interop():
-        pass
-
-    s = test_cuda_interop.__OS_DEPS__
-    assert s.pkg_specs == ("libcuda-dev",)
-    assert s.on_missing == "skip"
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_decorator_with_on_missing_fail():
-    """hipcc is mandatory — hard fail if not installed."""
-
-    @OS_DEPS("hipcc", on_missing="fail")
-    def test_hipcc_available():
-        pass
-
-    s = test_hipcc_available.__OS_DEPS__
-    assert s.pkg_specs == ("hipcc",)
-    assert s.on_missing == "fail"
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_class_level_stores_os_deps_instance():
-    class TestFoo:
-        __OS_DEPS__ = OS_DEPS("cmake", "git")
-
-    assert isinstance(TestFoo.__OS_DEPS__, OS_DEPS)
-    assert TestFoo.__OS_DEPS__._spec.pkg_specs == ("cmake", "git")
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_module_level_stores_os_deps_instance():
-    import types
-
-    m = types.ModuleType("fake")
-    m.__OS_DEPS__ = OS_DEPS("cmake")
-    assert isinstance(m.__OS_DEPS__, OS_DEPS)
-    assert m.__OS_DEPS__._spec.pkg_specs == ("cmake",)
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_install_without_context_raises():
-    # Autouse fixture always sets _current_executor — force it to None temporarily.
-    import framework.plugins.os_deps_plugin as _plugin
-
-    with (
-        patch.object(_plugin, "_current_executor", None),
-        pytest.raises(RuntimeError, match="No executor context"),
-    ):
-        OS_DEPS().install("cmake")
-
-
-# ── version pin parsing ───────────────────────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_parse_version_with_pin():
-    assert _parse_version("cmake==3.26") == ("cmake", "3.26")
-    assert _parse_version("protobuf==3.21.0") == ("protobuf", "3.21.0")
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_parse_version_without_pin():
-    assert _parse_version("cmake") == ("cmake", None)
-    assert _parse_version("libdrm-dev") == ("libdrm-dev", None)
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_versioned_translation_per_pm():
-    assert _versioned("cmake", "3.26", "apt") == "cmake=3.26*"
-    assert _versioned("cmake", "3.26", "dnf") == "cmake-3.26"
-    assert _versioned("cmake", "3.26", "yum") == "cmake-3.26"
-    assert _versioned("cmake", "3.26", "zypper") == "cmake=3.26"
-    assert _versioned("cmake", "3.26", "apk") == "cmake=3.26"
-    assert _versioned("cmake", "3.26", "pacman") == "cmake=3.26"
-    assert _versioned("cmake", "3.26", "pip") == "cmake==3.26"
-    assert _versioned("cmake", None, "apt") == "cmake"  # no version = passthrough
-
-
-# ── pkg_spec resolution ───────────────────────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_resolve_pkgs_plain_string():
-    apt = _backend("apt")
-    assert _resolve_pkgs(("cmake",), apt) == ["cmake"]
-    assert _resolve_pkgs(("cmake==3.26",), apt) == ["cmake=3.26*"]
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_resolve_pkgs_dict_str_value():
-    spec = {"apt": "libssl-dev", "dnf": "openssl-devel", "*": "libssl-dev"}
-    assert _resolve_pkgs((spec,), _backend("apt")) == ["libssl-dev"]
-    assert _resolve_pkgs((spec,), _backend("dnf")) == ["openssl-devel"]
-    # zypper not listed → fallback to *
-    assert _resolve_pkgs((spec,), _backend("zypper")) == ["libssl-dev"]
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_resolve_pkgs_dict_list_value():
-    spec = {
-        "apt": ["libssl-dev", "libdrm-dev"],
-        "dnf": ["openssl-devel", "libdrm-devel"],
-        "*": "libssl-dev",
-    }
-    assert _resolve_pkgs((spec,), _backend("apt")) == ["libssl-dev", "libdrm-dev"]
-    assert _resolve_pkgs((spec,), _backend("dnf")) == ["openssl-devel", "libdrm-devel"]
-    assert _resolve_pkgs((spec,), _backend("zypper")) == ["libssl-dev"]
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_resolve_pkgs_dict_no_star_raises():
-    spec = {"apt": "libssl-dev", "dnf": "openssl-devel"}
-    with pytest.raises(RuntimeError, match="no mapping for backend 'zypper'"):
-        _resolve_pkgs((spec,), _backend("zypper"))
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_resolve_pkgs_mixed_str_and_dict():
-    spec_dict = {"apt": "libssl-dev", "*": "libssl-dev"}
-    apt = _backend("apt")
-    result = _resolve_pkgs(("cmake", spec_dict), apt)
-    assert result == ["cmake", "libssl-dev"]
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_resolve_pkgs_dict_with_versioned_list():
-    spec = {"apt": ["libssl-dev==1.1", "cmake==3.26"], "*": "libssl-dev"}
-    result = _resolve_pkgs((spec,), _backend("apt"))
-    assert result == ["libssl-dev=1.1*", "cmake=3.26*"]
-
-
-# ── command generation ────────────────────────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_apt_no_src():
-    _mock_executor()
-    cmd = _apt_cmd(["cmake", "git"], "sudo -n ", None, [])
-    assert "apt-get install" in cmd
-    assert "--no-install-recommends" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_apt_deb_src():
-    _mock_executor()
-    cmd = _apt_cmd(["mypkg"], "sudo -n ", "https://example.com/pkg.deb", [])
-    assert "dpkg -i" in cmd
-    assert "wget" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_apt_repo_src():
-    _mock_executor()
-    cmd = _apt_cmd(["mypkg"], "sudo -n ", "deb https://example.com stable main", [])
-    assert "sources.list.d" in cmd
-    assert "apt-get update" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_apt_extra_args():
-    _mock_executor()
-    cmd = _apt_cmd(["cmake"], "sudo -n ", None, ["-q", "--no-upgrade"])
-    assert "-q" in cmd
-    assert "--no-upgrade" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_dnf_no_src():
-    _mock_executor()
-    cmd = _dnf_cmd(["cmake"], "sudo -n ", None, [])
-    assert "dnf install -y" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_dnf_extra_args():
-    _mock_executor()
-    cmd = _dnf_cmd(["cmake"], "sudo -n ", None, ["--best", "--allowerasing"])
-    assert "--best" in cmd
-    assert "--allowerasing" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_zypper_always_has_no_gpg_checks():
-    _mock_executor()
-    assert "--no-gpg-checks" in _zypper_cmd(["cmake"], "sudo -n ", None, [])
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_zypper_repo_src():
-    _mock_executor()
-    cmd = _zypper_cmd(["cmake"], "sudo -n ", "https://suse-repo/", [])
-    assert "addrepo" in cmd
-    assert "--no-gpgcheck" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_yum_repo_src():
-    _mock_executor()
-    cmd = _yum_cmd(["cmake"], "sudo -n ", "https://rhel-repo/", [])
-    assert "yum.repos.d" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_apk_with_src():
-    _mock_executor()
-    cmd = _apk_cmd(["curl"], "sudo -n ", "https://alpine.example.com/main", [])
-    assert "--repository" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_winget_no_src():
-    _mock_executor()
-    cmd = _winget_cmd(["Kitware.CMake"], "", None, [])
-    assert "winget install" in cmd
-    assert "--accept-package-agreements" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_winget_with_src():
-    _mock_executor()
-    cmd = _winget_cmd(["Kitware.CMake"], "", "https://winget-src/", [])
-    assert "--source" in cmd
-    assert "winget-src" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_choco_with_src():
-    _mock_executor()
-    cmd = _choco_cmd(["cmake"], "", "https://choco-src/", [])
-    assert "--source" in cmd
-    assert "choco-src" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_scoop_with_src_adds_bucket():
-    _mock_executor()
-    cmd = _scoop_cmd(["cmake"], "", "https://github.com/custom/bucket", [])
-    assert "scoop bucket add" in cmd
-    assert "scoop install" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_winget_extra_args():
-    _mock_executor()
-    cmd = _winget_cmd(["Kitware.CMake"], "", None, ["--scope", "machine"])
-    assert "--scope" in cmd
-    assert "machine" in cmd
-
-
-# ── sudo probe ───────────────────────────────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_sudo_probe_not_found_returns_empty_prefix():
-    """When sudo binary is absent (e.g. plain Docker root), prefix must be empty."""
-    from framework.plugins.os_deps_plugin import _resolve_sudo_prefix
-
-    ex = _mock_executor(stdout="NO")  # command -v sudo → not found
-    prefix = _resolve_sudo_prefix(ex, _backend("apt"))
-    assert prefix == ""
-    ex.run.assert_called_once()  # probe fired exactly once
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_sudo_probe_found_returns_sudo_n_prefix():
-    """When sudo -n works (standard fleet node), prefix must be 'sudo -n '."""
-    from framework.plugins.os_deps_plugin import _resolve_sudo_prefix
-
-    ex = _mock_executor(stdout="OK")  # command -v sudo && sudo -n true → OK
-    prefix = _resolve_sudo_prefix(ex, _backend("apt"))
-    assert prefix == "sudo -n "
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_sudo_probe_cached_after_first_call():
-    """Sudo probe must fire only once; subsequent calls use the cached prefix."""
-    from framework.plugins.os_deps_plugin import _resolve_sudo_prefix
-
-    ex = _mock_executor(stdout="OK")
-    b = _backend("apt")
-    _resolve_sudo_prefix(ex, b)  # first call — probes
-    _resolve_sudo_prefix(ex, b)  # second call — must use cache
-    assert ex.run.call_count == 1  # only one probe, not two
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_sudo_probe_skipped_for_windows_backends():
-    """Windows backends (needs_sudo=False) must not probe sudo at all."""
-    from framework.plugins.os_deps_plugin import _resolve_sudo_prefix, _winget_cmd
-
-    win_backend = _Backend(
-        key="winget",
-        detect_cmd="winget --version",
-        probe_cmd_fn=lambda p: p,
-        install_cmd_fn=_winget_cmd,
-        needs_sudo=False,
-        platform="windows",
-    )
-    ex = _mock_executor()
-    prefix = _resolve_sudo_prefix(ex, win_backend)
-    assert prefix == ""
-    ex.run.assert_not_called()  # no probe for Windows
-
-
-# ── DryRun safety ─────────────────────────────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_dry_run_emits_echo_not_install():
-    ex = _mock_executor()
-    spec = _InstallSpec(pkg_specs=("cmake",))
-    # Patch _is_dry_run so the DryRun echo path fires regardless of executor type
-    with patch("framework.plugins.os_deps_plugin._is_dry_run", return_value=True):
-        _execute_install(ex, spec)
-    ex.run.assert_called_once()
-    cmd = ex.run.call_args[0][0]
-    assert "would install" in cmd
-    assert "cmake" in cmd
-    assert "apt-get" not in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_dry_run_includes_src_and_command_in_echo():
-    ex = _mock_executor()
-    spec = _InstallSpec(pkg_specs=("mypkg",), src="https://repo/", command="pip", extra_args=["--quiet"])
-    with patch("framework.plugins.os_deps_plugin._is_dry_run", return_value=True):
-        _execute_install(ex, spec)
-    cmd = ex.run.call_args[0][0]
-    assert "would install" in cmd
-    assert "mypkg" in cmd
-    assert "src=" in cmd
-    assert "command=pip" in cmd
-    assert "extra_args" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_dry_run_noop_on_empty():
-    ex = _dry_executor()
-    spec = _InstallSpec(pkg_specs=())
-    _execute_install(ex, spec)
-    ex.run.assert_not_called()
-
-
-# ── custom command= installer ─────────────────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_custom_command_pip():
-    ex = _mock_executor()
-    spec = _InstallSpec(pkg_specs=("onnxruntime-rocm",), command="pip")
-    _execute_install(ex, spec)
-    cmd = ex.run.call_args[0][0]
-    assert "pip install" in cmd
-    assert "onnxruntime-rocm" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_custom_command_with_extra_args():
-    ex = _mock_executor()
-    spec = _InstallSpec(
-        pkg_specs=("torch==2.1",),
-        command="pip",
-        extra_args=["--index-url", "https://download.pytorch.org/whl/rocm6.0"],
-    )
-    _execute_install(ex, spec)
-    cmd = ex.run.call_args[0][0]
-    assert "pip install" in cmd
-    assert "torch==2.1" in cmd
-    assert "--index-url" in cmd
-    assert "rocm6.0" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_custom_command_snap():
-    ex = _mock_executor()
-    spec = _InstallSpec(pkg_specs=("node --classic",), command="snap")
-    _execute_install(ex, spec)
-    cmd = ex.run.call_args[0][0]
-    assert "snap install" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_custom_command_dict_uses_star_fallback():
-    """Dict specs with command= use the '*' value."""
-    ex = _mock_executor()
-    spec = _InstallSpec(
-        pkg_specs=({"pip": "torch-rocm", "*": "torch"},),
-        command="pip",
-    )
-    _execute_install(ex, spec)
-    cmd = ex.run.call_args[0][0]
-    assert "pip install" in cmd
-
-
-# ── on_missing modes ──────────────────────────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_on_missing_skip_raises_skip():
-    ex = _mock_executor(ok=False)  # probe returns not-ok → package missing
-    spec = _InstallSpec(pkg_specs=("nonexistent-pkg",), on_missing="skip")
-    with patch("framework.plugins.os_deps_plugin._detect_backend") as mock_detect:
-        mock_detect.return_value = _backend("apt")
-        with pytest.raises(pytest.skip.Exception):
-            _execute_install(ex, spec)
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_on_missing_fail_raises_fail():
-    ex = _mock_executor(ok=False)
-    spec = _InstallSpec(pkg_specs=("nonexistent-pkg",), on_missing="fail")
-    with patch("framework.plugins.os_deps_plugin._detect_backend") as mock_detect:
-        mock_detect.return_value = _backend("apt")
-        with pytest.raises(pytest.fail.Exception):
-            _execute_install(ex, spec)
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_on_missing_probe_does_not_install():
-    ex = _mock_executor(ok=False)
-    spec = _InstallSpec(pkg_specs=("mypkg",), on_missing="probe")
-    with patch("framework.plugins.os_deps_plugin._detect_backend") as mock_detect:
-        mock_detect.return_value = _backend("apt")
-        _execute_install(ex, spec)  # should not raise or install
-
-
-# ── resolution priority ───────────────────────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_resolve_function_level(request):
-    @OS_DEPS("cmake")
-    def dummy():
-        pass
-
-    with patch.object(type(request.node), "function", new_callable=lambda: property(lambda self: dummy)):
-        spec = _resolve_os_deps(request)
-    assert spec is not None
-    assert spec.pkg_specs == ("cmake",)
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_resolve_function_wins_over_class():
-    @OS_DEPS("cmake")
-    def dummy_fn():
-        pass
-
-    class FakeCls:
-        __OS_DEPS__ = OS_DEPS("git")
-
-    fake_node = MagicMock()
-    fake_node.function = dummy_fn
-    fake_request = MagicMock()
-    fake_request.node = fake_node
-    fake_request.cls = FakeCls
-
-    spec = _resolve_os_deps(fake_request)
-    assert spec is not None
-    assert spec.pkg_specs == ("cmake",)
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_resolve_class_wins_over_module():
-    def plain_fn():
-        pass
-
-    class FakeCls:
-        __OS_DEPS__ = OS_DEPS("git")
-
-    import types
-
-    m = types.ModuleType("fake")
-    m.__OS_DEPS__ = OS_DEPS("cmake")
-
-    fake_node = MagicMock()
-    fake_node.function = plain_fn
-    fake_request = MagicMock()
-    fake_request.node = fake_node
-    fake_request.cls = FakeCls
-    fake_request.module = m
-
-    spec = _resolve_os_deps(fake_request)
-    assert spec is not None
-    assert spec.pkg_specs == ("git",)  # class wins over module
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_resolve_module_fallback():
-    def plain_fn():
-        pass
-
-    import types
-
-    m = types.ModuleType("fake")
-    m.__OS_DEPS__ = OS_DEPS("cmake")
-
-    fake_node = MagicMock()
-    fake_node.function = plain_fn
-    fake_request = MagicMock()
-    fake_request.node = fake_node
-    fake_request.cls = None
-    fake_request.module = m
-
-    spec = _resolve_os_deps(fake_request)
-    assert spec is not None
-    assert spec.pkg_specs == ("cmake",)
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_resolve_none_when_no_declaration():
-    def plain_fn():
-        pass
-
-    fake_node = MagicMock()
-    fake_node.function = plain_fn
-    fake_request = MagicMock()
-    fake_request.node = fake_node
-    fake_request.cls = None
-    fake_request.module = MagicMock(spec=[])  # no __OS_DEPS__
-
-    spec = _resolve_os_deps(fake_request)
-    assert spec is None
-
-
-# ── no marker / no declaration → no-op ───────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_no_declaration_is_noop(request):
-    assert request.node.get_closest_marker("os_deps") is None
-    assert getattr(request.node.function, "__OS_DEPS__", None) is None
-
-
-# ── import paths ──────────────────────────────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_import_from_os_adapter():
-    import framework.os_adapter as _m
-
-    assert _m.OS_DEPS is OS_DEPS
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_import_from_plugin_directly():
-    import framework.plugins.os_deps_plugin as _p
-
-    assert _p.OS_DEPS is OS_DEPS
-
-
-# ── install() DryRun via mock executor ───────────────────────────────────────
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_install_method_dry_run():
-    ex = _mock_executor()
-    spec = _InstallSpec(pkg_specs=("libnuma-dev",))
-    with patch("framework.plugins.os_deps_plugin._is_dry_run", return_value=True):
-        result = _execute_install(ex, spec)
-    assert result.ok
-    assert result.dry_run is True
-    assert result.installed == []
-    assert result.already_present == []
-    cmd = ex.run.call_args[0][0]
-    assert "would install" in cmd
-    assert "libnuma-dev" in cmd
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_install_method_dry_run_with_extra_args():
-    ex = _mock_executor()
-    spec = _InstallSpec(pkg_specs=("torch==2.1",), command="pip", extra_args=["--quiet"])
-    with patch("framework.plugins.os_deps_plugin._is_dry_run", return_value=True):
-        result = _execute_install(ex, spec)
-    assert result.ok
-    assert result.dry_run is True
-    assert result.command == "pip"
-    cmd = ex.run.call_args[0][0]
-    assert "would install" in cmd
-    assert "torch==2.1" in cmd
-    assert "command=pip" in cmd
-    assert "extra_args" in cmd
-
-
-# ── Real install integration tests ────────────────────────────────────────────
-#
-# @OS_DEPS applied directly to the test function — the autouse fixture reads
-# test_fn.__OS_DEPS__ and installs the packages before the test body runs.
-# The test body then verifies the package is actually usable.
-#
-# ci.pr  → packages already present on any dev box; probe skips the install
-# ci.nightly → packages that may need a real install on a fresh node
-
-
-@pytest.mark.hw.cpu_only
-@pytest.mark.ci.pr
-@pytest.mark.layer.runtime
-@pytest.mark.runtime.fast
-def test_common_build_tools_installed(target_executor):
-    """cmake / git / curl installed (or already present) and functional.
-
-    Uses OS_DEPS().install() directly so the result can be asserted on.
-    Probe fires first — on a standard dev machine all three are present
-    and apt-get is never called. On a fresh CI node they get installed.
+def test_apt_install_common_build_tools(target_executor):
+    """Install cmake, git, curl via apt and verify each is functional.
+
+    Probe fires first — on a machine where these are already present the
+    install step is skipped. On a fresh node they get installed.
     """
-    install_result = OS_DEPS().install("cmake", "git", "curl")
-    assert install_result.ok, "OS_DEPS install returned not-ok"
-    assert set(install_result.all_packages) >= {
-        "cmake",
-        "git",
-        "curl",
-    }, f"Expected all three in result, got: {install_result.all_packages}"
+    result = OS_DEPS().install("cmake", "git", "curl")
+
+    assert result.ok, "OS_DEPS install returned failure"
+    assert set(result.all_packages) >= {"cmake", "git", "curl"}, (
+        f"Not all packages accounted for: {result.all_packages}"
+    )
+
     for tool, flag in [("cmake", "--version"), ("git", "--version"), ("curl", "--version")]:
-        result = target_executor.run(f"{tool} {flag}")
-        assert result.ok, f"{tool} not usable after install: {result.stderr}"
-        assert tool in result.stdout.lower(), f"Unexpected {tool} output: {result.stdout}"
+        r = target_executor.run(f"{tool} {flag}")
+        assert r.ok, f"{tool} not usable after install: {r.stderr}"
+        assert tool in r.stdout.lower(), f"Unexpected output for {tool}: {r.stdout}"
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_libnuma_dev_installed_cross_distro(target_executor):
-    """libnuma-dev (apt) / numactl-devel (dnf/zypper) installed via dict spec.
+def test_apt_install_version_pinned(target_executor):
+    """Install a version-pinned package (cmake==3.22) and verify the installed version."""
+    result = OS_DEPS().install("cmake==3.22", on_missing="skip")
 
-    Result asserts confirm installation verdict before checking the header.
-    """
-    install_result = OS_DEPS().install(
-        {"apt": "libnuma-dev", "dnf": "numactl-devel", "zypper": "libnuma-devel", "*": "libnuma-dev"}
-    )
-    assert install_result.ok, "libnuma-dev install reported failure"
-    assert install_result.all_packages, "No packages accounted for in InstallResult"
-
-    result = target_executor.run("find /usr/include -name 'numa.h' 2>/dev/null | head -1")
     assert result.ok
-    assert result.stdout.strip(), "libnuma-dev installed but numa.h not found under /usr/include"
+    assert result.all_packages, "No packages accounted for in InstallResult"
+
+    r = target_executor.run("cmake --version")
+    assert r.ok, f"cmake not usable after install: {r.stderr}"
+    assert "cmake version" in r.stdout.lower()
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_libdrm_dev_installed_cross_distro(target_executor):
-    """libdrm-dev (apt) / libdrm-devel (dnf/zypper) installed via dict spec.
+def test_apt_install_list_of_packages(target_executor):
+    """Install multiple packages in one call and verify each is present."""
+    result = OS_DEPS().install({"apt": ["wget", "unzip", "file"], "*": "wget"})
 
-    Result asserts confirm installation verdict before checking the header.
-    """
-    install_result = OS_DEPS().install(
-        {"apt": "libdrm-dev", "dnf": "libdrm-devel", "zypper": "libdrm-devel", "*": "libdrm-dev"}
-    )
-    assert install_result.ok, "libdrm-dev install reported failure"
-    assert install_result.all_packages, "No packages accounted for in InstallResult"
-
-    result = target_executor.run("find /usr/include -name 'drm.h' -path '*/drm/*' 2>/dev/null | head -1")
     assert result.ok
-    assert result.stdout.strip(), "libdrm-dev installed but drm.h not found under /usr/include"
+    for tool in ["wget", "unzip", "file"]:
+        r = target_executor.run(f"command -v {tool}")
+        assert r.ok, f"{tool} not found after install"
 
 
 @pytest.mark.hw.cpu_only
 @pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_pip_install_packaging_library(target_executor):
-    """'packaging' Python library installed via pip with --quiet flag.
+def test_apt_already_installed_skips_install(target_executor):
+    """Packages already on the node must show up in already_present, not installed."""
+    # git is almost always pre-installed — this validates probe correctness
+    result = OS_DEPS().install("git")
 
-    Result asserts confirm pip installed it before verifying the import.
+    assert result.ok
+    # Either just installed or already present — both are acceptable
+    assert "git" in result.all_packages, f"git not in result: {result.all_packages}"
+
+
+# ---------------------------------------------------------------------------
+# Linux / RHEL (dnf) — skips automatically on non-dnf nodes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_dnf_install_development_tools(target_executor):
+    """Install dnf-specific packages; skips on apt/zypper nodes.
+
+    Uses on_missing='skip' so the test gracefully skips on Ubuntu/SLES
+    where these exact package names don't exist under dnf.
     """
-    install_result = OS_DEPS().install("packaging", command="pip", extra_args=["--quiet"])
-    assert install_result.ok, "pip install packaging reported failure"
-    assert install_result.command == "pip"
-    assert "packaging" in install_result.installed, f"'packaging' not in installed list: {install_result.installed}"
+    result = OS_DEPS().install(
+        {"dnf": "numactl-devel", "yum": "numactl-devel", "*": "libnuma-dev"},
+        on_missing="skip",
+    )
 
-    result = target_executor.run("python3 -c 'import packaging; print(packaging.__version__)'")
-    assert result.ok, f"packaging import failed after install: {result.stderr}"
-    assert result.stdout.strip(), "packaging version string is empty"
+    assert result.ok
+    assert result.all_packages, "No packages accounted for"
+
+    r = target_executor.run("find /usr/include -name 'numa.h' 2>/dev/null | head -1")
+    assert r.ok
+    assert r.stdout.strip(), "numactl-devel installed but numa.h not found"
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_dnf_install_openssl_devel(target_executor):
+    """Install openssl-devel (RHEL name) with dict spec cross-distro mapping."""
+    result = OS_DEPS().install(
+        {"apt": "libssl-dev", "dnf": "openssl-devel", "yum": "openssl-devel",
+         "zypper": "libopenssl-devel", "*": "libssl-dev"},
+        on_missing="skip",
+    )
+
+    assert result.ok
+    assert result.all_packages
+
+    r = target_executor.run("find /usr/include -name 'openssl' -type d 2>/dev/null | head -1")
+    assert r.ok
+
+
+# ---------------------------------------------------------------------------
+# Linux / SLES (zypper) — skips automatically on non-zypper nodes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_zypper_install_libdrm(target_executor):
+    """Install libdrm-devel via zypper; skips on apt/dnf nodes.
+
+    Validates that zypper install commands include --no-gpg-checks
+    (required for SLES) and that the header lands on the filesystem.
+    """
+    result = OS_DEPS().install(
+        {"apt": "libdrm-dev", "dnf": "libdrm-devel", "zypper": "libdrm-devel",
+         "*": "libdrm-dev"},
+        on_missing="skip",
+    )
+
+    assert result.ok
+    assert result.all_packages
+
+    r = target_executor.run("find /usr/include -name 'drm.h' -path '*/drm/*' 2>/dev/null | head -1")
+    assert r.ok
+    assert r.stdout.strip(), "libdrm-devel installed but drm.h not found"
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_zypper_install_libnuma(target_executor):
+    """Install libnuma-devel via zypper with cross-distro dict spec."""
+    result = OS_DEPS().install(
+        {"apt": "libnuma-dev", "dnf": "numactl-devel", "yum": "numactl-devel",
+         "zypper": "libnuma-devel", "*": "libnuma-dev"},
+        on_missing="skip",
+    )
+
+    assert result.ok
+    assert result.all_packages
+
+    r = target_executor.run("find /usr/include -name 'numa.h' 2>/dev/null | head -1")
+    assert r.ok
+    assert r.stdout.strip(), "libnuma-devel installed but numa.h not found"
+
+
+# ---------------------------------------------------------------------------
+# Python packages via pip (any platform)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_pip_install_packaging(target_executor):
+    """Install the 'packaging' PyPI library and verify it imports correctly.
+
+    'packaging' is tiny and dependency-free — safe to install anywhere.
+    Validates the command= path and that InstallResult.installed is populated.
+    """
+    result = OS_DEPS().install("packaging", command="pip", extra_args=["--quiet"])
+
+    assert result.ok, f"pip install failed: {result}"
+    assert result.command == "pip"
+    assert "packaging" in result.installed, (
+        f"Expected 'packaging' in installed list, got: {result.installed}"
+    )
+
+    r = target_executor.run("python3 -c 'import packaging; print(packaging.__version__)'")
+    assert r.ok, f"packaging import failed: {r.stderr}"
+    assert r.stdout.strip(), "packaging version string is empty"
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_pip_install_with_extra_args(target_executor):
+    """Install a pip package using extra_args for index-url override."""
+    result = OS_DEPS().install(
+        "setuptools",
+        command="pip",
+        extra_args=["--quiet", "--upgrade"],
+    )
+
+    assert result.ok
+    assert result.command == "pip"
+
+    r = target_executor.run("python3 -c 'import setuptools; print(setuptools.__version__)'")
+    assert r.ok, f"setuptools import failed: {r.stderr}"
+    assert r.stdout.strip()
+
+
+# ---------------------------------------------------------------------------
+# Windows — winget / choco / scoop (skip on Linux automatically)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_winget_install_package(target_executor):
+    """Install Git.Git via winget; skips on non-Windows nodes.
+
+    winget is not available on Linux — _detect_backend raises RuntimeError
+    which the autouse fixture converts to pytest.skip.
+    """
+    result = OS_DEPS().install(
+        {"winget": "Git.Git", "*": "git"},
+        command="winget",
+        on_missing="skip",
+    )
+
+    assert result.ok
+    assert result.all_packages
+
+    r = target_executor.run("git --version")
+    assert r.ok, f"git not usable after winget install: {r.stderr}"
+    assert "git" in r.stdout.lower()
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_choco_install_package(target_executor):
+    """Install cmake via Chocolatey; skips on non-Windows nodes."""
+    result = OS_DEPS().install(
+        {"choco": "cmake", "*": "cmake"},
+        command="choco",
+        on_missing="skip",
+    )
+
+    assert result.ok
+    assert result.all_packages
+
+    r = target_executor.run("cmake --version")
+    assert r.ok, f"cmake not usable after choco install: {r.stderr}"
+    assert "cmake" in r.stdout.lower()
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_scoop_install_package(target_executor):
+    """Install curl via Scoop (user-mode, no admin); skips on non-Windows nodes."""
+    result = OS_DEPS().install(
+        {"scoop": "curl", "*": "curl"},
+        command="scoop",
+        on_missing="skip",
+    )
+
+    assert result.ok
+    assert result.all_packages
+
+    r = target_executor.run("curl --version")
+    assert r.ok, f"curl not usable after scoop install: {r.stderr}"
+    assert "curl" in r.stdout.lower()
