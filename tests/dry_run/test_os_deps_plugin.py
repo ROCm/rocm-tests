@@ -609,6 +609,88 @@ def test_sudo_probe_skipped_for_windows_backends():
     ex.run.assert_not_called()  # no probe for Windows
 
 
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_execute_install_no_sudo_in_command_when_sudo_absent():
+    """End-to-end: when sudo is absent, _execute_install must run apt-get without sudo.
+
+    Simulates a plain Docker container (root user, no sudo binary).
+    The probe returns 'NO' → prefix='' → install command has no 'sudo'.
+    """
+    call_log: list[str] = []
+
+    def fake_run(cmd, **_):
+        call_log.append(cmd)
+        result = MagicMock()
+        if "command -v sudo" in cmd:
+            result.ok = True
+            result.stdout = "NO"   # sudo not found
+        elif "dpkg-query" in cmd:
+            result.ok = False      # package missing → trigger install
+            result.stdout = ""
+        else:
+            result.ok = True       # install succeeds
+            result.stdout = ""
+        result.stderr = ""
+        result.exit_code = 0 if result.ok else 1
+        return result
+
+    ex = MagicMock()
+    ex.run.side_effect = fake_run
+
+    with patch("framework.plugins.os_deps_plugin._detect_backend") as mock_detect:
+        mock_detect.return_value = _backend("apt")
+        spec = _InstallSpec(pkg_specs=("libnuma-dev",))
+        _execute_install(ex, spec)
+
+    install_cmd = next((c for c in call_log if "apt-get install" in c), None)
+    assert install_cmd is not None, "apt-get install was never called"
+    assert "sudo" not in install_cmd, (
+        f"sudo must not appear in install command when sudo is absent, got: {install_cmd}"
+    )
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_execute_install_uses_sudo_when_available():
+    """End-to-end: when sudo -n works, _execute_install must use 'sudo -n' prefix."""
+    call_log: list[str] = []
+
+    def fake_run(cmd, **_):
+        call_log.append(cmd)
+        result = MagicMock()
+        if "command -v sudo" in cmd:
+            result.ok = True
+            result.stdout = "OK"   # sudo available and -n works
+        elif "dpkg-query" in cmd:
+            result.ok = False      # package missing → trigger install
+            result.stdout = ""
+        else:
+            result.ok = True       # install succeeds
+            result.stdout = ""
+        result.stderr = ""
+        result.exit_code = 0 if result.ok else 1
+        return result
+
+    ex = MagicMock()
+    ex.run.side_effect = fake_run
+
+    with patch("framework.plugins.os_deps_plugin._detect_backend") as mock_detect:
+        mock_detect.return_value = _backend("apt")
+        spec = _InstallSpec(pkg_specs=("libnuma-dev",))
+        _execute_install(ex, spec)
+
+    install_cmd = next((c for c in call_log if "apt-get install" in c), None)
+    assert install_cmd is not None, "apt-get install was never called"
+    assert "sudo -n" in install_cmd, (
+        f"Expected 'sudo -n' in install command, got: {install_cmd}"
+    )
+
+
 # ── DryRun safety ─────────────────────────────────────────────────────────────
 
 
