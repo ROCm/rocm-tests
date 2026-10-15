@@ -141,6 +141,7 @@ def test_dnf_install_openssl_devel(target_executor):
 
     r = target_executor.run("find /usr/include -name 'openssl' -type d 2>/dev/null | head -1")
     assert r.ok
+    assert r.stdout.strip(), "openssl-devel installed but openssl header dir not found under /usr/include"
 
 
 # ---------------------------------------------------------------------------
