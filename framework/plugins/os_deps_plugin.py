@@ -94,8 +94,9 @@ _current_executor: AbstractExecutor | None = None
 # Env-var policy
 _ENV_POLICY = os.environ.get("ROCM_TEST_PKG_ON_MISSING", "install").lower()
 
-# Cache attribute on executor to avoid re-detection
+# Cache attributes on executor to avoid repeated probes
 _BACKEND_ATTR = "_os_deps_backend"
+_SUDO_ATTR = "_os_deps_sudo_prefix"  # cached "sudo -n " or ""
 
 # ---------------------------------------------------------------------------
 # Internal spec
@@ -590,6 +591,27 @@ def _probe_missing(executor, backend: _Backend, pkgs: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_sudo_prefix(executor, backend: _Backend) -> str:
+    """Return the correct sudo prefix for this executor, probing once and caching.
+
+    Checks in order:
+      1. sudo not needed (Windows backends, running as root) → ""
+      2. sudo exists and -n works (standard fleet nodes) → "sudo -n "
+      3. sudo binary missing (plain Docker root) → ""
+    """
+    if not backend.needs_sudo:
+        return ""
+    cached = getattr(executor, _SUDO_ATTR, None)
+    if isinstance(cached, str):  # real cached value; MagicMock/None both skipped
+        return cached
+    result = executor.run("bash -c 'command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null && echo OK || echo NO'")
+    prefix = "sudo -n " if (result.ok and "OK" in result.stdout) else ""
+    with contextlib.suppress(AttributeError, TypeError):
+        object.__setattr__(executor, _SUDO_ATTR, prefix)
+    logger.debug("os_deps: sudo prefix resolved: %r", prefix)
+    return prefix
+
+
 def _run_install_cmd(
     executor,
     backend: _Backend,
@@ -597,17 +619,12 @@ def _run_install_cmd(
     src: str | None,
     extra_args: list[str],
 ) -> None:
-    """Run the install command, trying sudo -n first then without sudo."""
-    sudo = "sudo -n " if backend.needs_sudo else ""
+    """Run the install command with the correct privilege prefix."""
+    sudo = _resolve_sudo_prefix(executor, backend)
     cmd = backend.install_cmd_fn(pkgs, sudo, src, extra_args)
     result = executor.run(cmd)
     if result.ok:
         return
-    if backend.needs_sudo:
-        cmd_nosudo = backend.install_cmd_fn(pkgs, "", src, extra_args)
-        result = executor.run(cmd_nosudo)
-        if result.ok:
-            return
     raise RuntimeError(
         f"os_deps: failed to install {pkgs} via '{backend.key}'.\n"
         f"exit_code: {result.exit_code}\n"
