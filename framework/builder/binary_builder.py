@@ -33,11 +33,7 @@ import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 import errno
-
-try:
-    import fcntl
-except ImportError:
-    fcntl = None  # type: ignore[assignment]  # Windows — fcntl not available
+import fcntl
 import glob
 import hashlib
 import json
