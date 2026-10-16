@@ -158,6 +158,7 @@ def _skip_if_unsupported(executor, rock_dir: str) -> None:
         pytest.skip("amd-smi is not supported for rocm version below 7.0.0")
 
 
+@pytest.mark.hw.multi_gpu
 @pytest.mark.gpu_count("ALL")
 @pytest.mark.runtime.medium
 def test_amdsmi_gfx_clock_violation(
