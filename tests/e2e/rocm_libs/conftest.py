@@ -26,11 +26,9 @@ import contextlib
 import logging
 import os
 import pathlib
-import subprocess
 
 import pytest
 
-from framework.builder.binary_builder import external_build_lock, resolve_parallel_jobs
 from tests.e2e.rocm_libs._workload import HIP_MEM_POOL_ENV
 
 logger = logging.getLogger(__name__)
@@ -283,34 +281,30 @@ def hipblas_samples_bin_dir(
     compiler_build_dir: str,
     framework_config,
     external_build,
+    cmake_build_dir,
     cmake_executor,
+    gpu_arch: str | None,
 ) -> str:
     """Return the directory that contains the pre-built hipBLAS sample binaries.
 
     Resolution order:
 
-    1. ``rock_dir/bin`` — binaries shipped with the ``hipblas-samples`` package.
+    1. ``rock_dir/bin`` -- binaries shipped with the ``hipblas-samples`` package.
     2. Build from source using a sparse clone of ``ROCm/rocm-libraries`` via
-       ``external_build.clone_repo``.  The build is cached for the session
-       (idempotent clone + sentinel check skip rebuild when already built).
-
-    All dependencies are session-scoped — no function-scoped fixtures are
-    requested here to preserve the session-scope guarantee.
+       ``external_build.clone_repo`` + the framework's ``cmake_build_dir`` factory,
+       which injects the ROCm compiler toolchain and explicit GPU arch.
 
     Returns:
         Absolute path to the directory containing the sample binaries.
     """
     if not rock_dir:
-        pytest.fail("rock_dir is empty — pass --rock-dir or set ROCK_DIR to the ROCm install path.")
+        pytest.fail("rock_dir is empty -- pass --rock-dir or set ROCK_DIR to the ROCm install path.")
     rocm_bin = os.path.join(rock_dir, "bin")
     sentinel_in_pkg = os.path.join(rocm_bin, _HIPBLAS_SAMPLE_SENTINEL)
 
     # --- 1. Pre-installed package -------------------------------------------
-    # Use cmake_executor for remote nodes; fall back to local os.path.isfile.
-    # Both paths are session-safe — no function-scoped fixture is needed here.
     if cmake_executor is not None:
-        probe = cmake_executor.run(f"test -f '{sentinel_in_pkg}'", timeout=15.0)
-        found_in_pkg = probe.ok
+        found_in_pkg = cmake_executor.run(f"test -f '{sentinel_in_pkg}'", timeout=15.0).ok
     else:
         found_in_pkg = os.path.isfile(sentinel_in_pkg)
 
@@ -318,10 +312,15 @@ def hipblas_samples_bin_dir(
         logger.info("hipBLAS samples found pre-installed at %s", rocm_bin)
         return rocm_bin
 
-    # --- 2. Build from source -----------------------------------------------
+    # --- 2. Build from source via framework cmake_build_dir -----------------
+    if gpu_arch is None:
+        pytest.fail(
+            "hipBLAS samples source build requires --gpu-arch; "
+            "pre-install the hipblas-samples package or pass --gpu-arch."
+        )
+
     build_timeout = float(framework_config.therock.build_timeout_secs)
 
-    # Sparse clone: only the projects/hipblas subtree is fetched
     dest = pathlib.Path(compiler_build_dir) / "rocm_libs" / "hipblas_samples" / "rocm-libraries"
     repo_dir = external_build.clone_repo(
         _HIPBLAS_LIBRARIES_REPO,
@@ -332,99 +331,29 @@ def hipblas_samples_bin_dir(
     )
     external_build.assert_license_present(repo_dir)
 
-    # repo_dir = <clone_root>/projects/hipblas  (sparse subtree path returned by clone_repo)
-    # repo_root = <clone_root>/                 (the actual rocm-libraries checkout root)
-    # build_dir = <clone_root>/build            (matches: cmake -S projects/hipblas -B build)
-    # staging   = <clone_root>/build/clients/staging
-    repo_root = repo_dir.parent
-    build_dir = str(repo_root / "build")
-    staging_dir = str(repo_root / "build" / "clients" / "staging")
+    # cmake_build_dir uses projects/hipblas as the CMake source tree (-S).
+    # It injects CMAKE_PREFIX_PATH, CMAKE_CXX_COMPILER, and AMDGPU_TARGETS
+    # from the framework's session config and gpu_arch, and handles xdist
+    # locking + incremental-build caching automatically.
+    build_dir = cmake_build_dir(
+        src=str(repo_dir),
+        subdir="rocm_libs/hipblas_samples",
+        gpu_arch=gpu_arch,
+        gpu_arch_var="AMDGPU_TARGETS",
+        extra_cmake_args=[
+            "-DBUILD_CLIENTS_SAMPLES=ON",
+            "-DBUILD_CLIENTS_TESTS=OFF",
+            "-DBUILD_CLIENTS_BENCHMARKS=OFF",
+        ],
+        artifact=_HIPBLAS_SAMPLE_SENTINEL,
+        compiler_mode="auto",
+    )
+
+    staging_dir = os.path.join(build_dir, "clients", "staging")
     sentinel_in_build = os.path.join(staging_dir, _HIPBLAS_SAMPLE_SENTINEL)
 
-    # Serialise the configure+build across xdist workers. Each worker runs this
-    # session-scoped fixture, so without the lock all N race to cmake --build
-    # into the same build_dir; a worker then tries to exec a sample binary while
-    # another's linker is still writing it, which fails with ETXTBSY ("Text file
-    # busy"). The lock lets one worker build while the rest wait, then re-check
-    # the sentinel inside the lock and skip straight to running the binaries.
-    with external_build_lock(build_dir):
-        already_built = (
-            cmake_executor.run(f"test -f '{sentinel_in_build}'", timeout=15.0).ok
-            if cmake_executor is not None
-            else os.path.isfile(sentinel_in_build)
-        )
-
-        if not already_built:
-            jobs = resolve_parallel_jobs(remote_executor=cmake_executor)
-            cmake_src = str(repo_dir)  # projects/hipblas — cmake -S source
-
-            configure_args = [
-                "cmake",
-                "-S",
-                cmake_src,
-                "-B",
-                build_dir,
-                f"-DCMAKE_PREFIX_PATH={rock_dir}",
-                "-DBUILD_CLIENTS_SAMPLES=ON",
-                "-DBUILD_CLIENTS_TESTS=OFF",
-                "-DBUILD_CLIENTS_BENCHMARKS=OFF",
-            ]
-            configure_cmd = " ".join(configure_args)
-            logger.info("hipBLAS samples: configuring — %s", configure_cmd)
-            if cmake_executor is not None:
-                cfg = cmake_executor.run(configure_cmd, timeout=build_timeout)
-                cfg_stdout, cfg_stderr = cfg.stdout, cfg.stderr
-            else:
-                proc = subprocess.run(configure_args, text=True, capture_output=True, timeout=build_timeout)
-                cfg_stdout, cfg_stderr = proc.stdout, proc.stderr
-                logger.info("hipBLAS samples cmake configure stdout:\n%s", cfg_stdout[-3000:])
-                cfg = type(
-                    "R",
-                    (),
-                    {
-                        "ok": proc.returncode == 0,
-                        "exit_code": proc.returncode,
-                        "stdout": cfg_stdout,
-                        "stderr": cfg_stderr,
-                    },
-                )()
-            if not cfg.ok:
-                pytest.fail(
-                    f"hipBLAS samples cmake configure failed (exit={cfg.exit_code}):\n"
-                    f"stdout: {cfg_stdout[:2000]}\nstderr: {cfg_stderr[:1000]}"
-                )
-            logger.info("hipBLAS samples: cmake configure done")
-
-            build_args = ["cmake", "--build", build_dir, "-j", str(jobs)]
-            build_cmd = " ".join(build_args)
-            logger.info("hipBLAS samples: building with %d jobs — %s", jobs, build_cmd)
-            if cmake_executor is not None:
-                bld = cmake_executor.run(build_cmd, timeout=build_timeout)
-                bld_stdout, bld_stderr = bld.stdout, bld.stderr
-            else:
-                proc = subprocess.run(build_args, text=True, capture_output=True, timeout=build_timeout)
-                bld_stdout, bld_stderr = proc.stdout, proc.stderr
-                logger.info("hipBLAS samples cmake build stdout:\n%s", bld_stdout[-3000:])
-                bld = type(
-                    "R",
-                    (),
-                    {
-                        "ok": proc.returncode == 0,
-                        "exit_code": proc.returncode,
-                        "stdout": bld_stdout,
-                        "stderr": bld_stderr,
-                    },
-                )()
-            if not bld.ok:
-                pytest.fail(
-                    f"hipBLAS samples cmake build failed (exit={bld.exit_code}):\n"
-                    f"stdout: {bld_stdout[:2000]}\nstderr: {bld_stderr[:1000]}"
-                )
-            logger.info("hipBLAS samples: build complete")
-
-    # Verify sentinel is present
     verify_ok = (
-        cmake_executor.run(f"test -f {sentinel_in_build}", timeout=15.0).ok
+        cmake_executor.run(f"test -f '{sentinel_in_build}'", timeout=15.0).ok
         if cmake_executor is not None
         else os.path.isfile(sentinel_in_build)
     )
