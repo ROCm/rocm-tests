@@ -51,6 +51,13 @@ _CTEST_FAIL_BANNER = "The following tests FAILED"
 # (HostToDevice instead of DeviceToHost) in TestHIP_AsyncLauncher.cpp:47,
 # causing hipErrorInvalidValue abort. Reproducible on MI350X/MI355X/MI210.
 # Fixed upstream post-5.1.1; xfail until a patched release is pinned.
+#
+# The original workload used a ctest -E hip.async_launcher regex filter to
+# skip the async_launcher subtest. That approach silently drops subtests
+# without surfacing them as expected failures — if additional subtests broke,
+# the filter would hide them. Per-target XFAIL is used here instead: it
+# explicitly names the failing target, appears in the KNOWN_ISSUES column of
+# the summary, and automatically becomes XPASS when the upstream fix is pinned.
 _KNOWN_XFAIL_TESTS = frozenset({"Kokkos_CoreUnitTest_HIP"})
 
 
@@ -109,6 +116,15 @@ def test_gpu_rdc_kokkos(
     if _CTEST_FAIL_BANNER in result.stdout or not result.ok:
         # Extract the names of failing ctest targets from the banner section.
         failed = set(re.findall(r"^\s+\d+ - (\S+)", result.stdout, re.MULTILINE))
+        if not failed:
+            # ctest exited non-zero but reported no named failing targets —
+            # this is an executor error, ctest crash, or timeout, not a known
+            # test failure. Hard-fail so it is not silently misclassified.
+            pytest.fail(
+                f"Kokkos ctest exited non-zero (exit={result.exit_code}) but "
+                f"reported no named failing targets. Possible executor or runtime error.\n"
+                f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-1000:]}"
+            )
         unknown = failed - _KNOWN_XFAIL_TESTS
         if unknown:
             # At least one failure is NOT a known bug — hard fail.

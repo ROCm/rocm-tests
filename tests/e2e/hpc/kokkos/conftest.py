@@ -248,6 +248,8 @@ def kokkos_rdc_build(
         "-DKokkos_ENABLE_BENCHMARKS=ON "
         f"-DCMAKE_INSTALL_PREFIX={install_dir} "
         "-DKokkos_ENABLE_HIP_RELOCATABLE_DEVICE_CODE=ON "
+        "-DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON "
+        "-DKokkos_ENABLE_HIP_MULTIPLE_KERNEL_INSTANTIATIONS=ON "
         f"{arch_flag}"
     )
 
