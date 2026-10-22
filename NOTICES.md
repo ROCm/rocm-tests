@@ -50,7 +50,7 @@ sources — it is built and executed as a standalone external binary at test tim
 - Used by: `tests/e2e/hpc/kokkos/test_gpu_rdc_kokkos.py` (cloned at runtime; see the
   `kokkos_rdc_build` fixture in `tests/e2e/hpc/kokkos/conftest.py`).
 - Upstream: https://github.com/kokkos/kokkos
-- License: BSD 3-Clause (see the `LICENSE` file in the upstream repository).
+- License: Apache License v2.0 with LLVM Exceptions (see the `LICENSE` file in the upstream repository).
 - Copyright (c) 2022 National Technology & Engineering Solutions of Sandia, LLC (NTESS).
 
 The Kokkos performance-portability library sources are fetched during test execution,
