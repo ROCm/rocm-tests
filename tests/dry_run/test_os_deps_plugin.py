@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from framework.os_adapter import OS_DEPS
+from framework.plugins.os_deps_plugin import OS_DEPS
 
 # ---------------------------------------------------------------------------
 # Linux / Ubuntu (apt) — ci.pr: always available on dev machines

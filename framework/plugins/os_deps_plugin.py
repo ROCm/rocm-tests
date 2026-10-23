@@ -6,8 +6,8 @@ os_deps_plugin.py — OS package auto-install for rocm-tests.
 
 Self-contained: copy this single file to use in another repo.
 
-Public API (import from framework.os_adapter for convenience):
-    from framework.os_adapter import OS_DEPS
+Public API:
+    from framework.plugins.os_deps_plugin import OS_DEPS
 
 Usage:
     @OS_DEPS("cmake", "git")
@@ -60,6 +60,7 @@ import os
 import shlex
 from typing import TYPE_CHECKING
 
+import filelock
 import pytest
 
 if TYPE_CHECKING:
@@ -269,9 +270,11 @@ class _LinuxPM:
         extra = (" " + " ".join(extra_args)) if extra_args else ""
         if src:
             if src.endswith(".deb"):
+                deb_hash = hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
+                deb_tmp = f"/tmp/_os_deps_{deb_hash}.deb"  # nosec B108 — URL-hash makes path unique per source
                 return (
-                    f"bash -c '{sudo}wget -q -O /tmp/_os_deps.deb {shlex.quote(src)} && "
-                    f"{sudo}dpkg -i /tmp/_os_deps.deb && {sudo}apt-get install -f -y 2>&1'"
+                    f"bash -c '{sudo}wget -q -O {deb_tmp} {shlex.quote(src)} && "
+                    f"{sudo}dpkg -i {deb_tmp} && {sudo}apt-get install -f -y 2>&1'"
                 )
             repo_hash = hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
             repo_file = f"/etc/apt/sources.list.d/os_deps_{repo_hash}.list"
@@ -520,15 +523,37 @@ class _WindowsPM:
 
     @classmethod
     def probe_missing(cls, executor, backend: _Backend, pkgs: list[str]) -> list[str]:
-        """Probe each package individually via cmd.exe (no bash on Windows)."""
-        missing, present = [], []
+        """Probe all packages in a single batched cmd.exe /c compound command.
+
+        Each package emits 'OK:<name>' or 'MISS:<name>' so results are parsed
+        from a single round-trip rather than one executor.run() per package.
+        """
+        if not pkgs:
+            return []
+        parts = []
         for pkg in pkgs:
-            probe = backend.probe_cmds[backend.key](pkg)
-            result = executor.run(probe)
-            if result.ok:
-                present.append(pkg)
-            else:
-                missing.append(pkg)
+            base = _parse_version(pkg)[0]
+            probe = backend.probe_cmds[backend.key](pkg).rstrip()
+            # Strip trailing >NUL redirect so we can append our own echo
+            probe_no_redir = probe.replace(" >NUL 2>&1", "").replace(">NUL 2>&1", "")
+            parts.append(
+                f"({probe_no_redir} >NUL 2>&1 && echo OK:{shlex.quote(base)} || echo MISS:{shlex.quote(base)})"
+            )
+        compound = "cmd.exe /c " + " & ".join(parts)
+        result = executor.run(compound)
+        missing, present = [], []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("OK:"):
+                present.append(line[3:])
+            elif line.startswith("MISS:"):
+                missing.append(line[5:])
+        # Fall back to individual probes if batching produced no output
+        if not present and not missing:
+            for pkg in pkgs:
+                probe = backend.probe_cmds[backend.key](pkg)
+                r = executor.run(probe)
+                (present if r.ok else missing).append(pkg)
         if present:
             logger.debug("os_deps: probe PRESENT — %s", present)
         if missing:
@@ -958,17 +983,17 @@ class _SubprocessExecutor:
     def run(self, command: str, timeout: float = 300.0, **_):
         import subprocess
 
+        from framework.common.helpers import ExecutionResult  # pylint: disable=import-outside-toplevel
+
         result = subprocess.run(
             command, shell=True, capture_output=True, text=True, timeout=timeout, check=False
         )  # nosec B602
-
-        class _Result:
-            ok = result.returncode == 0
-            exit_code = result.returncode
-            stdout = result.stdout
-            stderr = result.stderr
-
-        return _Result()
+        return ExecutionResult(
+            exit_code=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            duration=0.0,
+        )
 
 
 def _resolve_executor(request: pytest.FixtureRequest):
@@ -1029,17 +1054,26 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture(autouse=True)
 def _os_deps_autouse(request: pytest.FixtureRequest) -> None:
-    """Set executor context and process @OS_DEPS declarations before each test."""
+    """Set executor context and process @OS_DEPS declarations before each test.
+
+    A per-node file lock serialises installs across xdist workers so parallel
+    workers on the same node do not race the package manager.
+    """
     global _current_executor
     _current_executor = _resolve_executor(request)
 
+    # Serialise installs across xdist workers on the same node.
+    # The lock path is fixed per session so all workers on one host share it.
+    _lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".os_deps_install.lock")
+    _lock = filelock.FileLock(_lock_path, timeout=300)
+
     spec = _resolve_os_deps(request)
     if spec is not None:
-        try:
-            _execute_install(_current_executor, spec)
-        except RuntimeError as exc:
-            pytest.skip(str(exc))
-            return
+        with _lock:
+            try:
+                _execute_install(_current_executor, spec)
+            except RuntimeError as exc:
+                pytest.fail(str(exc))
 
     # Backwards-compat: @pytest.mark.os_deps marker
     if spec is None:
@@ -1052,10 +1086,8 @@ def _os_deps_autouse(request: pytest.FixtureRequest) -> None:
                 command=marker.kwargs.get("command"),
                 extra_args=marker.kwargs.get("extra_args") or [],
             )
-            try:
-                _execute_install(_current_executor, compat)
-            except RuntimeError as exc:
-                pytest.skip(str(exc))
-                return
-
-    return
+            with _lock:
+                try:
+                    _execute_install(_current_executor, compat)
+                except RuntimeError as exc:
+                    pytest.fail(str(exc))
