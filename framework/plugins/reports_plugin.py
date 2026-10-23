@@ -271,6 +271,8 @@ def _test_execution_status(request: pytest.FixtureRequest) -> None:  # type: ign
         rep = rep_call
         if rep.passed:
             status = "PASSED"
+        elif hasattr(rep, "wasxfail"):
+            status = "KNOWN_ISSUE"
         elif rep.skipped:
             status = "SKIPPED"
         else:
