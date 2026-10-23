@@ -1091,7 +1091,8 @@ def clone_repo(  # noqa: C901
                 f"sparse-checkout did not produce {repo_dir / sparse_subtree} — "
                 f"check that '{sparse_subtree}' exists on ref '{ref}'"
             )
-        return pathlib.Path(abs_dest) / sparse_subtree if sparse_subtree else pathlib.Path(abs_dest)
+            return pathlib.Path(abs_dest) / sparse_subtree
+        return pathlib.Path(abs_dest)
 
     # Local path
     repo_dir.parent.mkdir(parents=True, exist_ok=True)
