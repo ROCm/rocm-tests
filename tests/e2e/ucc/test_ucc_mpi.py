@@ -96,7 +96,7 @@ def build_run_command(mpirun: str, ucc_test_mpi: str) -> str:
     """Return the ``mpirun`` command line for the workload."""
     exports = " ".join(f"-x {assignment}" for assignment in MPIRUN_EXPORTS)
     return (
-        f"{mpirun} {exports} -np {RANKS} {ucc_test_mpi} "
+        f"{mpirun} --allow-run-as-root {exports} -np {RANKS} {ucc_test_mpi} "
         f"--mtypes {MTYPES} --set_device 1 --inplace 2 --verbose "
         f"--colls {','.join(COLLS)}"
     )
