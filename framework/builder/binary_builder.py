@@ -952,62 +952,73 @@ def clone_repo(  # noqa: C901
             abs_dest = _remote_abspath(repo_dir, remote_executor, category="external")
         abs_dest_path = pathlib.Path(abs_dest)
 
-        check = remote_executor.run(f"test -d {abs_dest}/.git", timeout=30.0)
-        if not check.ok:
-            remote_executor.run(f"mkdir -p {shlex.quote(str(abs_dest_path.parent))}", timeout=30.0)
-            if sparse_subtree:
-                clone_cmd = f"git clone --filter=blob:none --sparse --no-checkout {url} {abs_dest}"
-            else:
-                clone_cmd = f"git clone {url} {abs_dest}"
-            last_err = ""
-            for attempt in range(1, _EXT_CLONE_ATTEMPTS + 1):
-                result = remote_executor.run(clone_cmd, timeout=timeout)
-                if result.ok:
-                    break
-                last_err = f"exit={result.exit_code}\nstdout: {result.stdout[:2000]}\nstderr: {result.stderr[:1000]}"
-                remote_executor.run(f"rm -rf {abs_dest}", timeout=60.0)
-                logger.warning(
-                    "clone_repo (remote) attempt %d/%d failed; retrying in %ds:\n%s",
-                    attempt,
-                    _EXT_CLONE_ATTEMPTS,
-                    _EXT_CLONE_BACKOFF_SECS,
-                    last_err,
-                )
-                time.sleep(_EXT_CLONE_BACKOFF_SECS)
-            else:
-                raise RuntimeError(
-                    f"Remote git clone failed after {_EXT_CLONE_ATTEMPTS} attempts.\n" f"cmd: {clone_cmd}\n{last_err}"
-                )
-            if sparse_subtree:
-                sc = remote_executor.run(f"git -C {abs_dest} sparse-checkout set {sparse_subtree}", timeout=timeout)
-                if not sc.ok:
-                    raise RuntimeError(
-                        f"git sparse-checkout set failed on remote (exit={sc.exit_code}): {sc.stderr[:1000]}"
+        # Serialise across xdist workers (see the local branch below for the full
+        # rationale). xdist workers are always local processes even in
+        # --remote-node mode, so a local flock keyed on the shared dest path
+        # serialises the concurrent SSH clones into one remote directory. The
+        # key is str(repo_dir) — identical across workers — not abs_dest.
+        with external_build_lock(str(repo_dir)):
+            check = remote_executor.run(f"test -d {abs_dest}/.git", timeout=30.0)
+            if not check.ok:
+                remote_executor.run(f"mkdir -p {shlex.quote(str(abs_dest_path.parent))}", timeout=30.0)
+                if sparse_subtree:
+                    clone_cmd = f"git clone --filter=blob:none --sparse --no-checkout {url} {abs_dest}"
+                else:
+                    clone_cmd = f"git clone {url} {abs_dest}"
+                last_err = ""
+                for attempt in range(1, _EXT_CLONE_ATTEMPTS + 1):
+                    result = remote_executor.run(clone_cmd, timeout=timeout)
+                    if result.ok:
+                        break
+                    last_err = (
+                        f"exit={result.exit_code}\nstdout: {result.stdout[:2000]}\nstderr: {result.stderr[:1000]}"
                     )
-        else:
-            logger.info("clone_repo (remote): %s already exists — skipping clone", abs_dest)
-            if sparse_subtree:
-                # Re-assert the sparse spec on a reused checkout: one cached from an
-                # earlier run with a narrower subtree would otherwise stay missing the
-                # files we now need (e.g. a sibling include/ tree). Idempotent when the
-                # spec already matches.
-                sc = remote_executor.run(f"git -C {abs_dest} sparse-checkout set {sparse_subtree}", timeout=timeout)
-                if not sc.ok:
-                    raise RuntimeError(
-                        f"git sparse-checkout re-assert failed on remote (exit={sc.exit_code}): {sc.stderr[:1000]}"
+                    remote_executor.run(f"rm -rf {abs_dest}", timeout=60.0)
+                    logger.warning(
+                        "clone_repo (remote) attempt %d/%d failed; retrying in %ds:\n%s",
+                        attempt,
+                        _EXT_CLONE_ATTEMPTS,
+                        _EXT_CLONE_BACKOFF_SECS,
+                        last_err,
                     )
+                    time.sleep(_EXT_CLONE_BACKOFF_SECS)
+                else:
+                    raise RuntimeError(
+                        f"Remote git clone failed after {_EXT_CLONE_ATTEMPTS} attempts.\n"
+                        f"cmd: {clone_cmd}\n{last_err}"
+                    )
+                if sparse_subtree:
+                    sc = remote_executor.run(f"git -C {abs_dest} sparse-checkout set {sparse_subtree}", timeout=timeout)
+                    if not sc.ok:
+                        raise RuntimeError(
+                            f"git sparse-checkout set failed on remote (exit={sc.exit_code}): {sc.stderr[:1000]}"
+                        )
+            else:
+                logger.info("clone_repo (remote): %s already exists — skipping clone", abs_dest)
+                if sparse_subtree:
+                    # Re-assert the sparse spec on a reused checkout: one cached from an
+                    # earlier run with a narrower subtree would otherwise stay missing the
+                    # files we now need (e.g. a sibling include/ tree). Idempotent when the
+                    # spec already matches.
+                    sc = remote_executor.run(f"git -C {abs_dest} sparse-checkout set {sparse_subtree}", timeout=timeout)
+                    if not sc.ok:
+                        raise RuntimeError(
+                            f"git sparse-checkout re-assert failed on remote (exit={sc.exit_code}): {sc.stderr[:1000]}"
+                        )
 
-        if ref:
-            co = remote_executor.run(f"git -C {abs_dest} checkout {ref}", timeout=timeout)
-            if not co.ok:
-                raise RuntimeError(f"git checkout {ref!r} failed on remote (exit={co.exit_code}): {co.stderr[:1000]}")
-        if sparse_subtree:
-            sub_path = f"{abs_dest}/{sparse_subtree}"
-            check_sub = remote_executor.run(f"test -d {sub_path}", timeout=15.0)
-            assert check_sub.ok, (
-                f"sparse-checkout did not produce {sub_path} on remote — "
-                f"check that '{sparse_subtree}' exists on ref '{ref}'"
-            )
+            if ref:
+                co = remote_executor.run(f"git -C {abs_dest} checkout {ref}", timeout=timeout)
+                if not co.ok:
+                    raise RuntimeError(
+                        f"git checkout {ref!r} failed on remote (exit={co.exit_code}): {co.stderr[:1000]}"
+                    )
+            if sparse_subtree:
+                sub_path = f"{abs_dest}/{sparse_subtree}"
+                check_sub = remote_executor.run(f"test -d {sub_path}", timeout=15.0)
+                assert check_sub.ok, (
+                    f"sparse-checkout did not produce {sub_path} on remote — "
+                    f"check that '{sparse_subtree}' exists on ref '{ref}'"
+                )
         return pathlib.Path(abs_dest) / sparse_subtree if sparse_subtree else pathlib.Path(abs_dest)
 
     # Local path
