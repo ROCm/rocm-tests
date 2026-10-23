@@ -332,3 +332,56 @@ pip-audit -r requirements.txt           # CVE scan of pinned dependencies
 
 CodeQL (`security-extended` query suite) runs automatically on every PR to `main` via
 `.github/workflows/codeql.yml` — no local setup required.
+
+---
+
+## OS Package Auto-Install (`@OS_DEPS`)
+
+`os_deps_plugin` provides a declarative way to ensure OS packages are present before
+a test runs. Packages are installed once per test session per node; subsequent tests
+that need the same package find it already present and skip the install.
+
+### Decorator usage
+
+```python
+from framework.plugins.os_deps_plugin import OS_DEPS
+
+@OS_DEPS("cmake", "git")                          # simple package names
+@OS_DEPS({"apt": "libssl-dev", "dnf": "openssl-devel"})  # per-PM names
+def test_something(target_executor, ld_path):
+    ...
+```
+
+### Class / module level
+
+```python
+class TestMyFeature:
+    __OS_DEPS__ = OS_DEPS("curl", "wget")         # applied to every method in the class
+
+__OS_DEPS__ = OS_DEPS("cmake")                    # applied to every test in the module
+```
+
+### `conftest.py` fixture pattern (recommended for shared deps)
+
+When multiple tests in an area share the same OS dependency, declare it once as a
+session-scoped fixture in `conftest.py` rather than repeating `@OS_DEPS` on every
+test function:
+
+```python
+# tests/e2e/my_area/conftest.py
+import pytest
+from framework.plugins.os_deps_plugin import OS_DEPS
+
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_my_deps():
+    """Install shared OS deps once per session for this test area."""
+    OS_DEPS("cmake", "git").install()
+```
+
+Tests in the directory then receive the packages without any per-test decoration.
+
+### Failure behaviour
+
+A missing package that cannot be installed causes the test to be marked **ERROR**
+(via `pytest.fail`), not silently skipped, so CI surfaces the broken environment
+immediately rather than producing a misleading pass.
