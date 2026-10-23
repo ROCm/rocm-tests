@@ -1091,6 +1091,75 @@ def clone_repo(  # noqa: C901
                 f"sparse-checkout did not produce {repo_dir / sparse_subtree} — "
                 f"check that '{sparse_subtree}' exists on ref '{ref}'"
             )
+        return pathlib.Path(abs_dest) / sparse_subtree if sparse_subtree else pathlib.Path(abs_dest)
+
+    # Local path
+    repo_dir.parent.mkdir(parents=True, exist_ok=True)
+    with external_build_lock(str(repo_dir)):
+        if not (repo_dir / ".git").is_dir():
+            if sparse_subtree:
+                clone_parts = ["git", "clone", "--filter=blob:none", "--sparse", "--no-checkout", url, str(repo_dir)]
+            else:
+                clone_parts = ["git", "clone", url, str(repo_dir)]
+            last_err = ""
+            for attempt in range(1, _EXT_CLONE_ATTEMPTS + 1):
+                proc = subprocess.run(clone_parts, capture_output=True, text=True, timeout=timeout)
+                if proc.returncode == 0:
+                    break
+                last_err = f"exit={proc.returncode}\nstdout: {proc.stdout[:2000]}\nstderr: {proc.stderr[:1000]}"
+                shutil.rmtree(repo_dir, ignore_errors=True)
+                logger.warning(
+                    "clone_repo (local) attempt %d/%d failed; retrying in %ds:\n%s",
+                    attempt,
+                    _EXT_CLONE_ATTEMPTS,
+                    _EXT_CLONE_BACKOFF_SECS,
+                    last_err,
+                )
+                time.sleep(_EXT_CLONE_BACKOFF_SECS)
+            else:
+                raise RuntimeError(
+                    f"Local git clone failed after {_EXT_CLONE_ATTEMPTS} attempts.\n"
+                    f"cmd: {' '.join(clone_parts)}\n{last_err}"
+                )
+            if sparse_subtree:
+                proc = subprocess.run(
+                    ["git", "-C", str(repo_dir), "sparse-checkout", "set", sparse_subtree],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                assert (
+                    proc.returncode == 0
+                ), f"git sparse-checkout set failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
+        else:
+            logger.info("clone_repo (local): %s already exists — skipping clone", repo_dir)
+            if sparse_subtree:
+                # Re-assert the sparse spec on a reused checkout (see remote branch): a
+                # checkout cached from an earlier run with a narrower subtree would
+                # otherwise stay missing files we now need. Idempotent when unchanged.
+                proc = subprocess.run(
+                    ["git", "-C", str(repo_dir), "sparse-checkout", "set", sparse_subtree],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                assert (
+                    proc.returncode == 0
+                ), f"git sparse-checkout re-assert failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
+
+        if ref:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_dir), "checkout", ref],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            assert proc.returncode == 0, f"git checkout {ref!r} failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
+        if sparse_subtree:
+            assert (repo_dir / sparse_subtree).is_dir(), (
+                f"sparse-checkout did not produce {repo_dir / sparse_subtree} — "
+                f"check that '{sparse_subtree}' exists on ref '{ref}'"
+            )
     return repo_dir / sparse_subtree if sparse_subtree else repo_dir
 
 
