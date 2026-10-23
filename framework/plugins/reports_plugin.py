@@ -464,6 +464,8 @@ def _render_skipped_items(tw, stats) -> None:
     """Print the skipped-tests block with reasons."""
     skipped_items: list[tuple[str, str]] = []
     for report in stats.get("skipped", []):
+        if hasattr(report, "wasxfail"):
+            continue  # xfail on pytest <9 lives in skipped; shown in KNOWN_ISSUES column
         reason = ""
         if report.longrepr:
             if isinstance(report.longrepr, tuple) and len(report.longrepr) == 3:
