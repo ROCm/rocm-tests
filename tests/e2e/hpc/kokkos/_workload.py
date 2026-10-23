@@ -7,8 +7,8 @@ Imported by both ``conftest.py`` (clone + build) and ``test_gpu_rdc_kokkos.py``
 (ctest run) so build-time and run-time settings can never drift.
 
 Environment overrides:
-    KOKKOS_REF            git ref (tag/branch/SHA) to clone. Default ``5.1.1``
-                          (supports gfx950 + modern AMD_GFX arch-flag naming).
+    KOKKOS_REF            git ref (tag/branch/SHA) to clone. Default ``5.2.2``
+                          (fixes HIP bfloat16/fp16 API breaks vs 5.1.1).
     KOKKOS_CTEST_TIMEOUT  per-test ctest timeout in seconds (``ctest --timeout N``).
     KOKKOS_CTEST_RUN_TIMEOUT
                           outer wall-clock cap for the whole ctest run (seconds).
@@ -19,15 +19,13 @@ import os
 # Upstream Kokkos performance-portability HPC library.
 KOKKOS_URL = os.environ.get("KOKKOS_URL", "https://github.com/kokkos/kokkos.git")
 
-# Pinned default clone ref. 5.1.1 is the evidence-based default: it supports
-# current AMD hardware (gfx950/MI350 and the gfx12xx Navi line) and the modern
-# ``Kokkos_ARCH_AMD_GFX<NNN>`` arch-flag naming emitted by ``kokkos_arch_flag``
-# below. The older 4.2.01 tag predates gfx950 and uses codename arch flags
-# (``Kokkos_ARCH_VEGA90A`` etc.), so it cannot configure for newer GPUs — a
-# ``-DKokkos_ARCH_AMD_GFX950=ON`` is simply unknown there and cmake fails with
-# "no AMD GPU architecture is supported". Override with KOKKOS_REF for a specific
-# Kokkos version matched to the target arch.
-KOKKOS_REF = os.environ.get("KOKKOS_REF", "5.1.1")
+# Pinned default clone ref. 5.2.2 is the evidence-based default: it supports
+# current AMD hardware (gfx950/MI350 and the gfx12xx Navi line), uses the modern
+# ``Kokkos_ARCH_AMD_GFX<NNN>`` arch-flag naming, and fixes HIP bfloat16/fp16
+# API breaks (``__hip_bfloat16`` conversions, ``__2i16`` to bool) that cause
+# Kokkos 5.1.1 to fail to compile against ROCm 7.x and 10.x headers.
+# Override with KOKKOS_REF env var for a specific version matched to the target.
+KOKKOS_REF = os.environ.get("KOKKOS_REF", "5.2.2")
 
 # Per-test ctest timeout (seconds), matching the original script's
 # ``ctest --timeout 50000``. Large on purpose: it bounds a genuinely hung test
