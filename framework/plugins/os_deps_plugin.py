@@ -839,7 +839,7 @@ def _run_custom_cmd(executor, pkg_specs: tuple, command: str, extra_args: list[s
 # ---------------------------------------------------------------------------
 
 
-def _execute_install(executor, spec: _InstallSpec) -> InstallResult:
+def _execute_install(executor, spec: _InstallSpec) -> InstallResult:  # noqa: C901
     """Install packages described by spec through executor.
 
     Returns InstallResult with .installed, .already_present, .versions, .dry_run, .command.
@@ -908,11 +908,16 @@ def _execute_install(executor, spec: _InstallSpec) -> InstallResult:
         return InstallResult(already_present=resolved_pkgs)
 
     names = ", ".join(missing)
-    msg = (
-        f"Required OS packages not installed: [{names}]\n"
-        f"Set ROCM_TEST_PKG_ON_MISSING=install or pre-provision with:\n"
-        f"  --pre-install pkg={','.join(missing)}"
-    )
+    # Only show the env-var hint when on_missing came from the environment default
+    # (not when it was explicitly hardcoded in the test's OS_DEPS() call).
+    if spec.on_missing == _ENV_POLICY:
+        hint = (
+            f"\nSet ROCM_TEST_PKG_ON_MISSING=install or pre-provision with:\n"
+            f"  --pre-install pkg={','.join(missing)}"
+        )
+    else:
+        hint = ""
+    msg = f"Required OS packages not installed: [{names}]{hint}"
     if spec.on_missing == "skip":
         logger.warning("os_deps: skipping test — missing packages: %s", missing)
         pytest.skip(msg)
