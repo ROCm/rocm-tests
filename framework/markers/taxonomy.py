@@ -167,6 +167,19 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # LAMMPS Kokkos/HIP molecular-dynamics benchmark: third-party CMake build +
+    # MPI mpirun launch, swept over benchmarks x GPU counts. Each variant is only
+    # a few hundred timesteps, but the first run on a node compiles LAMMPS and
+    # Kokkos from source, which is too heavy to repeat across the nightly 1-GPU
+    # sweep — hence weekly, matching rochpl. hw.multi_gpu is the default; the
+    # test overrides hw.* to hw.gpu on the single-GPU variants.
+    "tests/e2e/hpc/lammps_kokkos": [
+        "hw.multi_gpu",
+        "layer.math_lib",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
     "tests/e2e/rocprim": [
         "hw.gpu",
         "layer.math_lib",
