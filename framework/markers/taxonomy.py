@@ -319,6 +319,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # RDC diagnostics: the daemon is a node-wide singleton and is restarted per
+    # test, and the run is held to the node's full GPU inventory, so these
+    # qualify the whole node rather than the allocated GPU.
+    "tests/e2e/system_tools/rdc": [
+        "hw.multi_gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # System tools (rocminfo, amd-smi, etc.): validate ROCm stack enumeration and diagnostics.
     "tests/e2e/system_tools": [
         "hw.gpu",
