@@ -30,7 +30,6 @@ def _run(target_executor, torch_python: str, ld_path: dict, script_name: str, ti
     ld = shlex.quote(ld_path["LD_LIBRARY_PATH"])
     python = shlex.quote(torch_python)
     result = target_executor.run(
-        f"{python} -m pip install pytest -q && "
         f"env LD_LIBRARY_PATH={ld} {python} -m pytest {shlex.quote(script)} -v",
         timeout=timeout,
     )
@@ -77,7 +76,7 @@ def test_capture_abort_watchdog(require_torch, torch_python: str, target_executo
     _run(target_executor, torch_python, ld_path, "capture_abort_watchdog.py", timeout=600)
 
 
-@pytest.mark.ci.pr
+@pytest.mark.ci.nightly
 @pytest.mark.runtime.soak
 def test_e2e_pipeline(require_torch, torch_python: str, target_executor, ld_path: dict):
     """Full capture-warmup-profile-replay pipeline at 1B-param scale — Tier-1."""

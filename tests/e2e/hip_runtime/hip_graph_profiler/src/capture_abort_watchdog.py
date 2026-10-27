@@ -6,203 +6,200 @@
 from __future__ import annotations
 
 import sys
+import time
 
 import pytest
 import torch
+import torch.nn as nn
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from helpers import (
+    NO_PROGRESS_THRESHOLD_SEC,
     GPTModel,
+    _bad_capture_worker,
     apply_graph_profiling_env,
     assert_no_hang,
     assert_traces_valid,
     capture_graph,
-    flush_gpu,
     make_profiler,
     measure_step_times,
-    replay_and_sync,
-    safe_abort_capture,
+    run_in_subprocess,
 )
 
-_SMALL_CFG = dict(vocab=1024, dim=256, heads=8, layers=4, seq_len=64)
-NUM_STEPS = 8
+# On ROCm/HIP, a failed torch.cuda.graph() capture leaves the HIP driver's
+# process-global stream-capture flag set. No in-process API clears it, so any
+# subsequent host-to-device copy or allocation raises
+# "HIP error: operation not permitted when stream is capturing".
+# All TestCaptureAbort tests therefore run the deliberately-failing capture in a
+# freshly-spawned subprocess (run_in_subprocess). The wedged HIP state dies with
+# the child; the parent retains a clean device for recovery assertions.
 
 
 class TestCaptureAbort:
 
-    @pytest.mark.timeout(300)
-    def test_invalid_op_aborts_capture_cleanly(self, device, profiler_dir, monkeypatch):
-        """Deliberate abort during profiling must leave device healthy."""
+    def test_invalid_op_aborts_capture_cleanly(self, device, monkeypatch):
+        """Graph capture with an uncapturable op must raise, not deadlock."""
         apply_graph_profiling_env()
-        model = GPTModel(**_SMALL_CFG).to(device).eval()
-        sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        g = torch.cuda.CUDAGraph()
-        s = torch.cuda.Stream(device=device)
-        with make_profiler(profiler_dir, wait=0, warmup=0, active=3) as prof:
-            try:
-                with torch.cuda.graph(g, stream=s):
-                    raise RuntimeError("Deliberate abort during profiling")
-            except Exception:
-                safe_abort_capture(g, stream=s)
-            prof.step()
-        g2, _ = capture_graph(model, sample)
-        replay_and_sync(g2, device, n=3)
-        del g2, model
-        flush_gpu()
-        assert_traces_valid(profiler_dir)
+        raised = run_in_subprocess(_bad_capture_worker, args=([64, 64, 64], (2, 64)), timeout=60)
+        assert raised, (
+            "Subprocess capture with UncapturableOp did not raise — "
+            "graph-capture abort path is not exercising the failure mode."
+        )
+        torch.cuda.synchronize(device)
 
-    @pytest.mark.timeout(300)
-    def test_subsequent_capture_succeeds_after_abort(self, device, profiler_dir, monkeypatch):
-        """Subsequent capture must succeed after a failed one."""
+    def test_subsequent_capture_succeeds_after_abort(self, device, monkeypatch):
+        """After a failed capture (in an isolated subprocess), a valid capture must still succeed."""
         apply_graph_profiling_env()
-        model = GPTModel(**_SMALL_CFG).to(device).eval()
-        sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        g = torch.cuda.CUDAGraph()
-        s = torch.cuda.Stream(device=device)
-        try:
-            with torch.cuda.graph(g, stream=s):
-                raise RuntimeError("Simulated failure")
-        except Exception:
-            safe_abort_capture(g, stream=s)
-        g2, _ = capture_graph(model, sample)
-        with make_profiler(profiler_dir, wait=0, warmup=1, active=3) as prof:
-            times = measure_step_times(g2, device, NUM_STEPS, prof)
-        del g2, model
-        flush_gpu()
+        raised = run_in_subprocess(_bad_capture_worker, args=([64, 64], (2, 64)), timeout=60)
+        assert raised
+        torch.cuda.synchronize(device)
+
+        good_model = nn.Sequential(nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, 64)).to(device).eval()
+        good_sample = torch.randn(2, 64, device=device)
+        graph, _ = capture_graph(good_model, good_sample)
+        graph.replay()
+        torch.cuda.synchronize(device)
+
+    def test_no_lingering_signals_after_abort(self, device, profiler_dir, monkeypatch):
+        """After capture failure, profiled graph replay must work without residual signal interference."""
+        apply_graph_profiling_env()
+        raised = run_in_subprocess(_bad_capture_worker, args=([32, 32], (1, 32)), timeout=60)
+        assert raised
+        torch.cuda.synchronize(device)
+
+        good_model = GPTModel(vocab=1024, dim=128, heads=4, layers=2, seq_len=16).to(device).eval()
+        good_sample = torch.randint(0, 1024, (1, 16), device=device)
+        graph, _ = capture_graph(good_model, good_sample)
+
+        with make_profiler(profiler_dir, wait=0, warmup=1, active=5) as prof:
+            times = measure_step_times(graph, device, 10, prof)
+
         assert_no_hang(times)
         assert_traces_valid(profiler_dir)
 
     @pytest.mark.timeout(300)
-    def test_no_lingering_signals_after_abort(self, device, monkeypatch):
-        """Device must be fully responsive after abort — no lingering GPU signals."""
+    def test_repeated_abort_recovery_cycles(self, device, monkeypatch):
+        """Multiple abort-then-recover cycles must not accumulate failures."""
         apply_graph_profiling_env()
-        model = GPTModel(**_SMALL_CFG).to(device).eval()
-        sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        for _ in range(3):
-            g = torch.cuda.CUDAGraph()
-            s = torch.cuda.Stream(device=device)
-            try:
-                with torch.cuda.graph(g, stream=s):
-                    raise RuntimeError("Repeated abort")
-            except Exception:
-                safe_abort_capture(g, stream=s)
-            flush_gpu()
-        g_good, _ = capture_graph(model, sample)
-        times = measure_step_times(g_good, device, NUM_STEPS)
-        del g_good, model
-        flush_gpu()
-        assert_no_hang(times)
+        good_model = nn.Sequential(nn.Linear(32, 32), nn.ReLU(), nn.Linear(32, 32)).to(device).eval()
+        sample = torch.randn(1, 32, device=device)
 
-    @pytest.mark.timeout(600)
-    def test_repeated_abort_recovery_cycles(self, device, profiler_dir, monkeypatch):
-        """Multiple abort+recovery cycles must not corrupt device state."""
-        apply_graph_profiling_env()
-        model = GPTModel(**_SMALL_CFG).to(device).eval()
-        sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        for _ in range(5):
-            g = torch.cuda.CUDAGraph()
-            s = torch.cuda.Stream(device=device)
-            try:
-                with torch.cuda.graph(g, stream=s):
-                    raise RuntimeError("Repeated abort")
-            except Exception:
-                safe_abort_capture(g, stream=s)
-            flush_gpu()
-        g_good, _ = capture_graph(model, sample)
-        with make_profiler(profiler_dir, wait=0, warmup=1, active=3) as prof:
-            times = measure_step_times(g_good, device, NUM_STEPS, prof)
-        del g_good, model
-        flush_gpu()
-        assert_no_hang(times)
-        assert_traces_valid(profiler_dir)
+        for cycle in range(10):
+            raised = run_in_subprocess(_bad_capture_worker, args=([32, 32], (1, 32)), timeout=60)
+            assert raised, f"Cycle {cycle}: bad capture did not raise"
+            torch.cuda.synchronize(device)
+
+            graph, _ = capture_graph(good_model, sample)
+            t0 = time.monotonic()
+            graph.replay()
+            torch.cuda.synchronize(device)
+            elapsed = time.monotonic() - t0
+            assert elapsed < NO_PROGRESS_THRESHOLD_SEC, (
+                f"Cycle {cycle}: recovery replay took {elapsed:.1f}s"
+            )
+            del graph
 
 
 class TestWatchdogTimeout:
 
-    @pytest.mark.timeout(300)
+    @pytest.mark.timeout(90)
     def test_system_remains_responsive_under_load(self, device, profiler_dir, monkeypatch):
-        """Device must remain responsive under repeated fast replays."""
+        """Heavy workload with profiling must not make the system unresponsive."""
         apply_graph_profiling_env()
-        model = GPTModel(**_SMALL_CFG).to(device).eval()
-        sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
+        model = GPTModel(vocab=1024, dim=256, heads=8, layers=4, seq_len=64).to(device).eval()
+        sample = torch.randint(0, 1024, (2, 64), device=device)
         graph, _ = capture_graph(model, sample)
-        with make_profiler(profiler_dir, wait=0, warmup=1, active=5) as prof:
-            times = measure_step_times(graph, device, NUM_STEPS, prof)
-        del graph, model
-        flush_gpu()
-        assert_no_hang(times)
-        assert_traces_valid(profiler_dir)
 
-    @pytest.mark.timeout(300)
-    def test_concurrent_streams_no_indefinite_hang(self, device, monkeypatch):
-        """Concurrent-stream replay must not hang indefinitely."""
-        apply_graph_profiling_env()
-        model = GPTModel(**_SMALL_CFG).to(device).eval()
-        sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        s1 = torch.cuda.Stream(device=device)
-        s2 = torch.cuda.Stream(device=device)
-        g1, _ = capture_graph(model, sample, stream=s1)
-        g2, _ = capture_graph(model, sample, stream=s2)
-        for _ in range(10):
-            with torch.cuda.stream(s1):
-                g1.replay()
-            with torch.cuda.stream(s2):
-                g2.replay()
-            torch.cuda.synchronize(device)
-        del g1, g2, model
-        flush_gpu()
-
-    @pytest.mark.timeout(300)
-    def test_graceful_timeout_with_artificial_cpu_delay(self, device, profiler_dir, monkeypatch):
-        """Small CPU delays between replays must not cause hang."""
-        import time
-
-        apply_graph_profiling_env()
-        model = GPTModel(**_SMALL_CFG).to(device).eval()
-        sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        graph, _ = capture_graph(model, sample)
-        with make_profiler(profiler_dir, wait=0, warmup=1, active=5) as prof:
-            times = []
-            for _ in range(NUM_STEPS):
+        with make_profiler(profiler_dir, wait=0, warmup=1, active=10) as prof:
+            for step in range(20):
                 t0 = time.monotonic()
                 graph.replay()
                 torch.cuda.synchronize(device)
-                time.sleep(0.01)
-                times.append(time.monotonic() - t0)
+                elapsed = time.monotonic() - t0
+                assert elapsed < NO_PROGRESS_THRESHOLD_SEC, (
+                    f"Step {step}: {elapsed:.1f}s — system may be unresponsive"
+                )
                 prof.step()
-        del graph, model
-        flush_gpu()
+
         assert_traces_valid(profiler_dir)
 
-    @pytest.mark.timeout(300)
-    def test_rapid_sync_cycles_no_queue_stuck(self, device, monkeypatch):
-        """Rapid sync cycles must not stall the GPU command queue."""
+    @pytest.mark.timeout(90)
+    def test_concurrent_streams_no_indefinite_hang(self, device, profiler_dir, monkeypatch):
+        """Multiple concurrent streams must not produce indefinite queue stalls."""
         apply_graph_profiling_env()
-        model = GPTModel(**_SMALL_CFG).to(device).eval()
-        sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        graph, _ = capture_graph(model, sample)
-        for _ in range(50):
-            graph.replay()
-            torch.cuda.synchronize(device)
-        del graph, model
-        flush_gpu()
+        streams = [torch.cuda.Stream(device=device) for _ in range(8)]
+        dim = 128
 
-    @pytest.mark.timeout(300)
-    def test_mixed_graph_eager_with_profiling(self, device, profiler_dir, monkeypatch):
-        """Interleaving graph replay and eager inference under profiling must not hang."""
-        apply_graph_profiling_env()
-        model = GPTModel(**_SMALL_CFG).to(device).eval()
-        sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        graph, _ = capture_graph(model, sample)
         with make_profiler(profiler_dir, wait=0, warmup=1, active=5) as prof:
-            for i in range(NUM_STEPS):
-                if i % 2 == 0:
+            for iteration in range(20):
+                for s in streams:
+                    with torch.cuda.stream(s):
+                        a = torch.randn(dim, dim, device=device)
+                        for _ in range(10):
+                            a = torch.matmul(a, a)
+                            a = a / a.norm()
+                t0 = time.monotonic()
+                torch.cuda.synchronize(device)
+                elapsed = time.monotonic() - t0
+                assert elapsed < NO_PROGRESS_THRESHOLD_SEC, (
+                    f"Iteration {iteration}: sync took {elapsed:.1f}s"
+                )
+                prof.step()
+
+        assert_traces_valid(profiler_dir)
+
+    def test_graceful_timeout_with_artificial_cpu_delay(self, device, profiler_dir, monkeypatch):
+        """CPU-side delays should not trigger GPU-side deadlocks."""
+        apply_graph_profiling_env()
+        model = GPTModel(vocab=1024, dim=128, heads=4, layers=2, seq_len=32).to(device).eval()
+        sample = torch.randint(0, 1024, (1, 32), device=device)
+        graph, _ = capture_graph(model, sample)
+
+        with make_profiler(profiler_dir, wait=0, warmup=1, active=5) as prof:
+            for _ in range(10):
+                time.sleep(0.1)
+                t0 = time.monotonic()
+                graph.replay()
+                torch.cuda.synchronize(device)
+                gpu_time = time.monotonic() - t0
+                assert gpu_time < NO_PROGRESS_THRESHOLD_SEC
+                prof.step()
+
+        assert_traces_valid(profiler_dir)
+
+    def test_rapid_sync_cycles_no_queue_stuck(self, device, monkeypatch):
+        """Rapid synchronize() cycles must not leave kernel queues stuck."""
+        apply_graph_profiling_env()
+        model = GPTModel(vocab=1024, dim=64, heads=4, layers=1, seq_len=16).to(device).eval()
+        sample = torch.randint(0, 1024, (1, 16), device=device)
+        graph, _ = capture_graph(model, sample)
+
+        for step in range(100):
+            graph.replay()
+            t0 = time.monotonic()
+            torch.cuda.synchronize(device)
+            elapsed = time.monotonic() - t0
+            assert elapsed < 10.0, f"Step {step}: sync took {elapsed:.1f}s — queue may be stuck"
+
+    @pytest.mark.timeout(120)
+    def test_mixed_graph_eager_with_profiling(self, device, profiler_dir, monkeypatch):
+        """Alternating between graph replay and eager execution under profiling."""
+        apply_graph_profiling_env()
+        model = GPTModel(vocab=1024, dim=128, heads=4, layers=2, seq_len=32).to(device).eval()
+        sample = torch.randint(0, 1024, (1, 32), device=device)
+        graph, _ = capture_graph(model, sample)
+
+        with make_profiler(profiler_dir, wait=0, warmup=1, active=10) as prof:
+            for step in range(20):
+                if step % 2 == 0:
                     graph.replay()
                 else:
                     with torch.no_grad():
-                        model(sample)
+                        _ = model(sample)
+                t0 = time.monotonic()
                 torch.cuda.synchronize(device)
+                elapsed = time.monotonic() - t0
+                assert elapsed < NO_PROGRESS_THRESHOLD_SEC
                 prof.step()
-        del graph, model
-        flush_gpu()
+
         assert_traces_valid(profiler_dir)

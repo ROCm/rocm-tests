@@ -22,14 +22,6 @@ GPT_1B_CONFIG = dict(vocab=8192, dim=2048, heads=16, layers=20, seq_len=256)
 ATTN_1B_CONFIG = dict(dim=2048, heads=16, layers=20, seq_len=256)
 
 
-class DeadlockTimeoutError(Exception):
-    pass
-
-
-def _alarm_handler(signum, frame):
-    raise DeadlockTimeoutError("Test exceeded timeout — potential deadlock detected")
-
-
 def _is_stream_capturing() -> bool:
     if not torch.cuda.is_available():
         return False

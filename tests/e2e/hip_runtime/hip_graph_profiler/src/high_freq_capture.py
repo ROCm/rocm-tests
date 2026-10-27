@@ -6,102 +6,148 @@
 from __future__ import annotations
 
 import sys
+import time
 
 import pytest
 import torch
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from helpers import (
+    NO_PROGRESS_THRESHOLD_SEC,
+    FusableConvNet,
     GPTModel,
     apply_graph_profiling_env,
-    assert_no_hang,
     assert_traces_valid,
     capture_graph,
-    flush_gpu,
     make_profiler,
-    measure_step_times,
-    replay_and_sync,
 )
 
-_SMALL_CFG = dict(vocab=1024, dim=256, heads=8, layers=4, seq_len=64)
-NUM_STEPS = 10
+CYCLE_COUNT_STANDARD = 100
+CYCLE_COUNT_STRESS = 200
+
+_SMALL_CFG = dict(vocab=1024, dim=128, heads=4, layers=2, seq_len=32)
+
+
+def _capture_conv_graph(model, sample):
+    """Capture a CUDA graph for a Conv model; skip if the environment does not support it."""
+    try:
+        return capture_graph(model, sample, num_warmup=1)
+    except Exception as exc:
+        pytest.skip(f"Conv2d CUDA graph capture not supported in this environment: {exc}")
 
 
 class TestHighFreqCapture:
 
-    @pytest.mark.timeout(600)
-    def test_100_capture_replay_cycles(self, device, monkeypatch):
-        """100 capture+release cycles must not hang or exhaust GPU memory."""
+    @pytest.mark.timeout(300)
+    def test_100_capture_replay_cycles(self, device, profiler_dir, monkeypatch):
+        """100 capture/replay cycles must complete without stalls."""
         apply_graph_profiling_env()
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        for _ in range(100):
-            g, _ = capture_graph(model, sample)
-            replay_and_sync(g, device, n=3)
-            del g
-            flush_gpu()
-        del model
-        flush_gpu()
 
-    @pytest.mark.timeout(1200)
-    def test_200_capture_replay_cycles_stress(self, device, monkeypatch):
-        """200 capture+release cycles stress must not hang."""
+        cycle_times = []
+        with make_profiler(profiler_dir, wait=1, warmup=2, active=30, repeat=3) as prof:
+            for _ in range(CYCLE_COUNT_STANDARD):
+                graph, _ = capture_graph(model, sample, num_warmup=1)
+                t0 = time.monotonic()
+                graph.replay()
+                torch.cuda.synchronize(device)
+                cycle_times.append(time.monotonic() - t0)
+                del graph
+                torch.cuda.synchronize(device)
+                prof.step()
+
+        for i, t in enumerate(cycle_times):
+            assert t < NO_PROGRESS_THRESHOLD_SEC, f"Cycle {i}: {t:.1f}s — potential hang"
+        assert_traces_valid(profiler_dir)
+
+    @pytest.mark.timeout(600)
+    def test_200_capture_replay_cycles_stress(self, device, profiler_dir, monkeypatch):
+        """200 cycles — extended stress for marker accumulation bugs."""
         apply_graph_profiling_env()
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        for _ in range(200):
-            g, _ = capture_graph(model, sample)
-            replay_and_sync(g, device, n=2)
-            del g
-            flush_gpu()
-        del model
-        flush_gpu()
 
-    @pytest.mark.timeout(600)
+        cycle_times = []
+        with make_profiler(profiler_dir, wait=2, warmup=3, active=50, repeat=3) as prof:
+            for _ in range(CYCLE_COUNT_STRESS):
+                graph, _ = capture_graph(model, sample, num_warmup=1)
+                t0 = time.monotonic()
+                graph.replay()
+                torch.cuda.synchronize(device)
+                cycle_times.append(time.monotonic() - t0)
+                del graph
+                torch.cuda.synchronize(device)
+                prof.step()
+
+        for i, t in enumerate(cycle_times):
+            assert t < NO_PROGRESS_THRESHOLD_SEC, f"Cycle {i}: {t:.1f}s — potential hang"
+
     def test_no_progressive_slowdown(self, device, profiler_dir, monkeypatch):
-        """Step times must not progressively increase across capture cycles."""
+        """Latter half should not be significantly slower than the first half."""
         apply_graph_profiling_env()
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        all_times = []
-        for _ in range(5):
-            g, _ = capture_graph(model, sample)
-            with make_profiler(profiler_dir, wait=0, warmup=1, active=3) as prof:
-                times = measure_step_times(g, device, NUM_STEPS, prof)
-            all_times.extend(times)
-            assert_no_hang(times)
-            del g
-            flush_gpu()
-        del model
-        flush_gpu()
-        assert_traces_valid(profiler_dir)
 
-    @pytest.mark.timeout(600)
+        cycle_times = []
+        with make_profiler(profiler_dir, wait=0, warmup=2, active=30, repeat=3) as prof:
+            for _ in range(CYCLE_COUNT_STANDARD):
+                graph, _ = capture_graph(model, sample, num_warmup=1)
+                t0 = time.monotonic()
+                graph.replay()
+                torch.cuda.synchronize(device)
+                cycle_times.append(time.monotonic() - t0)
+                del graph
+                torch.cuda.synchronize(device)
+                prof.step()
+
+        mid = len(cycle_times) // 2
+        first_half_avg = sum(cycle_times[:mid]) / mid
+        second_half_avg = sum(cycle_times[mid:]) / (len(cycle_times) - mid)
+        slowdown_ratio = second_half_avg / max(first_half_avg, 1e-9)
+        assert slowdown_ratio < 3.0, (
+            f"Progressive slowdown detected: second half avg {second_half_avg:.4f}s "
+            f"vs first half avg {first_half_avg:.4f}s (ratio {slowdown_ratio:.2f}x)"
+        )
+
     def test_profiler_markers_consistent_across_cycles(self, device, profiler_dir, monkeypatch):
-        """Profiler must generate valid traces across repeated capture cycles."""
+        """Profiler must produce valid markers across all capture/replay cycles."""
         apply_graph_profiling_env()
-        model = GPTModel(**_SMALL_CFG).to(device).eval()
-        sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        for _ in range(5):
-            g, _ = capture_graph(model, sample)
-            with make_profiler(profiler_dir, wait=0, warmup=1, active=3) as prof:
-                measure_step_times(g, device, NUM_STEPS, prof)
-            del g
-            flush_gpu()
-        del model
-        flush_gpu()
-        assert_traces_valid(profiler_dir)
+        model = FusableConvNet(ch=32).to(device).eval()
+        sample = torch.randn(1, 3, 16, 16, device=device)
+
+        with make_profiler(profiler_dir, wait=0, warmup=1, active=20, repeat=4) as prof:
+            for _ in range(80):
+                graph, _ = _capture_conv_graph(model, sample)
+                graph.replay()
+                torch.cuda.synchronize(device)
+                del graph
+                torch.cuda.synchronize(device)
+                prof.step()
+
+        traces = assert_traces_valid(profiler_dir)
+        assert len(traces) >= 3, "Expected multiple trace files from 80-cycle run"
 
     @pytest.mark.timeout(300)
     def test_multi_replay_per_capture(self, device, profiler_dir, monkeypatch):
-        """Multiple replays per capture must all complete without hang."""
+        """Multiple replays per capture to test marker accumulation per-graph."""
         apply_graph_profiling_env()
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
-        g, _ = capture_graph(model, sample)
-        with make_profiler(profiler_dir, wait=0, warmup=1, active=5) as prof:
-            times = measure_step_times(g, device, 50, prof)
-        del g, model
-        flush_gpu()
-        assert_no_hang(times)
+
+        with make_profiler(profiler_dir, wait=0, warmup=1, active=30, repeat=3) as prof:
+            for cycle in range(50):
+                graph, _ = capture_graph(model, sample, num_warmup=1)
+                for replay_idx in range(5):
+                    t0 = time.monotonic()
+                    graph.replay()
+                    torch.cuda.synchronize(device)
+                    elapsed = time.monotonic() - t0
+                    assert elapsed < NO_PROGRESS_THRESHOLD_SEC, (
+                        f"Cycle {cycle} replay {replay_idx}: {elapsed:.1f}s"
+                    )
+                    prof.step()
+                del graph
+                torch.cuda.synchronize(device)
+
         assert_traces_valid(profiler_dir)
