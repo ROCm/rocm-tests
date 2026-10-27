@@ -21,7 +21,7 @@ _SRC_DIR = pathlib.Path(__file__).parent / "src"
 def _resolve(target_executor, script_name: str) -> str:
     executor = next(iter(target_executor))
     if hasattr(executor, "upload_tree"):
-        return executor.upload_tree(str(_SRC_DIR)) + "/" + script_name
+        return str(executor.upload_tree(str(_SRC_DIR))) + "/" + script_name
     return str(_SRC_DIR / script_name)
 
 

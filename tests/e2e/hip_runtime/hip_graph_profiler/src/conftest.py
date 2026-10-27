@@ -73,4 +73,4 @@ def clean_extension_cache():
     cache = os.path.expanduser("~/.cache/torch_extensions")
     if os.path.isdir(cache):
         shutil.rmtree(cache, ignore_errors=True)
-    yield
+    return
