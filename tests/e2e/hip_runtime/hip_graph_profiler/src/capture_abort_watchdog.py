@@ -16,10 +16,10 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from helpers import (
     NO_PROGRESS_THRESHOLD_SEC,
     GPTModel,
-    _bad_capture_worker,
     apply_graph_profiling_env,
     assert_no_hang,
     assert_traces_valid,
+    bad_capture_worker as _bad_capture_worker,
     capture_graph,
     make_profiler,
     measure_step_times,
