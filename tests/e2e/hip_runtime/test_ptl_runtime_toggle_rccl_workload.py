@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-_SCRIPT_REL = pathlib.Path("tests/e2e/hip_runtime/src/ptl_toggle/run.py")
+_SCRIPT_REL = pathlib.Path("tests/e2e/hip_runtime/src/ptl_toggle/ptl_toggle_rccl_workload.py")
 _SKIP_EXIT_CODE = 77
 _TIMEOUT_SECS = 1800
 
@@ -26,7 +26,7 @@ if isinstance(_GPU_COUNT, str) and _GPU_COUNT.lower() != "all":
 
 
 def _parse_verdict_field(stdout: str, field: str) -> str | None:
-    """Return the value of a VERDICT field from run.sh stdout, or None."""
+    """Return the value of a VERDICT field from ptl_toggle_rccl_workload.py stdout, or None."""
     m = re.search(rf"^\[[\d:]+\]\s+{re.escape(field)}\s*:\s*(.+)$", stdout, re.MULTILINE)
     return m.group(1).strip() if m else None
 
@@ -49,8 +49,9 @@ def test_ptl_runtime_toggle_rccl_workload(
 ) -> None:
     """Stress-test PTL runtime toggle while RCCL all_reduce_perf runs on all GPUs.
 
-    Runs run.sh, which toggles per-GPU ptl_enable sysfs at 0.5 s intervals for the
-    full span of RCCL_ITER_COUNT (5) all_reduce sweeps, then verifies the verdict block.
+    Runs ptl_toggle_rccl_workload.py, which toggles per-GPU ptl_enable sysfs at
+    0.5 s intervals for the full span of RCCL_ITER_COUNT (5) all_reduce sweeps,
+    then verifies the verdict block.
     """
     executor = next(iter(target_executor))
     if hasattr(executor, "upload_tree"):
@@ -70,10 +71,11 @@ def test_ptl_runtime_toggle_rccl_workload(
         skip_line = _parse_verdict_field(result.stdout, "SKIP") or (
             result.stderr.splitlines()[0] if result.stderr else "see stdout"
         )
-        pytest.skip(f"run.sh requested skip: {skip_line}")
+        pytest.skip(f"ptl_toggle_rccl_workload.py requested skip: {skip_line}")
 
     assert result.ok, (
-        f"run.sh failed (exit={result.exit_code}):\n" f"stdout: {result.stdout[:3000]}\nstderr: {result.stderr[:500]}"
+        f"ptl_toggle_rccl_workload.py failed (exit={result.exit_code}):\n"
+        f"stdout: {result.stdout[:3000]}\nstderr: {result.stderr[:500]}"
     )
 
     stdout = result.stdout
@@ -81,7 +83,7 @@ def test_ptl_runtime_toggle_rccl_workload(
     result_field = _parse_verdict_field(stdout, "result")
     assert result_field is not None, f"VERDICT 'result' field not found:\n{stdout[:2000]}"
     assert result_field.upper() == "PASS", (
-        f"run.sh reported result={result_field!r}. "
+        f"ptl_toggle_rccl_workload.py reported result={result_field!r}. "
         f"fail_reasons: {_parse_verdict_field(stdout, 'fail_reasons') or 'not listed'}\n"
         f"stdout: {stdout[:3000]}"
     )
