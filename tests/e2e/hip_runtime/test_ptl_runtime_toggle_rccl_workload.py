@@ -10,12 +10,14 @@ while RCCL all_reduce_perf collectives run concurrently across all GPUs via MPI.
 from __future__ import annotations
 
 import os
+import pathlib
 import re
 
 import pytest
 
-_SCRIPT = "tests/e2e/hip_runtime/src/ptl_toggle/run.sh"
+_SCRIPT_REL = pathlib.Path("tests/e2e/hip_runtime/src/ptl_toggle/run.sh")
 _SKIP_EXIT_CODE = 77
+_TIMEOUT_SECS = 1800
 
 # Override via ROCM_TEST_PTL_GPU_COUNT=4 or =all (default: all GPUs on the node).
 _GPU_COUNT: int | str = os.environ.get("ROCM_TEST_PTL_GPU_COUNT", "all")
@@ -50,11 +52,18 @@ def test_ptl_runtime_toggle_rccl_workload(
     Runs run.sh, which toggles per-GPU ptl_enable sysfs at 0.5 s intervals for the
     full span of RCCL_ITER_COUNT (5) all_reduce sweeps, then verifies the verdict block.
     """
+    executor = next(iter(target_executor))
+    if hasattr(executor, "upload_tree"):
+        script_path = str(executor.upload_tree(str(_SCRIPT_REL.parent))) + "/" + _SCRIPT_REL.name
+    else:
+        script_path = str(_SCRIPT_REL)
+
     result = target_executor.run(
         f"env PATH={rock_dir}/bin:$PATH"
         f" ROCM_PATH={rock_dir}"
         f" RCCL_BIN={rock_dir}/bin/all_reduce_perf"
-        f" bash {_SCRIPT}"
+        f" bash {script_path}",
+        timeout=_TIMEOUT_SECS,
     )
 
     if result.exit_code == _SKIP_EXIT_CODE:
