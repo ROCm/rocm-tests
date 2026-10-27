@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-_SCRIPT_REL = pathlib.Path("tests/e2e/hip_runtime/src/ptl_toggle/run.sh")
+_SCRIPT_REL = pathlib.Path("tests/e2e/hip_runtime/src/ptl_toggle/run.py")
 _SKIP_EXIT_CODE = 77
 _TIMEOUT_SECS = 1800
 
@@ -62,7 +62,7 @@ def test_ptl_runtime_toggle_rccl_workload(
         f"env PATH={rock_dir}/bin:$PATH"
         f" ROCM_PATH={rock_dir}"
         f" RCCL_BIN={rock_dir}/bin/all_reduce_perf"
-        f" bash {script_path}",
+        f" python3 {script_path}",
         timeout=_TIMEOUT_SECS,
     )
 
