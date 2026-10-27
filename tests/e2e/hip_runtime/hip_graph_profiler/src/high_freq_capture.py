@@ -41,7 +41,7 @@ class TestHighFreqCapture:
     @pytest.mark.timeout(300)
     def test_100_capture_replay_cycles(self, device, profiler_dir, monkeypatch):
         """100 capture/replay cycles must complete without stalls."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
 
@@ -64,7 +64,7 @@ class TestHighFreqCapture:
     @pytest.mark.timeout(600)
     def test_200_capture_replay_cycles_stress(self, device, profiler_dir, monkeypatch):
         """200 cycles — extended stress for marker accumulation bugs."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
 
@@ -85,7 +85,7 @@ class TestHighFreqCapture:
 
     def test_no_progressive_slowdown(self, device, profiler_dir, monkeypatch):
         """Latter half should not be significantly slower than the first half."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
 
@@ -112,7 +112,7 @@ class TestHighFreqCapture:
 
     def test_profiler_markers_consistent_across_cycles(self, device, profiler_dir, monkeypatch):
         """Profiler must produce valid markers across all capture/replay cycles."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = FusableConvNet(ch=32).to(device).eval()
         sample = torch.randn(1, 3, 16, 16, device=device)
 
@@ -131,7 +131,7 @@ class TestHighFreqCapture:
     @pytest.mark.timeout(300)
     def test_multi_replay_per_capture(self, device, profiler_dir, monkeypatch):
         """Multiple replays per capture to test marker accumulation per-graph."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
 
@@ -143,9 +143,7 @@ class TestHighFreqCapture:
                     graph.replay()
                     torch.cuda.synchronize(device)
                     elapsed = time.monotonic() - t0
-                    assert elapsed < NO_PROGRESS_THRESHOLD_SEC, (
-                        f"Cycle {cycle} replay {replay_idx}: {elapsed:.1f}s"
-                    )
+                    assert elapsed < NO_PROGRESS_THRESHOLD_SEC, f"Cycle {cycle} replay {replay_idx}: {elapsed:.1f}s"
                     prof.step()
                 del graph
                 torch.cuda.synchronize(device)

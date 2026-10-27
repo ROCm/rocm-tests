@@ -69,8 +69,14 @@ def flush_gpu() -> None:
         torch.cuda.empty_cache()
 
 
-def apply_graph_profiling_env(profiling: int = 1, use_graph: int = 1, **extra) -> None:
-    """Set standard HIP graph + profiling environment variables in os.environ."""
+def apply_graph_profiling_env(monkeypatch=None, profiling: int = 1, use_graph: int = 1, **extra) -> None:
+    """Set standard HIP graph + profiling environment variables.
+
+    When *monkeypatch* is provided (pytest MonkeyPatch fixture), variables are
+    set via monkeypatch.setenv() so they are automatically restored after the
+    test.  When omitted, os.environ is written directly (legacy path; prefer
+    passing monkeypatch in test code to prevent env leakage between tests).
+    """
     import os
 
     env = {
@@ -83,7 +89,10 @@ def apply_graph_profiling_env(profiling: int = 1, use_graph: int = 1, **extra) -
     }
     env.update({k: str(v) for k, v in extra.items()})
     for k, v in env.items():
-        os.environ[k] = v
+        if monkeypatch is not None:
+            monkeypatch.setenv(k, v)
+        else:
+            os.environ[k] = v
 
 
 class TransformerBlock(nn.Module):

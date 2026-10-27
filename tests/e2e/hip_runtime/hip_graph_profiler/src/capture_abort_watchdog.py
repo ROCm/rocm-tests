@@ -39,7 +39,7 @@ class TestCaptureAbort:
 
     def test_invalid_op_aborts_capture_cleanly(self, device, monkeypatch):
         """Graph capture with an uncapturable op must raise, not deadlock."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         raised = run_in_subprocess(_bad_capture_worker, args=([64, 64, 64], (2, 64)), timeout=60)
         assert raised, (
             "Subprocess capture with UncapturableOp did not raise — "
@@ -49,7 +49,7 @@ class TestCaptureAbort:
 
     def test_subsequent_capture_succeeds_after_abort(self, device, monkeypatch):
         """After a failed capture (in an isolated subprocess), a valid capture must still succeed."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         raised = run_in_subprocess(_bad_capture_worker, args=([64, 64], (2, 64)), timeout=60)
         assert raised
         torch.cuda.synchronize(device)
@@ -62,7 +62,7 @@ class TestCaptureAbort:
 
     def test_no_lingering_signals_after_abort(self, device, profiler_dir, monkeypatch):
         """After capture failure, profiled graph replay must work without residual signal interference."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         raised = run_in_subprocess(_bad_capture_worker, args=([32, 32], (1, 32)), timeout=60)
         assert raised
         torch.cuda.synchronize(device)
@@ -80,7 +80,7 @@ class TestCaptureAbort:
     @pytest.mark.timeout(300)
     def test_repeated_abort_recovery_cycles(self, device, monkeypatch):
         """Multiple abort-then-recover cycles must not accumulate failures."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         good_model = nn.Sequential(nn.Linear(32, 32), nn.ReLU(), nn.Linear(32, 32)).to(device).eval()
         sample = torch.randn(1, 32, device=device)
 
@@ -94,9 +94,7 @@ class TestCaptureAbort:
             graph.replay()
             torch.cuda.synchronize(device)
             elapsed = time.monotonic() - t0
-            assert elapsed < NO_PROGRESS_THRESHOLD_SEC, (
-                f"Cycle {cycle}: recovery replay took {elapsed:.1f}s"
-            )
+            assert elapsed < NO_PROGRESS_THRESHOLD_SEC, f"Cycle {cycle}: recovery replay took {elapsed:.1f}s"
             del graph
 
 
@@ -105,7 +103,7 @@ class TestWatchdogTimeout:
     @pytest.mark.timeout(90)
     def test_system_remains_responsive_under_load(self, device, profiler_dir, monkeypatch):
         """Heavy workload with profiling must not make the system unresponsive."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(vocab=1024, dim=256, heads=8, layers=4, seq_len=64).to(device).eval()
         sample = torch.randint(0, 1024, (2, 64), device=device)
         graph, _ = capture_graph(model, sample)
@@ -116,9 +114,7 @@ class TestWatchdogTimeout:
                 graph.replay()
                 torch.cuda.synchronize(device)
                 elapsed = time.monotonic() - t0
-                assert elapsed < NO_PROGRESS_THRESHOLD_SEC, (
-                    f"Step {step}: {elapsed:.1f}s — system may be unresponsive"
-                )
+                assert elapsed < NO_PROGRESS_THRESHOLD_SEC, f"Step {step}: {elapsed:.1f}s — system may be unresponsive"
                 prof.step()
 
         assert_traces_valid(profiler_dir)
@@ -126,7 +122,7 @@ class TestWatchdogTimeout:
     @pytest.mark.timeout(90)
     def test_concurrent_streams_no_indefinite_hang(self, device, profiler_dir, monkeypatch):
         """Multiple concurrent streams must not produce indefinite queue stalls."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         streams = [torch.cuda.Stream(device=device) for _ in range(8)]
         dim = 128
 
@@ -141,16 +137,14 @@ class TestWatchdogTimeout:
                 t0 = time.monotonic()
                 torch.cuda.synchronize(device)
                 elapsed = time.monotonic() - t0
-                assert elapsed < NO_PROGRESS_THRESHOLD_SEC, (
-                    f"Iteration {iteration}: sync took {elapsed:.1f}s"
-                )
+                assert elapsed < NO_PROGRESS_THRESHOLD_SEC, f"Iteration {iteration}: sync took {elapsed:.1f}s"
                 prof.step()
 
         assert_traces_valid(profiler_dir)
 
     def test_graceful_timeout_with_artificial_cpu_delay(self, device, profiler_dir, monkeypatch):
         """CPU-side delays should not trigger GPU-side deadlocks."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(vocab=1024, dim=128, heads=4, layers=2, seq_len=32).to(device).eval()
         sample = torch.randint(0, 1024, (1, 32), device=device)
         graph, _ = capture_graph(model, sample)
@@ -169,7 +163,7 @@ class TestWatchdogTimeout:
 
     def test_rapid_sync_cycles_no_queue_stuck(self, device, monkeypatch):
         """Rapid synchronize() cycles must not leave kernel queues stuck."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(vocab=1024, dim=64, heads=4, layers=1, seq_len=16).to(device).eval()
         sample = torch.randint(0, 1024, (1, 16), device=device)
         graph, _ = capture_graph(model, sample)
@@ -184,7 +178,7 @@ class TestWatchdogTimeout:
     @pytest.mark.timeout(120)
     def test_mixed_graph_eager_with_profiling(self, device, profiler_dir, monkeypatch):
         """Alternating between graph replay and eager execution under profiling."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(vocab=1024, dim=128, heads=4, layers=2, seq_len=32).to(device).eval()
         sample = torch.randint(0, 1024, (1, 32), device=device)
         graph, _ = capture_graph(model, sample)

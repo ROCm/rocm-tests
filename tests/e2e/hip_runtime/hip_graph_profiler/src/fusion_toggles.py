@@ -57,6 +57,7 @@ class TestFusionToggleGraph:
     ):
         """Each fusion combo must complete all steps without hang under profiling."""
         apply_graph_profiling_env(
+            monkeypatch,
             FUSED_BN_ACT=int(use_bn),
             FUSED_CONV_ACT=int(use_conv_act),
             FUSED_LINEAR_ACT=int(use_linear_act),
@@ -75,7 +76,7 @@ class TestFusionToggleGraph:
     @pytest.mark.timeout(300)
     def test_all_fusions_enabled(self, device, profiler_dir, monkeypatch):
         """Maximum fusion scenario — all fused paths active."""
-        apply_graph_profiling_env(FUSED_BN_ACT=1, FUSED_CONV_ACT=1, FUSED_LINEAR_ACT=1)
+        apply_graph_profiling_env(monkeypatch, FUSED_BN_ACT=1, FUSED_CONV_ACT=1, FUSED_LINEAR_ACT=1)
         model = FusableConvNet(ch=128, use_bn=True, use_conv_act=True, use_linear_act=True).to(device).eval()
         sample = torch.randn(4, 3, 64, 64, device=device)
         graph, _ = _capture_conv_graph(model, sample)
@@ -84,11 +85,12 @@ class TestFusionToggleGraph:
         del graph, model
         flush_gpu()
         assert_no_hang(times)
+        assert_traces_valid(profiler_dir)
 
     @pytest.mark.timeout(180)
     def test_no_fusions_enabled(self, device, profiler_dir, monkeypatch):
         """Baseline with all fusions disabled."""
-        apply_graph_profiling_env(FUSED_BN_ACT=0, FUSED_CONV_ACT=0, FUSED_LINEAR_ACT=0)
+        apply_graph_profiling_env(monkeypatch, FUSED_BN_ACT=0, FUSED_CONV_ACT=0, FUSED_LINEAR_ACT=0)
         model = FusableConvNet(ch=64, use_bn=False, use_conv_act=False, use_linear_act=False).to(device).eval()
         sample = torch.randn(2, 3, 32, 32, device=device)
         graph, _ = _capture_conv_graph(model, sample)
@@ -104,7 +106,7 @@ class TestHeavyBatchFusion:
     @pytest.mark.timeout(300)
     def test_attention_fusion_50_iterations(self, device, profiler_dir, monkeypatch):
         """Heavy attention fusion for 55 iterations with ~1B-param attention model in bfloat16."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = AttentionModel(**ATTN_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randn(2, ATTN_1B_CONFIG["seq_len"], ATTN_1B_CONFIG["dim"], device=device, dtype=torch.bfloat16)
         graph, _ = capture_graph(model, sample)
@@ -118,7 +120,7 @@ class TestHeavyBatchFusion:
     @pytest.mark.timeout(300)
     def test_transformer_fusion_heavy_replay(self, device, profiler_dir, monkeypatch):
         """~1B-param GPT model with 55 iterations stressing fusion + profiling."""
-        apply_graph_profiling_env(FUSED_BN_ACT=1, FUSED_CONV_ACT=1, FUSED_LINEAR_ACT=1)
+        apply_graph_profiling_env(monkeypatch, FUSED_BN_ACT=1, FUSED_CONV_ACT=1, FUSED_LINEAR_ACT=1)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (2, GPT_1B_CONFIG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -133,7 +135,7 @@ class TestHeavyBatchFusion:
     @pytest.mark.timeout(300)
     def test_mixed_conv_attention_fusion(self, device, profiler_dir, monkeypatch):
         """Interleaved conv and attention graph replays under profiling must not hang."""
-        apply_graph_profiling_env(FUSED_BN_ACT=1, FUSED_CONV_ACT=1, FUSED_LINEAR_ACT=1)
+        apply_graph_profiling_env(monkeypatch, FUSED_BN_ACT=1, FUSED_CONV_ACT=1, FUSED_LINEAR_ACT=1)
         conv_model = FusableConvNet(ch=64).to(device).eval()
         attn_model = AttentionModel(**ATTN_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         conv_sample = torch.randn(2, 3, 32, 32, device=device)

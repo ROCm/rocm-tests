@@ -70,7 +70,7 @@ class TestE2EPipeline:
         self, device, profiler_dir, monkeypatch, clean_extension_cache
     ):
         """Full forward + backward + optimizer pipeline with ~1B-param model."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = BenchmarkModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16)
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         batch_size = 2
@@ -95,7 +95,7 @@ class TestE2EPipeline:
     @pytest.mark.timeout(600)
     def test_inference_pipeline_with_graph_capture(self, device, profiler_dir, monkeypatch):
         """Inference pipeline: ~1B-param model, capture graph once, replay."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         flush_gpu()
         model = BenchmarkModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         batch_size = 2
@@ -126,7 +126,7 @@ class TestE2EPipeline:
     @pytest.mark.timeout(600)
     def test_pipeline_iteration_latency_stability(self, device, profiler_dir, monkeypatch, tmp_path):
         """Iteration latency stability with ~1B-param model."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = BenchmarkModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16)
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         batch_size = 2
@@ -160,14 +160,12 @@ class TestE2EPipeline:
         median = results["median"]
         threshold = max(median * 10, 1.0)
         for i, t in enumerate(step_times[3:], start=3):
-            assert t < threshold, (
-                f"Step {i}: {t:.4f}s exceeds threshold {threshold:.4f}s (median {median:.4f}s)"
-            )
+            assert t < threshold, f"Step {i}: {t:.4f}s exceeds threshold {threshold:.4f}s (median {median:.4f}s)"
 
     @pytest.mark.timeout(600)
     def test_pipeline_profiling_off_baseline(self, device, monkeypatch):
         """Baseline: ~1B-param model without profiling (sanity check)."""
-        apply_graph_profiling_env(profiling=0, use_graph=0)
+        apply_graph_profiling_env(monkeypatch, profiling=0, use_graph=0)
         model = BenchmarkModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16)
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         batch_size = 2
@@ -184,7 +182,7 @@ class TestE2EPipeline:
     @pytest.mark.timeout(300)
     def test_a_b_comparison_framework(self, device, profiler_dir, monkeypatch, tmp_path):
         """A/B comparison: capture timing metrics for cross-drop comparison."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         flush_gpu()
         model = BenchmarkModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         static_input = torch.randint(0, _VOCAB, (2, _SEQ), device=device)
@@ -228,7 +226,7 @@ class TestE2EPipeline:
     @pytest.mark.timeout(600)
     def test_multi_dtype_pipeline(self, device, profiler_dir, monkeypatch):
         """Pipeline must work across float32 and bfloat16 dtypes with ~1B-param model."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         for dtype in [torch.float32, torch.bfloat16]:
             model = BenchmarkModel(**GPT_1B_CONFIG).to(device).to(dtype)
             optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)

@@ -50,10 +50,10 @@ def _should_skip(err):
 class TestBatchSizeSensitivity:
 
     @pytest.mark.timeout(300)
-    @pytest.mark.parametrize("batch_size", [1, 2, 8])
+    @pytest.mark.parametrize("batch_size", [1, 2, 4, 8])
     def test_graph_profiling_across_batch_sizes(self, device, profiler_dir, monkeypatch, batch_size):
-        """No deadlocks across batch sizes {1, 2, 8} with ~1B-param model."""
-        apply_graph_profiling_env()
+        """No deadlocks across batch sizes {1, 2, 4, 8} with ~1B-param model."""
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (batch_size, GPT_1B_CONFIG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -65,10 +65,10 @@ class TestBatchSizeSensitivity:
         assert_traces_valid(profiler_dir)
 
     @pytest.mark.timeout(300)
-    @pytest.mark.parametrize("batch_size", [1, 2, 8])
+    @pytest.mark.parametrize("batch_size", [1, 2, 4, 8])
     def test_profiler_completeness_per_batch_size(self, device, profiler_dir, monkeypatch, batch_size):
         """Profiler artifacts must be complete and valid for each batch size."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (batch_size, GPT_1B_CONFIG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -81,7 +81,7 @@ class TestBatchSizeSensitivity:
     @pytest.mark.timeout(300)
     def test_batch_size_1_minimal_topology(self, device, profiler_dir, monkeypatch):
         """Batch size 1 — simplest graph topology with ~1B-param model."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (1, GPT_1B_CONFIG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -94,7 +94,7 @@ class TestBatchSizeSensitivity:
     @pytest.mark.timeout(300)
     def test_batch_size_8_larger_topology(self, device, profiler_dir, monkeypatch):
         """Batch size 8 — most complex graph topology with ~1B-param model."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (8, GPT_1B_CONFIG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -111,7 +111,7 @@ class TestBackendVariants:
     @pytest.mark.parametrize("use_flash", [True, False])
     def test_flash_attention_toggle(self, device, profiler_dir, monkeypatch, use_flash):
         """Profiling + graphs must work with FlashAttention enabled and disabled."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = AttentionModel(**ATTN_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randn(2, ATTN_1B_CONFIG["seq_len"], ATTN_1B_CONFIG["dim"], device=device, dtype=torch.bfloat16)
         graph = None
@@ -140,7 +140,7 @@ class TestBackendVariants:
     @pytest.mark.parametrize("use_mem_efficient", [True, False])
     def test_memory_efficient_attention_toggle(self, device, profiler_dir, monkeypatch, use_mem_efficient):
         """Test memory-efficient attention backend with profiling + graphs."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = AttentionModel(**ATTN_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randn(2, ATTN_1B_CONFIG["seq_len"], ATTN_1B_CONFIG["dim"], device=device, dtype=torch.bfloat16)
         graph = None
@@ -166,10 +166,24 @@ class TestBackendVariants:
         assert_no_hang(times)
         assert_traces_valid(profiler_dir)
 
+    @pytest.mark.parametrize("use_aiter", [0, 1])
+    def test_aiter_backend_toggle(self, device, profiler_dir, monkeypatch, use_aiter):
+        """USE_AITER=0/1 must both work with profiling + graphs."""
+        apply_graph_profiling_env(monkeypatch, USE_AITER=use_aiter)
+        model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
+        sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (2, GPT_1B_CONFIG["seq_len"]), device=device)
+        graph, _ = capture_graph(model, sample)
+        with make_profiler(profiler_dir, wait=0, warmup=1, active=5) as prof:
+            times = measure_step_times(graph, device, NUM_STEPS, prof)
+        del graph, model
+        flush_gpu()
+        assert_no_hang(times)
+        assert_traces_valid(profiler_dir)
+
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_attention_dtype_toggle(self, device, profiler_dir, monkeypatch, dtype):
         """Attention model graph replay must succeed for both float16 and bfloat16."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = AttentionModel(**ATTN_1B_CONFIG).to(device).to(dtype).eval()
         sample = torch.randn(2, ATTN_1B_CONFIG["seq_len"], ATTN_1B_CONFIG["dim"], device=device, dtype=dtype)
         graph, _ = capture_graph(model, sample)
@@ -182,7 +196,7 @@ class TestBackendVariants:
 
     def test_all_backends_sequential(self, device, profiler_dir, monkeypatch):
         """Run all available backends in the same session — no residual state issues."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = AttentionModel(**ATTN_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randn(2, ATTN_1B_CONFIG["seq_len"], ATTN_1B_CONFIG["dim"], device=device, dtype=torch.bfloat16)
 

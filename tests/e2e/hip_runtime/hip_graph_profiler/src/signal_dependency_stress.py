@@ -33,7 +33,7 @@ class TestSignalDependencyCycle:
 
     def test_multi_stream_event_dependencies(self, device, profiler_dir, monkeypatch):
         """Multiple streams with cross-stream event dependencies must not deadlock."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         streams = [torch.cuda.Stream(device=device) for _ in range(NUM_STREAMS_SMALL)]
         events = [torch.cuda.Event() for _ in range(NUM_STREAMS_SMALL)]
         dim = 256
@@ -54,7 +54,7 @@ class TestSignalDependencyCycle:
 
     def test_reverse_ordered_event_waits(self, device, profiler_dir, monkeypatch):
         """Reverse-ordered event waits to provoke potential circular dependencies."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         streams = [torch.cuda.Stream(device=device) for _ in range(NUM_STREAMS_SMALL)]
         events = [torch.cuda.Event() for _ in range(NUM_STREAMS_SMALL)]
         dim = 128
@@ -76,7 +76,7 @@ class TestSignalDependencyCycle:
 
     def test_many_streams_event_fan_out(self, device, profiler_dir, monkeypatch):
         """Fan-out pattern: one producer stream, many consumer streams."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         producer = torch.cuda.Stream(device=device)
         consumers = [torch.cuda.Stream(device=device) for _ in range(NUM_STREAMS_LARGE)]
         event = torch.cuda.Event()
@@ -100,7 +100,7 @@ class TestSignalDependencyCycle:
 
     def test_graph_capture_with_multi_stream_sync(self, device, profiler_dir, monkeypatch):
         """Graph capture/replay with cross-stream synchronization under profiling."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (1, _SMALL_CFG["seq_len"]), device=device)
         s1 = torch.cuda.Stream(device=device)
@@ -122,7 +122,7 @@ class TestSignalDependencyCycle:
 
     def test_no_hard_hang_on_risky_ordering(self, device, monkeypatch):
         """Aggressive event ordering must not produce unrecoverable hangs."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         streams = [torch.cuda.Stream(device=device) for _ in range(8)]
         events = [torch.cuda.Event() for _ in range(8)]
         dim = 64
@@ -140,9 +140,7 @@ class TestSignalDependencyCycle:
             t0 = time.monotonic()
             torch.cuda.synchronize(device)
             elapsed = time.monotonic() - t0
-            assert elapsed < NO_PROGRESS_THRESHOLD_SEC, (
-                f"Iteration {iteration}: sync took {elapsed:.1f}s"
-            )
+            assert elapsed < NO_PROGRESS_THRESHOLD_SEC, f"Iteration {iteration}: sync took {elapsed:.1f}s"
 
 
 class TestSignalPoolStress:
@@ -150,7 +148,7 @@ class TestSignalPoolStress:
     @pytest.mark.parametrize("pool_size", [8, 64, 256, 1024])
     def test_varying_signal_pool_sizes(self, device, profiler_dir, monkeypatch, pool_size):
         """Workload must succeed regardless of ROC_SIGNAL_POOL_SIZE."""
-        apply_graph_profiling_env(ROC_SIGNAL_POOL_SIZE=pool_size)
+        apply_graph_profiling_env(monkeypatch, ROC_SIGNAL_POOL_SIZE=pool_size)
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (2, _SMALL_CFG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -163,7 +161,7 @@ class TestSignalPoolStress:
 
     def test_small_pool_no_starvation(self, device, profiler_dir, monkeypatch):
         """Very small signal pool must not cause signal starvation."""
-        apply_graph_profiling_env(ROC_SIGNAL_POOL_SIZE=4)
+        apply_graph_profiling_env(monkeypatch, ROC_SIGNAL_POOL_SIZE=4)
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (2, _SMALL_CFG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -175,7 +173,7 @@ class TestSignalPoolStress:
 
     def test_large_pool_no_regression(self, device, profiler_dir, monkeypatch):
         """Large pool should not cause performance regression vs default."""
-        apply_graph_profiling_env(ROC_SIGNAL_POOL_SIZE=4096)
+        apply_graph_profiling_env(monkeypatch, ROC_SIGNAL_POOL_SIZE=4096)
         model = GPTModel(**_SMALL_CFG).to(device).eval()
         sample = torch.randint(0, _SMALL_CFG["vocab"], (2, _SMALL_CFG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -189,7 +187,7 @@ class TestSignalPoolStress:
     @pytest.mark.timeout(180)
     def test_pool_stress_with_many_streams(self, device, profiler_dir, monkeypatch):
         """Combine small pool with many streams to maximize signal pressure."""
-        apply_graph_profiling_env(ROC_SIGNAL_POOL_SIZE=16)
+        apply_graph_profiling_env(monkeypatch, ROC_SIGNAL_POOL_SIZE=16)
         streams = [torch.cuda.Stream(device=device) for _ in range(8)]
         events = [torch.cuda.Event() for _ in range(8)]
         dim = 64
@@ -206,9 +204,7 @@ class TestSignalPoolStress:
                 t0 = time.monotonic()
                 torch.cuda.synchronize(device)
                 elapsed = time.monotonic() - t0
-                assert elapsed < NO_PROGRESS_THRESHOLD_SEC, (
-                    f"Iteration {iteration}: {elapsed:.1f}s"
-                )
+                assert elapsed < NO_PROGRESS_THRESHOLD_SEC, f"Iteration {iteration}: {elapsed:.1f}s"
                 prof.step()
 
         assert_traces_valid(profiler_dir)

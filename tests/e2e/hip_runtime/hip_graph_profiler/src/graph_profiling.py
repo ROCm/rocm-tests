@@ -31,7 +31,7 @@ class TestGraphReplayUnderProfiling:
     @pytest.mark.timeout(300)
     def test_graph_replay_completes_with_profiling(self, device, profiler_dir, monkeypatch, clean_extension_cache):
         """All 15 steps must complete with profiling active; traces must be generated."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (2, GPT_1B_CONFIG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -45,7 +45,7 @@ class TestGraphReplayUnderProfiling:
     @pytest.mark.timeout(300)
     def test_profiler_artifacts_are_parsable(self, device, profiler_dir, monkeypatch):
         """Profiler output must be valid parsable JSON traces."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (1, GPT_1B_CONFIG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -59,7 +59,7 @@ class TestGraphReplayUnderProfiling:
     @pytest.mark.timeout(300)
     def test_no_watchdog_trigger_during_replay(self, device, profiler_dir, monkeypatch):
         """No individual step should exceed the no-progress threshold."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (2, GPT_1B_CONFIG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -72,7 +72,7 @@ class TestGraphReplayUnderProfiling:
     @pytest.mark.timeout(300)
     def test_iteration_time_comparable_across_steps(self, device, profiler_dir, monkeypatch):
         """No single step should regress beyond 10x the median step time."""
-        apply_graph_profiling_env()
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (2, GPT_1B_CONFIG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -89,12 +89,12 @@ class TestGraphReplayUnderProfiling:
             assert t < threshold, f"Step {i}: {t:.4f}s exceeds {threshold:.4f}s (median {median:.4f}s)"
 
 
-class TestProfilerGraphStability:
+class TestProfilerGraphBlocker:
 
     @pytest.mark.timeout(300)
-    def test_graph_profiling_bfloat16_1b(self, device, profiler_dir, monkeypatch, clean_extension_cache):
-        """~1B-param bfloat16 model, batch=2, 15 steps with profiling+graphs."""
-        apply_graph_profiling_env()
+    def test_exact_repro_config_bfloat16(self, device, profiler_dir, monkeypatch, clean_extension_cache):
+        """Exact repro: ~1B-param model, bfloat16, batch_size=2, 15 steps, profiling+graphs."""
+        apply_graph_profiling_env(monkeypatch)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (2, GPT_1B_CONFIG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
@@ -108,7 +108,7 @@ class TestProfilerGraphStability:
     @pytest.mark.timeout(300)
     def test_profiling_without_graph_baseline(self, device, profiler_dir, monkeypatch):
         """Profiling with USE_GRAPH=0 must always succeed."""
-        apply_graph_profiling_env(use_graph=0)
+        apply_graph_profiling_env(monkeypatch, use_graph=0)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (2, GPT_1B_CONFIG["seq_len"]), device=device)
         with make_profiler(profiler_dir, wait=0, warmup=1, active=5) as prof:
@@ -124,7 +124,7 @@ class TestProfilerGraphStability:
     @pytest.mark.timeout(300)
     def test_graph_without_profiling_baseline(self, device, monkeypatch):
         """Graph replay with PROFILING=0 must always succeed."""
-        apply_graph_profiling_env(profiling=0)
+        apply_graph_profiling_env(monkeypatch, profiling=0)
         model = GPTModel(**GPT_1B_CONFIG).to(device).to(torch.bfloat16).eval()
         sample = torch.randint(0, GPT_1B_CONFIG["vocab"], (2, GPT_1B_CONFIG["seq_len"]), device=device)
         graph, _ = capture_graph(model, sample)
