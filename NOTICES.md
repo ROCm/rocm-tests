@@ -56,3 +56,15 @@ sources — it is built and executed as a standalone external binary at test tim
 The Kokkos performance-portability library sources are fetched during test execution,
 built with HIP RDC enabled, and run on AMD GPU hardware. No Kokkos source is
 redistributed as part of this repository; only the pytest harness is checked in here.
+
+## RAJA
+
+- Used by: `tests/e2e/hpc/raja/test_raja_functional.py` (cloned at runtime; see the
+  `raja_functional_build` fixture in `tests/e2e/hpc/raja/conftest.py`).
+- Upstream: https://github.com/LLNL/RAJA
+- License: BSD 3-Clause (see the `LICENSE` file in the upstream repository).
+- Copyright (c) 2016-26, Lawrence Livermore National Security, LLC.
+
+The RAJA performance-portability library sources are fetched during test execution,
+built with HIP, and the unit ctest suite is run on AMD GPU hardware. No RAJA source
+is redistributed as part of this repository; only the pytest harness is checked in here.
