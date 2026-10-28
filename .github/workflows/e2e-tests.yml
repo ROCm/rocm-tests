@@ -316,7 +316,9 @@ jobs:
         if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends make pciutils
+          sudo apt-get install -y --no-install-recommends make pciutils \
+            autoconf automake libtool pkg-config g++ flex \
+            libdrm-dev libnuma-dev
           python3 -m venv .venv
           source .venv/bin/activate
           uv pip install -r requirements.txt
@@ -351,16 +353,7 @@ jobs:
             IFS=' ' read -ra TEST_PATHS_ARRAY <<< "${TEST_PATHS_OVERRIDE}"
           else
             TEST_PATHS_ARRAY=(
-              "tests/e2e/compiler/"
-              "tests/e2e/hwq_heuristic/"
-              "tests/e2e/hip_runtime/"
-              "tests/e2e/hipblaslt/"
-              "tests/e2e/rccl/"
-              "tests/e2e/rocm_libs/"
-              "tests/e2e/rocprim/"
-              "tests/e2e/rocm_examples/"
-              "tests/e2e/hip_directed/"
-              "tests/e2e/rocwmma/"
+              "tests/e2e/"
             )
           fi
 
