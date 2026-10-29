@@ -70,3 +70,14 @@ checked in here.
 The Kokkos performance-portability library sources are fetched during test execution,
 built with HIP RDC enabled, and run on AMD GPU hardware. No Kokkos source is
 redistributed as part of this repository; only the pytest harness is checked in here.
+
+## GROMACS
+
+- Used by: `tests/e2e/hpc/gromacs/test_gromacs_functional.py` (cloned at runtime).
+- Upstream: https://gitlab.com/gromacs/gromacs
+- License: GNU Lesser General Public License, version 2.1 (see `COPYING.LIB`).
+- The build also compiles OpenUCX (BSD 3-Clause) and Open MPI 4.1.4 (BSD 3-Clause).
+
+The GROMACS sources are fetched during test execution, built with HIP and MPI, and
+the unit ctest suite is run on AMD GPU hardware. No GROMACS source is redistributed
+as part of this repository; only the pytest harness is checked in here.
