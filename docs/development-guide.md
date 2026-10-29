@@ -363,22 +363,28 @@ __OS_DEPS__ = OS_DEPS("cmake")                    # applied to every test in the
 
 ### `conftest.py` fixture pattern (recommended for shared deps)
 
-When multiple tests in an area share the same OS dependency, declare it once as a
-session-scoped fixture in `conftest.py` rather than repeating `@OS_DEPS` on every
-test function:
+When multiple tests in an area share the same OS dependency, declare it once as an
+autouse fixture in `conftest.py` rather than repeating `@OS_DEPS` on every test
+function. Use function scope (not session scope) so `target_executor` is available;
+the probe step makes subsequent calls instant once packages are already present:
 
 ```python
 # tests/e2e/my_area/conftest.py
 import pytest
 from framework.plugins.os_deps_plugin import OS_DEPS
 
-@pytest.fixture(scope="session", autouse=True)
-def _ensure_my_deps():
-    """Install shared OS deps once per session for this test area."""
+@pytest.fixture(autouse=True)
+def _ensure_my_deps(target_executor):
+    """Install shared OS deps before each test; probe skips re-install if already present."""
     OS_DEPS("cmake", "git").install()
 ```
 
-Tests in the directory then receive the packages without any per-test decoration.
+Tests in the directory receive the packages without any per-test decoration.
+The install is idempotent — the probe step skips packages already present on the node.
+
+> **Note**: Do not use `scope="session"` for this fixture. Session-scoped fixtures
+> run before any test executor is wired, so `OS_DEPS().install()` raises `RuntimeError`
+> because `_current_executor` is not set at that point.
 
 ### Failure behaviour
 
