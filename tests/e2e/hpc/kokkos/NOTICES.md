@@ -17,7 +17,7 @@ This test suite may clone Kokkos from:
 https://github.com/kokkos/kokkos
 
 Used by: `tests/e2e/hpc/kokkos/` (HIP Relocatable Device Code / `-fgpu-rdc`
-validation).
+validation, and the functional HIP ctest suite with relocatable device code off).
 
 Kokkos is a C++ performance-portability programming ecosystem. The `rocm-tests`
 repository does not vendor or redistribute Kokkos source code or Kokkos build
