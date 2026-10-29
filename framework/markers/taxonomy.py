@@ -172,6 +172,17 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # RAJA HIP unit suite (raja_ut): third-party CMake build of LLNL/RAJA with
+    # ENABLE_HIP, then ctest. layer.math_lib: the library's own HIP kernels are
+    # the thing validated. ci.weekly: clone + full ctest exceeds the 30 min
+    # nightly threshold — runtime.soak pairs with ci.weekly per taxonomy.
+    "tests/e2e/hpc/raja": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # rocHPL (High-Performance Linpack) HPC benchmark: third-party CMake/install.sh
     # build + MPI mpirun_rochpl launch. Weekly by default (a tuned Linpack solve is
     # a long, GPU-saturating run); hw.multi_gpu is the default, but the test
