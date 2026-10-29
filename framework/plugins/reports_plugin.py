@@ -495,21 +495,21 @@ def pytest_terminal_summary(terminalreporter) -> None:
 
     Example output::
 
-        ══════════════════════════════════════════════════════════════════
+        ════════════════════════════════════════════════════════════════════════════════
          ROCm Test Suite Summary
-        ══════════════════════════════════════════════════════════════════
-         Test Directory              PASS  FAIL  SKIP  ERROR    Duration
-        ──────────────────────────────────────────────────────────────────
-         tests/dry_run                 12     0     1      0       0.5 s
-         tests/e2e/compiler             3     0     0      0      45.2 s
-         tests/e2e/stack_validation     2     1     0      0       8.7 s
-        ──────────────────────────────────────────────────────────────────
-         TOTAL  18 tests │ 17 passed │ 1 failed │ 1 skipped │ 0 error │  54.4 s
-        ══════════════════════════════════════════════════════════════════
+        ════════════════════════════════════════════════════════════════════════════════
+         Test Directory              PASS  FAIL  SKIP  KNOWN_ISSUES  ERROR  GPU Duration
+        ────────────────────────────────────────────────────────────────────────────────
+         tests/dry_run                 12     0     1             0      0         0.5 s
+         tests/e2e/compiler             3     0     0             0      0        45.2 s
+         tests/e2e/stack_validation     2     1     0             0      0         8.7 s
+        ────────────────────────────────────────────────────────────────────────────────
+         TOTAL  18 tests │ 17 passed │ 1 failed │ 1 skipped │ 0 known issues │ 0 error │  54.4 s
+        ════════════════════════════════════════════════════════════════════════════════
 
          Failed tests:
            • tests/e2e/stack_validation/test_hip_runtime.py::test_hip_device_count
-        ══════════════════════════════════════════════════════════════════
+        ════════════════════════════════════════════════════════════════════════════════
 
     Args:
         terminalreporter: pytest's TerminalReporter plugin instance.
