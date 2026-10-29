@@ -172,6 +172,18 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # GROMACS HIP MPI functional suite: third-party build of UCX, Open MPI, and
+    # GROMACS with GMX_GPU=HIP, then ctest. layer.math_lib: the library's own
+    # HIP kernels are the thing validated. ci.weekly: the dependency build plus
+    # ctest exceeds the 30 min nightly threshold — runtime.soak pairs with
+    # ci.weekly per taxonomy. The build uses apt, so the test skips non-Debian.
+    "tests/e2e/hpc/gromacs": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # rocHPL (High-Performance Linpack) HPC benchmark: third-party CMake/install.sh
     # build + MPI mpirun_rochpl launch. Weekly by default (a tuned Linpack solve is
     # a long, GPU-saturating run); hw.multi_gpu is the default, but the test
