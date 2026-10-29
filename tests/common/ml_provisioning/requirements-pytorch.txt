@@ -13,3 +13,4 @@
 # Add only framework-adjacent helpers that are safe from PyPI here, e.g.:
 transformers
 accelerate
+pytest
