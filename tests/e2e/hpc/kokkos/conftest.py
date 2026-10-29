@@ -51,19 +51,23 @@ _RDC_FLAG = "-fgpu-rdc"
 
 @dataclass(frozen=True)
 class KokkosRdcBuild:
-    """Result of the session-scoped Kokkos HIP RDC build.
+    """Result of a session-scoped Kokkos HIP build.
 
     Attributes:
         build_dir:        CMake build directory; the ctest suite runs here.
         install_dir:      CMake install prefix (``cmake --install`` target).
         rdc_flag_present: True when ``-fgpu-rdc`` was found in the VERBOSE build
                           output — the authoritative RDC compilation gate.
-        build_log_path:   Path to the persisted VERBOSE build log for debugging.
+                          Functional (RDC off) builds leave this False.
+        rdc_enabled:      True when this tree was configured with relocatable
+                          device code on.
+        build_log_path:   Path to the persisted build log for debugging.
     """
 
     build_dir: str
     install_dir: str
     rdc_flag_present: bool
+    rdc_enabled: bool
     build_log_path: str
 
 
@@ -156,8 +160,9 @@ def _run_build_step(cmd: str, *, cmake_executor, timeout: float, label: str, log
     return (result.stdout or "") + (result.stderr or "")
 
 
-@pytest.fixture(scope="session")
-def kokkos_rdc_build(
+def _build_kokkos(
+    *,
+    rdc: bool,
     rock_dir: str,
     gpu_arch: str | None,
     compiler_build_dir: str,
@@ -167,12 +172,12 @@ def kokkos_rdc_build(
     node_pool,
     require_gpu_arch_for,
 ) -> KokkosRdcBuild:
-    """Clone, configure (RDC on), VERBOSE-build, and install Kokkos once per session.
+    """Clone, configure, build, and install Kokkos once per session.
 
-    Returns a :class:`KokkosRdcBuild` carrying the ctest build dir and the
-    ``-fgpu-rdc`` verdict scanned from the VERBOSE build output. ROCm paths come
-    from ``rock_dir``; the GPU arch is resolved from ``--gpu-arch`` (falling back
-    to the node pool's first GPU) and mapped to ``-DKokkos_ARCH_AMD_GFX<NNN>=ON``.
+    ``rdc=True`` is the HIP relocatable-device-code build (VERBOSE, so the
+    ``-fgpu-rdc`` scan is possible). ``rdc=False`` is the functional HIP suite:
+    same tests and benchmarks, relocatable device code off, non-verbose build.
+    The two trees are separate directories so one cannot satisfy the other.
     """
     # --- resolve GPU arch (explicit flag > node-pool detection > hard fail) ----
     # An RDC device build must target a concrete GFX arch, so a missing arch is a
@@ -209,19 +214,25 @@ def kokkos_rdc_build(
     # dirs keep the idempotency check below correct — switching --gpu-arch forces
     # a fresh build instead of silently reusing a mismatched one.
     arch_label = resolved_gpu_arch or "auto"
-    build_dir = f"{kokkos_dir}/kokkos_build-{arch_label}"
-    install_dir = f"{kokkos_dir}/kokkos_install-{arch_label}"
-    build_log = f"{build_dir}/kokkos-build-verbose.log"
+    tree = "kokkos_build" if rdc else "kokkos_fn_build"
+    install_tree = "kokkos_install" if rdc else "kokkos_fn_install"
+    build_dir = f"{kokkos_dir}/{tree}-{arch_label}"
+    install_dir = f"{kokkos_dir}/{install_tree}-{arch_label}"
+    build_log = f"{build_dir}/kokkos-build.log"
     rdc_flag_path = f"{build_dir}/{_RDC_FLAG_FILE}"
 
     # --- idempotency: reuse a configured build tree, re-reading the RDC verdict -
     if _path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor):
         cached = _read_text(rdc_flag_path, cmake_executor).strip()
-        logger.info("Kokkos: existing build tree at %s — skipping configure/build/install", build_dir)
+        logger.info(
+            "Kokkos: existing build tree at %s — skipping configure/build/install",
+            build_dir,
+        )
         return KokkosRdcBuild(
             build_dir=build_dir,
             install_dir=install_dir,
             rdc_flag_present=cached == "1",
+            rdc_enabled=rdc,
             build_log_path=build_log,
         )
 
@@ -247,7 +258,7 @@ def kokkos_rdc_build(
         "-DCMAKE_CXX_STANDARD=20 "
         "-DKokkos_ENABLE_BENCHMARKS=ON "
         f"-DCMAKE_INSTALL_PREFIX={install_dir} "
-        "-DKokkos_ENABLE_HIP_RELOCATABLE_DEVICE_CODE=ON "
+        f"-DKokkos_ENABLE_HIP_RELOCATABLE_DEVICE_CODE={'ON' if rdc else 'OFF'} "
         "-DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON "
         "-DKokkos_ENABLE_HIP_MULTIPLE_KERNEL_INSTANTIATIONS=ON "
         f"{arch_flag}"
@@ -258,46 +269,110 @@ def kokkos_rdc_build(
     os.makedirs(log_dir, exist_ok=True)
 
     configure_cmd = f"env {env_prefix} cmake -S {kokkos_dir} -B {build_dir} {configure_flags}"
-    # ``--verbose`` forwards VERBOSE=1 to the underlying make so the full device
-    # compile lines (including -fgpu-rdc) are emitted for the RDC scan below.
-    build_cmd = f"env {env_prefix} cmake --build {build_dir} --parallel {jobs} --verbose"
+    # RDC builds are VERBOSE so the device compile lines can be scanned for
+    # ``-fgpu-rdc``. The functional build does not need that scan.
+    verbose = " --verbose" if rdc else ""
+    build_cmd = f"env {env_prefix} cmake --build {build_dir} --parallel {jobs}{verbose}"
     install_cmd = f"env {env_prefix} cmake --install {build_dir}"
+    log_tag = "rdc" if rdc else "functional"
 
-    logger.info("Kokkos: configuring (gpu_arch=%s, rocm=%s)", resolved_gpu_arch, rocm_path)
+    logger.info(
+        "Kokkos %s: configuring (gpu_arch=%s, rocm=%s)",
+        log_tag,
+        resolved_gpu_arch,
+        rocm_path,
+    )
     _run_build_step(
         configure_cmd,
         cmake_executor=cmake_executor,
         timeout=build_timeout,
-        label="cmake configure",
-        log_path=os.path.join(log_dir, "build-configure.log"),
+        label=f"{log_tag} cmake configure",
+        log_path=os.path.join(log_dir, f"build-configure-{log_tag}.log"),
     )
-    logger.info("Kokkos: VERBOSE build with %s parallel jobs", jobs)
+    logger.info("Kokkos %s: build with %s parallel jobs", log_tag, jobs)
     build_output = _run_build_step(
         build_cmd,
         cmake_executor=cmake_executor,
         timeout=build_timeout,
-        label="cmake build (VERBOSE)",
+        label=f"{log_tag} cmake build",
         log_path=build_log,
     )
 
     # Scan the captured VERBOSE build output for the RDC flag. This is the core
     # RDC evidence; persist the verdict so a later cached build can report it.
-    rdc_flag_present = _RDC_FLAG in build_output
+    # A non-verbose functional build does not emit the flag, so record False.
+    rdc_flag_present = rdc and _RDC_FLAG in build_output
     _write_text(rdc_flag_path, "1" if rdc_flag_present else "0", cmake_executor)
-    logger.info("Kokkos: %s %s in VERBOSE build output", _RDC_FLAG, "found" if rdc_flag_present else "NOT found")
+    logger.info(
+        "Kokkos %s: %s %s in build output",
+        log_tag,
+        _RDC_FLAG,
+        "found" if rdc_flag_present else "NOT found",
+    )
 
     logger.info("Kokkos: installing to %s", install_dir)
     _run_build_step(
         install_cmd,
         cmake_executor=cmake_executor,
         timeout=build_timeout,
-        label="cmake install",
-        log_path=os.path.join(log_dir, "build-install.log"),
+        label=f"{log_tag} cmake install",
+        log_path=os.path.join(log_dir, f"build-install-{log_tag}.log"),
     )
 
     return KokkosRdcBuild(
         build_dir=build_dir,
         install_dir=install_dir,
         rdc_flag_present=rdc_flag_present,
+        rdc_enabled=rdc,
         build_log_path=build_log,
+    )
+
+
+@pytest.fixture(scope="session")
+def kokkos_rdc_build(
+    rock_dir: str,
+    gpu_arch: str | None,
+    compiler_build_dir: str,
+    framework_config,
+    external_build,
+    cmake_executor,
+    node_pool,
+    require_gpu_arch_for,
+) -> KokkosRdcBuild:
+    """Clone, configure (RDC on), VERBOSE-build, and install Kokkos once per session."""
+    return _build_kokkos(
+        rdc=True,
+        rock_dir=rock_dir,
+        gpu_arch=gpu_arch,
+        compiler_build_dir=compiler_build_dir,
+        framework_config=framework_config,
+        external_build=external_build,
+        cmake_executor=cmake_executor,
+        node_pool=node_pool,
+        require_gpu_arch_for=require_gpu_arch_for,
+    )
+
+
+@pytest.fixture(scope="session")
+def kokkos_functional_build(
+    rock_dir: str,
+    gpu_arch: str | None,
+    compiler_build_dir: str,
+    framework_config,
+    external_build,
+    cmake_executor,
+    node_pool,
+    require_gpu_arch_for,
+) -> KokkosRdcBuild:
+    """Clone, configure (RDC off), build, and install the functional Kokkos suite."""
+    return _build_kokkos(
+        rdc=False,
+        rock_dir=rock_dir,
+        gpu_arch=gpu_arch,
+        compiler_build_dir=compiler_build_dir,
+        framework_config=framework_config,
+        external_build=external_build,
+        cmake_executor=cmake_executor,
+        node_pool=node_pool,
+        require_gpu_arch_for=require_gpu_arch_for,
     )
