@@ -72,7 +72,7 @@ import contextlib
 import logging
 import os
 import pathlib
-import select
+import selectors
 import signal
 import subprocess
 import sys
@@ -81,6 +81,8 @@ import time
 from typing import Generic, TypeVar
 
 from framework.common.helpers import ExecutionResult
+
+_IS_WINDOWS = sys.platform == "win32"
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +224,10 @@ def _bg_graceful_kill(proc: subprocess.Popen, grace_secs: float = 30.0) -> None:
                     ``SIGKILL`` (default 30 s).
     """
     try:
-        proc.send_signal(signal.SIGTERM)
+        if sys.platform == "win32":
+            proc.terminate()
+        else:
+            proc.send_signal(signal.SIGTERM)
         proc.wait(timeout=grace_secs)
     except subprocess.TimeoutExpired:
         proc.kill()
@@ -264,7 +269,12 @@ def _reader_loop(
         if stop_evt.is_set() and proc.poll() is not None:
             break
 
-        ready = select.select([s for s in [proc.stdout, proc.stderr] if s is not None], [], [], 0.5)[0]
+        selector = selectors.DefaultSelector()
+        for stream in [proc.stdout, proc.stderr]:
+            if stream is not None:
+                selector.register(stream, selectors.EVENT_READ)
+        ready = [key.fileobj for key, _ in selector.select(timeout=0.5)]
+        selector.close()
 
         if proc.stdout in ready:
             chunk = proc.stdout.read()
@@ -601,24 +611,49 @@ def _blocking_stream_run(
                 _bg_graceful_kill(process)
                 raise TimeoutError(f"Command timed out after {timeout}s: {command}")
 
-            ready = select.select(
-                [s for s in [process.stdout, process.stderr] if s is not None],
-                [],
-                [],
-                min(max(timeout - elapsed, 0.1), 5.0),
-            )[0]
+            # Windows cannot use select() with pipes, so use a polling approach
+            if _IS_WINDOWS:
+                # On Windows, try to read from both pipes (non-blocking)
+                for pipe, is_stdout in [
+                    (process.stdout, True),
+                    (process.stderr, False),
+                ]:
+                    if pipe is not None:
+                        try:
+                            chunk = pipe.read(4096)
+                            if chunk:
+                                target = stdout_console if is_stdout else stderr_console
+                                _bg_pipe_write(chunk, target, log_fh)
+                                if is_stdout:
+                                    stdout_buf += chunk
+                                else:
+                                    stderr_buf += chunk
+                        except (BlockingIOError, OSError):
+                            # No data available or pipe closed
+                            pass
+                # Sleep briefly to avoid busy-waiting
+                time.sleep(0.01)
+            else:
+                # On Unix, use select() for efficient I/O multiplexing
+                selector = selectors.DefaultSelector()
+                for stream in [process.stdout, process.stderr]:
+                    if stream is not None:
+                        selector.register(stream, selectors.EVENT_READ)
+                timeout_remaining = min(max(timeout - elapsed, 0.1), 5.0)
+                ready = [key.fileobj for key, _ in selector.select(timeout=timeout_remaining)]
+                selector.close()
 
-            if process.stdout in ready:
-                chunk = process.stdout.read()
-                if chunk:
-                    _bg_pipe_write(chunk, stdout_console, log_fh)
-                    stdout_buf += chunk
+                if process.stdout in ready:
+                    chunk = process.stdout.read()
+                    if chunk:
+                        _bg_pipe_write(chunk, stdout_console, log_fh)
+                        stdout_buf += chunk
 
-            if process.stderr in ready:
-                chunk = process.stderr.read()
-                if chunk:
-                    _bg_pipe_write(chunk, stderr_console, log_fh)
-                    stderr_buf += chunk
+                if process.stderr in ready:
+                    chunk = process.stderr.read()
+                    if chunk:
+                        _bg_pipe_write(chunk, stderr_console, log_fh)
+                        stderr_buf += chunk
 
             if process.poll() is not None:
                 for pipe, is_stdout in [

@@ -33,7 +33,6 @@ import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 import errno
-import fcntl
 import glob
 import hashlib
 import json
@@ -42,7 +41,7 @@ import os
 import pathlib
 import posixpath
 import re
-import select
+import selectors
 import shlex
 import shutil
 import signal
@@ -53,6 +52,14 @@ import time
 import pytest
 
 from framework.common.workspace_layout import REMOTE_WORKSPACE_DIR, category_root
+
+# Platform-specific file locking
+if sys.platform == "win32":
+    import msvcrt
+    _HAS_FCNTL = False
+else:
+    import fcntl
+    _HAS_FCNTL = True
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +81,67 @@ _GPU_ENV_KEYS: frozenset[str] = frozenset(
 _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 _SIGTERM_GRACE_SECS: float = 30.0
+
+
+def _acquire_exclusive_lock(lock_fh, timeout: float = 7200.0) -> None:
+    """Acquire an exclusive file lock on *lock_fh* (cross-platform).
+
+    Unix: uses fcntl.flock with LOCK_EX | LOCK_NB.
+    Windows: uses msvcrt.locking.
+
+    Args:
+        lock_fh: Opened file handle to lock.
+        timeout: Max seconds to wait for the lock.
+
+    Raises:
+        TimeoutError: If lock cannot be acquired within timeout.
+        OSError: On lock acquisition failure.
+    """
+    deadline = time.monotonic() + timeout
+    if _HAS_FCNTL:
+        while True:
+            try:
+                fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Could not acquire file lock within {timeout}s — another worker may be hung."
+                    ) from exc
+                time.sleep(5)
+    else:
+        fd = lock_fh.fileno()
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Could not acquire file lock within {timeout}s — another worker may be hung."
+                    ) from exc
+                time.sleep(5)
+
+
+def _release_exclusive_lock(lock_fh) -> None:
+    """Release an exclusive file lock on *lock_fh* (cross-platform).
+
+    Unix: uses fcntl.flock with LOCK_UN.
+    Windows: uses msvcrt.locking to unlock.
+
+    Args:
+        lock_fh: Opened file handle to unlock.
+    """
+    if _HAS_FCNTL:
+        fcntl.flock(lock_fh, fcntl.LOCK_UN)
+    else:
+        fd = lock_fh.fileno()
+        try:
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
 
 
 def _write_build_skip_log(log_path: str, src: str, binary: str) -> None:
@@ -107,7 +175,10 @@ def _write_chunk(chunk: bytes, log_fh) -> None:
 def _graceful_kill(proc: subprocess.Popen, grace_secs: float = _SIGTERM_GRACE_SECS) -> None:
     """Send SIGTERM to *proc*, then SIGKILL if it has not exited within *grace_secs*."""
     try:
-        proc.send_signal(signal.SIGTERM)
+        if sys.platform == "win32":
+            proc.terminate()
+        else:
+            proc.send_signal(signal.SIGTERM)
         proc.wait(timeout=grace_secs)
     except subprocess.TimeoutExpired:
         proc.kill()
@@ -193,24 +264,8 @@ class BinaryBuilder:
         lock_path = output + ".lock"
 
         with open(lock_path, "w", encoding="utf-8") as lock_fh:
-            # Exclusive lock with non-blocking poll; blocks other xdist workers
-            # until this worker compiles or confirms the binary is current.
             lock_timeout = timeout if timeout is not None else 7200.0
-            deadline = time.monotonic() + lock_timeout
-            while True:
-                try:
-                    fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError as exc:
-                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                        raise
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(
-                            f"BinaryBuilder: could not acquire build lock for "
-                            f"{output!r} within {lock_timeout}s — another "
-                            "worker may be hung."
-                        ) from exc
-                    time.sleep(5)
+            _acquire_exclusive_lock(lock_fh, timeout=lock_timeout)
 
             try:
                 if self._is_up_to_date(src, output):
@@ -237,7 +292,7 @@ class BinaryBuilder:
                 return output
 
             finally:
-                fcntl.flock(lock_fh, fcntl.LOCK_UN)
+                _release_exclusive_lock(lock_fh)
 
     # ---------------------------------------------------------------------------
     # Internal helpers
@@ -397,12 +452,17 @@ class BinaryBuilder:
                     select_wait = min(select_wait, timeout - elapsed)
                 select_wait = max(select_wait, 0.1)
 
-                if process.stdout is not None and select.select([process.stdout], [], [], select_wait)[0]:
-                    chunk = process.stdout.read()
-                    if chunk:
-                        t_last_output = time.monotonic()
-                        _write_chunk(chunk, log_fh)
-                        buf += chunk
+                if process.stdout is not None:
+                    selector = selectors.DefaultSelector()
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    ready = [key.fileobj for key, _ in selector.select(timeout=select_wait)]
+                    selector.close()
+                    if ready:
+                        chunk = process.stdout.read()
+                        if chunk:
+                            t_last_output = time.monotonic()
+                            _write_chunk(chunk, log_fh)
+                            buf += chunk
 
                 if process.poll() is not None:
                     tail = process.stdout.read()  # type: ignore[union-attr]
@@ -1363,7 +1423,9 @@ def autotools_make(
 
 @contextlib.contextmanager
 def external_build_lock(build_dir: str, *, timeout: float = 7200.0):
-    """Exclusive cross-process ``fcntl`` lock keyed on *build_dir*.
+    """Exclusive cross-process file lock keyed on *build_dir*.
+
+    Uses fcntl on Unix and msvcrt on Windows for cross-platform compatibility.
 
     Args:
         build_dir: Build directory used only as the lock key.
@@ -1380,24 +1442,11 @@ def external_build_lock(build_dir: str, *, timeout: float = 7200.0):
     digest = hashlib.sha256(build_dir.encode("utf-8")).hexdigest()[:16]
     lock_path = os.path.join(tempfile.gettempdir(), f"rocm-test-extbuild-{digest}.lock")
     with open(lock_path, "w", encoding="utf-8") as lock_fh:
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                    raise
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"external-build: could not acquire build lock for {build_dir!r} "
-                        f"within {timeout}s — another worker may be hung."
-                    ) from exc
-                time.sleep(5)
+        _acquire_exclusive_lock(lock_fh, timeout=timeout)
         try:
             yield
         finally:
-            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+            _release_exclusive_lock(lock_fh)
 
 
 def _path_is_file(path: str, remote_executor) -> bool:

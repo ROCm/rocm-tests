@@ -10,6 +10,7 @@ pytest-xdist>=3.5    # Parallel test execution via -n N workers
 filelock>=3.12       # Cross-process GPU slot locking (GpuFileLock)
 pydantic>=2
 paramiko>=3          # SSH executor — remote node execution
+psutil>=5.9          # Cross-platform process operations (Windows compatibility)
 pexpect>=4           # InteractiveExecutor (Phase 2 — debug_stack tests; reserved)
 allure-pytest>=2.13  # Allure report generation
 pytest-html>=2.0,<4.0  # HTML report via --html=report.html --self-contained-html (--self-contained-html removed in v4)
