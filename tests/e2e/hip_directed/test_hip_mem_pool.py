@@ -14,10 +14,10 @@ import pytest
 
 _TEST_CASE = "Performance_MempoolManager_hipMallocAsync_hipFreeAsync"
 
-# Selects the memory-manager pool (upstream SWDEV-497841) over the legacy
-# allocator. Currently the runtime default, but pinned because the paths differ
-# wildly: on gfx942/ROCm 10.2 the legacy one still holds 14 GB after all 30 GB
-# is freed, where this one holds 768 MB.
+# Selects the memory-manager pool over the legacy allocator. Currently the
+# runtime default, but pinned because the paths differ wildly: on gfx942/ROCm
+# 10.2 the legacy one still holds 14 GB after all 30 GB is freed, where this
+# one holds 768 MB.
 _VMHEAP_ENV = "DEBUG_HIP_MEM_POOL_VMHEAP=1"
 
 # Printed by HIP_SKIP_TEST (hip_test_common.hh) when the device has under 30 GB
