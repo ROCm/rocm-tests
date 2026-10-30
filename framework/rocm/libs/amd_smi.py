@@ -139,6 +139,27 @@ def _to_mb(node: Any) -> int:
     return 0
 
 
+def _first_present(node: dict, *keys: str) -> Any:
+    """Return the value of the first key in *keys* that *node* carries.
+
+    amd-smi renamed several metric fields between releases, so each parser
+    below lists the spellings it accepts oldest-first and takes whichever the
+    installed tool emits.
+
+    Args:
+        node: A mapping from the amd-smi JSON tree.
+        keys: Candidate key names, in preference order.
+
+    Returns:
+        The first value found, or None when *node* carries none of the keys.
+    """
+    for key in keys:
+        value = node.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 def _to_scalar(node: Any) -> int | None:
     """Extract a scalar integer from a ``{"value": N}`` dict or a plain int.
 
@@ -363,15 +384,20 @@ def _run_metric_json(executor: AbstractExecutor, gpu_index: int) -> dict | None:
 
 def _parse_temp(entry: dict) -> int | None:
     """Extract the hot-spot temperature (Celsius) from a pre-parsed metric entry dict."""
-    return _to_scalar(entry.get("temperature", {}).get("hotspot_temperature"))
+    return _to_scalar(_first_present(entry.get("temperature", {}), "hotspot_temperature", "hotspot"))
 
 
 def _parse_vram(entry: dict, gpu_index: int) -> GpuVramInfo | None:
-    """Extract VRAM usage from a pre-parsed metric entry dict."""
-    vram = entry.get("vram", {})
-    total = _to_mb(vram.get("vram_total", 0))
-    used = _to_mb(vram.get("vram_used", 0))
-    free = _to_mb(vram.get("vram_free", 0))
+    """Extract VRAM usage from a pre-parsed metric entry dict.
+
+    Newer amd-smi reports these under ``mem_usage`` with the words reversed
+    (``total_vram`` rather than ``vram_total``), alongside the visible-VRAM and
+    GTT pools this ignores.
+    """
+    vram = entry.get("vram") or entry.get("mem_usage") or {}
+    total = _to_mb(_first_present(vram, "vram_total", "total_vram"))
+    used = _to_mb(_first_present(vram, "vram_used", "used_vram"))
+    free = _to_mb(_first_present(vram, "vram_free", "free_vram"))
     if total == 0 and used == 0:
         return None
     return GpuVramInfo(index=gpu_index, total_mb=total, used_mb=used, free_mb=free)
@@ -379,8 +405,8 @@ def _parse_vram(entry: dict, gpu_index: int) -> GpuVramInfo | None:
 
 def _parse_util(entry: dict) -> int | None:
     """Extract GFX compute utilization (0-100 %) from a pre-parsed metric entry dict."""
-    raw = entry.get("activity", {}).get("gfx_activity")
-    val = _to_scalar(raw)
+    activity = entry.get("activity") or entry.get("usage") or {}
+    val = _to_scalar(activity.get("gfx_activity"))
     if val is None:
         return None
     return max(0, min(100, val))
@@ -393,9 +419,18 @@ def _parse_ecc(entry: dict) -> int | None:
 
 
 def _parse_clock(entry: dict) -> str | None:
-    """Extract the GPU performance level (clock state) from a pre-parsed metric entry dict."""
+    """Extract the GPU performance level (clock state) from a pre-parsed metric entry dict.
+
+    Newer amd-smi moves this to a top-level ``perf_level`` holding the raw
+    enumerator name; the ``AMDSMI_DEV_PERF_LEVEL_`` prefix is stripped so both
+    layouts yield the same short form.
+    """
     val = entry.get("clock", {}).get("performance_level")
-    return str(val) if val is not None else None
+    if val is None:
+        val = entry.get("perf_level")
+    if val is None:
+        return None
+    return str(val).removeprefix("AMDSMI_DEV_PERF_LEVEL_").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -418,12 +453,12 @@ def _query_thermal(executor: AbstractExecutor, gpu_index: int) -> GpuThermalInfo
         return GpuThermalInfo(index=gpu_index)
     try:
         temp = entry.get("temperature", {})
-        fan_raw = temp.get("fan_speed_rpm") or entry.get("fan", {}).get("speed_rpm")
+        fan_raw = _first_present(temp, "fan_speed_rpm") or _first_present(entry.get("fan", {}), "speed_rpm", "rpm")
         fan = _to_scalar(fan_raw)
         return GpuThermalInfo(
             index=gpu_index,
-            temp_edge=_to_scalar(temp.get("edge_temperature")),
-            temp_hotspot=_to_scalar(temp.get("hotspot_temperature")),
+            temp_edge=_to_scalar(_first_present(temp, "edge_temperature", "edge")),
+            temp_hotspot=_to_scalar(_first_present(temp, "hotspot_temperature", "hotspot")),
             fan_rpm=fan if fan is not None else -1,
         )
     except (KeyError, TypeError) as exc:
