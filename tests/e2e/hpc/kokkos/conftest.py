@@ -176,7 +176,7 @@ def _build_kokkos(
 
     ``rdc=True`` is the HIP relocatable-device-code build (VERBOSE, so the
     ``-fgpu-rdc`` scan is possible). ``rdc=False`` is the functional HIP suite:
-    same tests and benchmarks, relocatable device code off, non-verbose build.
+    unit tests only, benchmarks off, relocatable device code off.
     The two trees are separate directories so one cannot satisfy the other.
     """
     # --- resolve GPU arch (explicit flag > node-pool detection > hard fail) ----
@@ -256,7 +256,10 @@ def _build_kokkos(
         "-DKokkos_ENABLE_SERIAL=ON "
         "-DKokkos_ENABLE_TESTS=ON "
         "-DCMAKE_CXX_STANDARD=20 "
-        "-DKokkos_ENABLE_BENCHMARKS=ON "
+        # Benchmarks are the long Atomic/scan targets. The functional suite does
+        # not score them, and Atomic times out on multi-GPU gfx942. Keep them
+        # for the RDC build only.
+        f"-DKokkos_ENABLE_BENCHMARKS={'ON' if rdc else 'OFF'} "
         f"-DCMAKE_INSTALL_PREFIX={install_dir} "
         f"-DKokkos_ENABLE_HIP_RELOCATABLE_DEVICE_CODE={'ON' if rdc else 'OFF'} "
         "-DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON "
