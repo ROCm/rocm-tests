@@ -28,10 +28,20 @@ def test_raja_functional(target_executor, rock_dir: str, ld_path: dict, raja_fun
     build = raja_functional_build
     ld = ld_path["LD_LIBRARY_PATH"]
     ctest_log = f"{build.build_dir}/results.log"
+    # The e2e container runs as root and has no sshd. Open MPI refuses root
+    # unless these are set, and its default rsh/ssh launcher hangs every
+    # MPI test. isolated forks ranks on this node.
     cmd = (
         f"env ROCM_PATH={shlex.quote(rock_dir)} "
         f"PATH={shlex.quote(rock_dir)}/bin:$PATH "
         f"LD_LIBRARY_PATH={shlex.quote(ld)}:$LD_LIBRARY_PATH "
+        f"OMPI_ALLOW_RUN_AS_ROOT=1 "
+        f"OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 "
+        f"OMPI_MCA_plm=isolated "
+        f"OMPI_MCA_btl=tcp,self "
+        f"OMPI_MCA_pml=ob1 "
+        f"OMPI_MCA_rmaps_base_oversubscribe=1 "
+        f"OMPI_MCA_hwloc_base_binding_policy=none "
         f"ctest --test-dir {shlex.quote(build.build_dir)} --output-on-failure "
         f"--timeout {CTEST_TIMEOUT} --output-log {shlex.quote(ctest_log)}"
     )
