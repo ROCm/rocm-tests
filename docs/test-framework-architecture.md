@@ -1224,7 +1224,9 @@ If the test passes on attempt 2 or 3, it is tagged **flaky** in Allure.
 
 ```bash
 # Activate virtualenv
-source .venv/bin/activate
+source .venv/bin/activate                  # Linux/macOS
+# Windows PowerShell: Set-ExecutionPolicy -Scope Process Bypass; .\.venv\Scripts\Activate.ps1
+# Windows CMD:        .venv\Scripts\activate.bat
 
 # Run all nightly GPU tests on locally detected GPU
 pytest tests/e2e/ -m "hw.gpu and ci.nightly" -v --tb=short

@@ -11,8 +11,21 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 ```bash
 git clone https://github.com/ROCm/rocm-tests.git
 cd rocm-tests
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate   # Linux/macOS
 uv pip install -r requirements-dev.txt   # uv is optional; pip install works too
+```
+
+Windows activation:
+
+```powershell
+# PowerShell (allow scripts for this session only)
+Set-ExecutionPolicy -Scope Process Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+```bat
+:: Command Prompt
+.venv\Scripts\activate.bat
 ```
 
 Verify the wiring before writing code:
