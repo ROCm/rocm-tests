@@ -36,6 +36,7 @@ trap 'echo "--- log tail ---"; tail -n 120 "$log"' EXIT
 run() { echo "+ $*" | tee -a "$log"; "$@" >>"$log" 2>&1; }
 
 gfx=$("$ROCK/bin/rocminfo" | awk '/Name:[[:space:]]+gfx/{print $2; exit}')
+gfx=${gfx%%:*}
 test -n "$gfx"
 echo "GPU arch: $gfx" | tee -a "$log"
 . /etc/os-release
