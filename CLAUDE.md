@@ -18,14 +18,18 @@ uv pip install -r requirements-dev.txt   # uv is optional; pip install works too
 Windows activation:
 
 ```powershell
-# PowerShell (allow scripts for this session only)
+# PowerShell
+python -m venv .venv
 Set-ExecutionPolicy -Scope Process Bypass
 .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
 ```
 
 ```bat
 :: Command Prompt
+python -m venv .venv
 .venv\Scripts\activate.bat
+python -m pip install -r requirements-dev.txt
 ```
 
 Verify the wiring before writing code:

@@ -24,12 +24,14 @@ On Windows, create and activate the virtual environment with:
 python -m venv .venv
 Set-ExecutionPolicy -Scope Process Bypass   # allow script execution for this session only
 .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
 ```
 
 ```bat
 :: Command Prompt
 python -m venv .venv
 .venv\Scripts\activate.bat
+python -m pip install -r requirements-dev.txt
 ```
 
 Verify everything is wired up before writing any code:
