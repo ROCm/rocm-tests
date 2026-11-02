@@ -1,0 +1,73 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# Composite action: upload-test-artifacts
+#
+# Uploads the three artifact bundles produced by every e2e-tests.yml run:
+#   1. Full test report bundle  (html, markdown, allure output, counts dir)
+#   2. test-counts/counts.json  (short-lived; consumed by the nightly report job)
+#   3. test_report.json         (short-lived; consumed by the ClickHouse upload job)
+#
+# The pinned SHA for actions/upload-artifact lives in exactly one place.
+
+name: "Upload test artifacts"
+description: "Upload all three artifact bundles produced by an e2e test run."
+
+inputs:
+  artifact_prefix:
+    description: "Prefix for the main artifact bundle name (e.g. nightly-artifacts, pr-artifacts)"
+    required: true
+  platform_name:
+    description: "Platform identifier used in artifact names (e.g. linux-gfx94x)"
+    required: true
+  run_id:
+    description: "GitHub Actions run ID used to make the main bundle name unique"
+    required: true
+  retention_days_bundle:
+    description: "Retention days for the main report bundle"
+    required: false
+    default: "30"
+  retention_days_ephemeral:
+    description: "Retention days for the short-lived counts and report artifacts"
+    required: false
+    default: "1"
+
+outputs:
+  artifact_url:
+    description: "URL of the main uploaded artifact bundle"
+    value: ${{ steps.upload_bundle.outputs.artifact-url }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Upload test report bundle
+      id: upload_bundle
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.artifact_prefix }}-${{ inputs.platform_name }}-${{ inputs.run_id }}
+        path: |
+          nightly_report.html
+          md_summary.md
+          output/artifacts/
+          test-counts/
+        retention-days: ${{ inputs.retention_days_bundle }}
+        if-no-files-found: ignore
+
+    - name: Upload test counts
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: test-counts-${{ inputs.platform_name }}
+        path: test-counts/counts.json
+        retention-days: ${{ inputs.retention_days_ephemeral }}
+        if-no-files-found: ignore
+
+    - name: Upload JSON test report
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: test-report-${{ inputs.platform_name }}
+        path: test_report.json
+        retention-days: ${{ inputs.retention_days_ephemeral }}
+        if-no-files-found: ignore
