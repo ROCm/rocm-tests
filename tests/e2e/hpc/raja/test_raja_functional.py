@@ -1,7 +1,7 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Functional RAJA HIP unit tests (qa-forge hpc-raja, ROCmTest raja_ut).
+"""Functional RAJA HIP unit tests.
 
 Builds LLNL/RAJA with HIP and requires ctest to pass. This is the functional
 suite. It does not collect or compare RAJAPerf scores.

@@ -18,7 +18,7 @@ import os
 # Upstream RAJA performance-portability library. Cloned at runtime, not vendored.
 RAJA_URL = os.environ.get("RAJA_URL", "https://github.com/LLNL/RAJA.git")
 
-# Functional suite tracks develop, matching the ROCmTest raja_ut pin.
+# Functional suite tracks develop.
 RAJA_REF = os.environ.get("RAJA_REF", "develop")
 
 # Per-test ctest timeout. Bounds a hung target without cutting a slow unit test.
