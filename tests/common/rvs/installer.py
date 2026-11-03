@@ -26,9 +26,9 @@ from framework.executors.local_executor import run_cmd_get_stdout_stderr
 # Build prerequisites for ROCmValidationSuite (yaml-cpp + dev headers).
 # Keyed by package manager; values are the package names to install.
 _RVS_BUILD_PREREQS: dict[str, list[str]] = {
-    "apt-get": ["libyaml-cpp-dev", "libdrm-dev"],
-    "dnf": ["yaml-cpp-devel", "libdrm-devel"],
-    "zypper": ["yaml-cpp-devel", "libdrm-devel"],
+    "apt-get": ["libyaml-cpp-dev", "libdrm-dev", "libpci-dev"],
+    "dnf": ["yaml-cpp-devel", "libdrm-devel", "pciutils-devel"],
+    "zypper": ["yaml-cpp-devel", "libdrm-devel", "pciutils-devel"],
 }
 
 
