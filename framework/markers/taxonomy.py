@@ -172,6 +172,19 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # QMCPACK functional HIP suite: third-party CMake build of QMCPACK with
+    # QMC_GPU=openmp;hip. Four complex/precision configurations, then
+    # ctest -R deterministic. layer.math_lib: the application's HIP offload
+    # kernels are the thing validated. ci.weekly: four configures plus the
+    # deterministic ctests exceed the 30 min nightly threshold. runtime.soak
+    # stays on the test.
+    "tests/e2e/hpc/qmcpack": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # rocHPL (High-Performance Linpack) HPC benchmark: third-party CMake/install.sh
     # build + MPI mpirun_rochpl launch. Weekly by default (a tuned Linpack solve is
     # a long, GPU-saturating run); hw.multi_gpu is the default, but the test
