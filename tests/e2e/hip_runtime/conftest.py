@@ -55,6 +55,8 @@ import pathlib
 
 import pytest
 
+from framework.executors.cpu_executor import CpuExecutor
+
 logger = logging.getLogger(__name__)
 _SRC_DIR = "tests/e2e/hip_runtime/src"
 _SPLIT_BARRIER_SRC_DIR = "tests/e2e/hip_runtime/src/split_barrier_stress"
@@ -384,19 +386,20 @@ def babelstream_repo(external_build, compiler_build_dir: str) -> str:
     return str(repo_path)
 
 
-@pytest.fixture
-def babelstream_binary(
-    target_executor, babelstream_repo: str, require_gpu_arch_for, rock_dir: str
-) -> str:
+@pytest.fixture(scope="session")
+def babelstream_binary(cmake_executor, babelstream_repo: str, require_gpu_arch_for, rock_dir: str) -> str:
     """Build BabelStream HIP backend via Makefile and return the hip-stream binary path.
 
     The hip-stream binary supports both double (default) and float precision modes
     via the ``--float`` runtime flag. Build is GPU-arch agnostic (Makefile auto-detects).
+    Session-scoped so the Makefile build runs once, not once per test.
     """
     require_gpu_arch_for("hip_runtime/babelstream")
 
+    executor = cmake_executor if cmake_executor is not None else CpuExecutor(suppress_output_log=True)
+
     # Build via Makefile; output binary is at $(repo)/HIP-Stream
-    result = target_executor.run(
+    result = executor.run(
         f"cd {babelstream_repo} && make -f Makefile.hip ROCM_PATH={rock_dir}",
         timeout=300.0,
     )
@@ -407,11 +410,15 @@ def babelstream_binary(
         )
 
     hip_stream_binary = os.path.join(babelstream_repo, "HIP-Stream")
-    if not os.path.exists(hip_stream_binary):
+    exists = executor.run(f"test -f {hip_stream_binary}", timeout=15.0)
+    if not exists.ok:
         raise RuntimeError(f"BabelStream build succeeded but binary not found at {hip_stream_binary}")
 
     logger.info(f"BabelStream HIP-Stream binary ready: {hip_stream_binary}")
     return hip_stream_binary
+
+
+@pytest.fixture(scope="session")
 def _mixbench_repo(external_build, compiler_build_dir: str) -> str:
     """Clone ekondis/mixbench once per session; return the checkout path."""
     dest = pathlib.Path(compiler_build_dir) / "hip_runtime" / "mixbench"

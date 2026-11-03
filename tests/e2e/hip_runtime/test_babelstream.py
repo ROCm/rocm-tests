@@ -43,9 +43,9 @@ def test_babelstream_double(target_executor, ld_path: dict, babelstream_binary: 
         f"babelstream double test failed (exit={result.exit_code}):\n"
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     )
-    # Babelstream emits benchmark results; at minimum, verify output is non-empty
-    # and contains expected stream benchmark markers (e.g., timing, throughput).
-    assert result.stdout, "babelstream produced no output; binary may have crashed silently"
+    assert (
+        "BabelStream" in result.stdout
+    ), f"babelstream output missing expected 'BabelStream' header:\nstdout: {result.stdout[:2000]}"
 
 
 @pytest.mark.runtime.medium
@@ -65,4 +65,6 @@ def test_babelstream_float(target_executor, ld_path: dict, babelstream_binary: s
         f"babelstream float test failed (exit={result.exit_code}):\n"
         f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     )
-    assert result.stdout, "babelstream produced no output; binary may have crashed silently"
+    assert (
+        "BabelStream" in result.stdout
+    ), f"babelstream output missing expected 'BabelStream' header:\nstdout: {result.stdout[:2000]}"
