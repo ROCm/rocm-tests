@@ -32,6 +32,7 @@ import re
 import pytest
 
 from framework.executors.background_process import _blocking_stream_run
+from tests.common.hpc import build_hpc_env_prefix, ensure_mpi_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -108,23 +109,11 @@ def _run_build_step(cmd: str, *, cmake_executor, timeout: float, label: str, log
 
 @pytest.fixture(scope="session")
 def rochpl_mpi_runtime(external_build):
-    """Return an ``MpiRuntime`` (launcher + build/run env) for the rocHPL suite.
-
-    Discovery is read-only first (system ``mpirun`` / known OpenMPI prefixes);
-    when no MPI is present we provision a private OpenMPI under the framework
-    build dir so the test never depends on global package state or on any
-    site-specific, hardcoded OpenMPI install path.  ``mpirun_rochpl`` links
-    against and re-invokes this same launcher at run time.
-    """
-    runtime = external_build.detect_mpi_runtime()
-    if runtime is not None:
-        logger.info("rocHPL: using discovered MPI runtime at %s", runtime.launcher)
-        return runtime
+    """Return an ``MpiRuntime`` (launcher + build/run env) for the rocHPL suite."""
     version = (
         os.environ.get("ROCM_TEST_ROCHPL_OPENMPI_VERSION") or os.environ.get("OPENMPI_VERSION") or _OPENMPI_VERSION
     )
-    logger.info("rocHPL: no MPI runtime found; provisioning OpenMPI %s", version)
-    return external_build.provision_openmpi_runtime(version=version)
+    return ensure_mpi_runtime(external_build, executor=None, version=version)
 
 
 @pytest.fixture(scope="session")
@@ -176,18 +165,10 @@ def rochpl_build(
 
         # --- MPI + ROCm build environment (never via os.environ) -------------
         mpi_home = rochpl_mpi_runtime.env.get("MPI_HOME", "")
-        mpi_bin = os.path.dirname(rochpl_mpi_runtime.launcher)
-        mpi_lib = rochpl_mpi_runtime.env.get("LD_LIBRARY_PATH", "")
-        # rocHPL's install.sh sets ``PATH=$PATH:$ROCM_PATH/bin`` and its CMake finds
-        # the HIP compiler through ROCm's HIP cmake package via ``ROCM_PATH`` (the
-        # script accepts no compiler flag). So ``ROCM_PATH`` + ``$ROCM_PATH/bin`` on
-        # PATH is all the build needs -- no separate LLVM ``bin`` entry is required
-        # (this also matches the run-time env in test_rochpl.py).
-        env_prefix = (
-            f"ROCM_PATH={rocm_path} "
-            f"PATH={mpi_bin}:{rocm_path}/bin:$PATH "
-            f"LD_LIBRARY_PATH={mpi_lib}:{rocm_path}/lib:$LD_LIBRARY_PATH"
-        )
+        # rocHPL's install.sh reads ROCM_PATH/MPI_HOME and prepends mpi bin + rocm bin
+        # to PATH so cmake FindMPI resolves correctly. build_hpc_env_prefix covers this.
+        mpi_home = rochpl_mpi_runtime.env.get("MPI_HOME", "")
+        env_prefix = build_hpc_env_prefix(rocm_path, rochpl_mpi_runtime)
 
         # --- idempotency: skip rebuild when the launcher already exists -------
         if _path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor):
@@ -204,7 +185,9 @@ def rochpl_build(
         # user-writable clone (no sudo -- the original build wrapper's sudo/chown/
         # password steps are dropped).
         mpi_arg = f" --with-mpi={mpi_home}" if mpi_home else ""
-        install_cmd = f"cd {rochpl_dir} && env {env_prefix} ./install.sh --with-rocm={rocm_path}{mpi_arg}"
+        # env_prefix already starts with "env "; strip it for embedding in the cd+env shell.
+        env_vars = env_prefix[len("env ") :] if env_prefix.startswith("env ") else env_prefix
+        install_cmd = f"cd {rochpl_dir} && env {env_vars} ./install.sh --with-rocm={rocm_path}{mpi_arg}"
 
         logger.info("rocHPL: building via install.sh (arch=%s, mpi_home=%s)", arch_label, mpi_home or "<unset>")
         _run_build_step(

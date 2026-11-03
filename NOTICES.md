@@ -44,3 +44,27 @@ compiled/run on AMD GPU hardware. No mixbench source is redistributed as part of
 this repository; only the pytest harness is checked in here. mixbench is licensed
 under GPL-2.0 license; it is neither vendored nor linked into this project's own
 sources — it is built and executed as a standalone external binary at test time.
+
+## ROCmValidationSuite (RVS)
+
+- Used by: `tests/common/rvs/installer.py` and `tests/e2e/system_tools/rvs/conftest.py`
+  (cloned at test runtime; see `build_rvs_binary` in `tests/common/rvs/installer.py`).
+- Upstream: https://github.com/ROCm/ROCmValidationSuite
+- License: MIT (see the `LICENSE` file in the upstream repository).
+- Copyright (c) 2018-2025 Advanced Micro Devices, Inc. All rights reserved.
+
+The ROCmValidationSuite sources are fetched during test execution, built with CMake,
+and run on AMD GPU hardware. No RVS source is redistributed as part of this repository;
+only the pytest harness is checked in here.
+
+## rocm-systems / libhsakmt (kfdtest)
+
+- Used by: `tests/common/kfd/installer.py` and `tests/e2e/kfd/conftest.py`
+  (sparse-cloned at test runtime; see `build_kfdtest_binary` in `tests/common/kfd/installer.py`).
+- Upstream: https://github.com/ROCm/rocm-systems (sparse subtree: `projects/rocr-runtime/libhsakmt`)
+- License: MIT (see `LICENSE.md` in the upstream repository).
+- Copyright (c) 2016 Advanced Micro Devices, Inc. All rights reserved.
+
+The libhsakmt/kfdtest sources are fetched during test execution, built with CMake,
+and run on AMD GPU hardware. No kfdtest source is redistributed as part of this
+repository; only the pytest harness is checked in here.

@@ -116,7 +116,6 @@ def test_kfd_hmm_svm(
 
 
 @pytest.mark.hw.multi_gpu
-@pytest.mark.gpu_count("ALL")
 @pytest.mark.runtime.medium
 def test_kfd_multi_gpu_parallel(
     target_executor,

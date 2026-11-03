@@ -37,118 +37,12 @@ is host-provisioning and out of scope for a framework test).
 from __future__ import annotations
 
 import logging
-import os
-import pathlib
-import re
 
 import pytest
 
-from framework.builder.binary_builder import find_rocm_clangpp
+from tests.common.kfd import build_kfdtest_binary
 
 logger = logging.getLogger(__name__)
-
-# kfdtest lives inside the ROCm/rocm-systems monorepo. Canonical source:
-# https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime/libhsakmt/tests/kfdtest
-_KFDTEST_MONOREPO_URL = "https://github.com/ROCm/rocm-systems.git"
-# Sparse-checkout the whole libhsakmt project (not just tests/kfdtest): kfdtest's
-# CMakeLists.txt pulls the thunk headers from the sibling include/ dir via the
-# relative path ../../include, so that tree must be present alongside the tests.
-_LIBHSAKMT_SUBPATH = "projects/rocr-runtime/libhsakmt"
-# kfdtest itself lives under tests/kfdtest within the libhsakmt project.
-_KFDTEST_BUILD_SUBDIR = "tests/kfdtest"
-# Track the live rocm-systems source by default so CI follows the latest KFD
-# thunk headers; pin a known-good ref with KFDTEST_REF when needed.
-_DEFAULT_KFDTEST_REF = "develop"
-_KFDTEST_REF = os.environ.get("KFDTEST_REF", _DEFAULT_KFDTEST_REF)
-
-
-def _safe_ref_name(ref: str) -> str:
-    """Return a filesystem-safe label for a git ref."""
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", ref).strip("_") or "default"
-
-
-# pkg-config deps kfdtest's CMakeLists.txt requires (pkg_check_modules). When the
-# corresponding -dev package is not provisioned on the build node, cmake configure
-# aborts before any compilation. The missing pre-reqs are highlighted as errors.
-_PROVISIONING_PKGS = ("libdrm", "libnuma")
-
-
-def _missing_provisioning_pkg(output: str) -> str | None:
-    """Return the name of a missing pkg-config provisioning dep in *output*, if any.
-
-    Detects the pkg_check_modules "required packages were not found" signature so a
-    missing host dep can be turned into an actionable, well-labeled error rather
-    than an opaque cmake configure failure.
-    """
-    lowered = output.lower()
-    if "required packages were not found" not in lowered and "not found" not in lowered:
-        return None
-    for pkg in _PROVISIONING_PKGS:
-        if re.search(rf"package '{re.escape(pkg)}'.*not found", lowered) or f"- {pkg}" in lowered:
-            return pkg
-    return None
-
-
-def _kfd_compiler_args(rocm_path: str) -> list[str]:
-    """Return the ``-DCMAKE_C_COMPILER`` arg pointing at ROCm's clang.
-
-    ``cmake_build_dir(compiler_mode="auto")`` already sets ``CMAKE_CXX_COMPILER``
-    via the rocm-tests standard probe; kfdtest additionally needs a C compiler
-    (it compiles C translation units), which cmake_build_dir does not yet set, so
-    we derive it here by trimming the trailing ``++`` off the resolved clang++.
-
-    The original test hard-coded ``<rocm>/llvm/bin/amdclang`` and
-    ``amdclang++``. ``find_rocm_clangpp`` performs the same TheRock/ROCm probe
-    used by every other CMake-based conftest.
-
-    A missing compiler is a build-prerequisite failure, not a platform that
-    lacks the resource under test — without compiler detection no binary can be
-    produced and no test can run — so this raises rather than skipping.
-    """
-    clangpp = find_rocm_clangpp(rocm_path)
-    if clangpp is None:
-        raise RuntimeError(
-            f"ROCm clang++ not found under {rocm_path} — KFD build requires a "
-            "ROCm-provided C/C++ compiler. Verify ROCK_DIR / --rock-dir points at "
-            "a complete ROCm install."
-        )
-    clangpp_str = str(clangpp)
-    clang_str = clangpp_str[:-2] if clangpp_str.endswith("++") else clangpp_str
-    return [f"-DCMAKE_C_COMPILER={clang_str}"]
-
-
-# Thunk headers kfdtest #includes as "hsakmt/hsakmt.h" and "hsakmt/linux/kfd_ioctl.h";
-# both live under libhsakmt/include/ in the checkout. Their absence means the sibling
-# include/ tree was not checked out alongside tests/kfdtest.
-_THUNK_HEADERS = ("hsakmt/hsakmt.h", "hsakmt/linux/kfd_ioctl.h")
-
-
-def _assert_thunk_headers_present(include_dir: pathlib.Path, cmake_executor) -> None:
-    """Fail fast (with guidance) if the libhsakmt thunk headers are missing on the build node.
-
-    kfdtest compiles ``#include "hsakmt/hsakmt.h"`` against the sibling
-    ``libhsakmt/include`` tree. When only ``tests/kfdtest`` was checked out (e.g. a
-    stale sparse checkout from an earlier run), that tree is absent and every
-    translation unit fails with ``'hsakmt/hsakmt.h' file not found``. Turn that
-    late, noisy compiler error into an actionable message here.
-    """
-    missing: list[str] = []
-    for header in _THUNK_HEADERS:
-        header_path = include_dir / header
-        if cmake_executor is not None:
-            present = cmake_executor.run(f"test -f {header_path}", timeout=30.0).ok
-        else:
-            present = header_path.is_file()
-        if not present:
-            missing.append(str(header_path))
-    if missing:
-        raise RuntimeError(
-            "kfdtest thunk headers are missing from the checkout:\n  "
-            + "\n  ".join(missing)
-            + f"\nThe sibling include/ tree under {include_dir.parent} was not checked out "
-            "alongside tests/kfdtest. Remove the cached checkout and re-run so the whole "
-            "libhsakmt project (including include/) is fetched."
-        )
 
 
 @pytest.fixture(scope="session")
@@ -167,50 +61,13 @@ def kfdtest_binary(
     Session-scoped so the clone + build happens once per session regardless of
     how many test functions request it.
     """
-    rocm_path = os.path.realpath(rock_dir)
-
-    # clone_repo(sparse_subtree=...) returns the subtree path directly. We check
-    # out the whole libhsakmt project so kfdtest's sibling include/ tree is present
-    # (its CMakeLists.txt references ../../include for hsakmt/hsakmt.h).
-    libhsakmt_src = external_build.clone_repo(
-        url=_KFDTEST_MONOREPO_URL,
-        dest=pathlib.Path(compiler_build_dir) / "kfd" / f"rocm-systems-{_safe_ref_name(_KFDTEST_REF)}",
-        ref=_KFDTEST_REF,
-        timeout=float(framework_config.therock.build_timeout_secs),
-        sparse_subtree=_LIBHSAKMT_SUBPATH,
+    return build_kfdtest_binary(
+        rock_dir=rock_dir,
+        external_build=external_build,
+        cmake_executor=cmake_executor,
+        framework_config=framework_config,
+        cmake_build_dir_fn=cmake_build_dir,
+        built_binary_fn=built_binary,
+        gpu_arch=gpu_arch,
+        compiler_build_dir=compiler_build_dir,
     )
-    external_build.assert_license_present(libhsakmt_src)  # open-source provenance guard
-
-    kfdtest_src = pathlib.Path(libhsakmt_src) / _KFDTEST_BUILD_SUBDIR
-    build_dir = pathlib.Path(kfdtest_src) / "build"
-    _assert_thunk_headers_present(pathlib.Path(libhsakmt_src) / "include", cmake_executor)
-
-    # Source is already on the build node (cloned above), so no sync_dirs are
-    # needed; cmake_build handles local vs. remote (cmake_executor) transparently.
-    try:
-        build_dir = cmake_build_dir(
-            src=str(kfdtest_src),
-            subdir=f"kfd/kfdtest-{_safe_ref_name(_KFDTEST_REF)}",
-            compiler_mode="auto",  # sets CMAKE_CXX_COMPILER via rocm-tests standard path
-            extra_cmake_args=[
-                *_kfd_compiler_args(rocm_path),
-                "-DCMAKE_BUILD_TYPE=Release",
-                "-DCMAKE_EXE_LINKER_FLAGS=-ldl",
-                f"-DROCM_DIR={rocm_path}",
-                f"-DOPENCL_DIR={rocm_path}",
-            ],
-            label="kfdtest",
-        )
-    except (AssertionError, RuntimeError) as exc:
-        # A missing pkg-config provisioning dep (libdrm/libnuma) is an
-        # un-provisioned build host — surface it as an actionable, well-labeled
-        # error rather than an opaque cmake configure failure. Any other failure
-        # is real breakage; re-raise unchanged.
-        missing = _missing_provisioning_pkg(str(exc))
-        if missing is None:
-            raise
-        raise RuntimeError(
-            f"kfdtest build dependency '{missing}' is not provisioned on the build node — "
-            f"cmake configure could not find its pkg-config module."
-        ) from exc
-    return built_binary(os.path.join(str(build_dir), "kfdtest"), "kfdtest")
