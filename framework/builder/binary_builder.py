@@ -8,7 +8,8 @@ Design
 ------
 - **CPU/GPU env separation**: all GPU device-selection env vars are stripped from the
   compiler subprocess; GPU execution is handled by the caller's executor fixture.
-- **xdist parallel safety**: compilation is serialised via ``fcntl`` file lock; later
+- **xdist parallel safety**: compilation is serialised via a cross-platform
+  ``filelock.FileLock`` (``fcntl`` on POSIX, ``msvcrt`` on Windows); later
   workers skip if the binary is already current (mtime check).
 - **Live streaming + dual-log**: stdout/stderr stream to the console and to
   ``<output>.build.log`` simultaneously; the log path appears in ``AssertionError``.
@@ -32,8 +33,6 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from datetime import datetime
-import errno
-import fcntl
 import glob
 import hashlib
 import json
@@ -50,6 +49,7 @@ import subprocess
 import sys
 import time
 
+from filelock import FileLock, Timeout as FileLockTimeout
 import pytest
 
 from framework.common.workspace_layout import REMOTE_WORKSPACE_DIR, category_root
@@ -74,6 +74,41 @@ _GPU_ENV_KEYS: frozenset[str] = frozenset(
 _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 _SIGTERM_GRACE_SECS: float = 30.0
+
+
+_LOCK_POLL_SECS: float = 5.0
+
+
+@contextlib.contextmanager
+def _exclusive_file_lock(lock_path: str, *, timeout: float, label: str):
+    """Hold an exclusive cross-process lock on *lock_path* for the ``with`` body.
+
+    Backed by ``filelock.FileLock`` (``fcntl.flock`` on POSIX, ``msvcrt.locking``
+    on Windows); the OS releases the lock automatically if the holder dies.
+
+    Args:
+        lock_path: Path of the lock file (created if absent).
+        timeout:   Max seconds to wait for the lock.
+        label:     Human-readable owner name used in the timeout message.
+
+    Yields:
+        None, while the lock is held.
+
+    Raises:
+        TimeoutError: If the lock is not acquired within *timeout*.
+    """
+    lock = FileLock(lock_path)
+    poll_interval = max(min(_LOCK_POLL_SECS, timeout), 0.05)
+    try:
+        lock.acquire(timeout=timeout, poll_interval=poll_interval)
+    except FileLockTimeout as exc:
+        raise TimeoutError(
+            f"{label}: could not acquire build lock {lock_path!r} within {timeout}s — another worker may be hung."
+        ) from exc
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _write_build_skip_log(log_path: str, src: str, binary: str) -> None:
@@ -191,53 +226,32 @@ class BinaryBuilder:
 
         os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
         lock_path = output + ".lock"
+        lock_timeout = timeout if timeout is not None else 7200.0
 
-        with open(lock_path, "w", encoding="utf-8") as lock_fh:
-            # Exclusive lock with non-blocking poll; blocks other xdist workers
-            # until this worker compiles or confirms the binary is current.
-            lock_timeout = timeout if timeout is not None else 7200.0
-            deadline = time.monotonic() + lock_timeout
-            while True:
-                try:
-                    fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError as exc:
-                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                        raise
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(
-                            f"BinaryBuilder: could not acquire build lock for "
-                            f"{output!r} within {lock_timeout}s — another "
-                            "worker may be hung."
-                        ) from exc
-                    time.sleep(5)
-
-            try:
-                if self._is_up_to_date(src, output):
-                    logger.info("BinaryBuilder : binary up-to-date, skipping — %s", output)
-                    if log_path:
-                        _write_build_skip_log(log_path, src, output)
-                    return output
-
-                cmd = self._build_cmd(hipcc, rocm_dir, src, output, std, opt, arch, include_dirs, extra_flags)
-                compile_env = self._cpu_env()
-
-                logger.info("BinaryBuilder : compiling — %s", " ".join(cmd))
-
-                self._stream_compile(
-                    cmd=cmd,
-                    env=compile_env,
-                    src=src,
-                    timeout=timeout,
-                    inactivity_timeout=inactivity_timeout,
-                    log_path=log_path,
-                )
-
-                logger.info("BinaryBuilder : compiled → %s", output)
+        # Blocks other xdist workers until this worker compiles or confirms the binary is current.
+        with _exclusive_file_lock(lock_path, timeout=lock_timeout, label=f"BinaryBuilder({output})"):
+            if self._is_up_to_date(src, output):
+                logger.info("BinaryBuilder : binary up-to-date, skipping — %s", output)
+                if log_path:
+                    _write_build_skip_log(log_path, src, output)
                 return output
 
-            finally:
-                fcntl.flock(lock_fh, fcntl.LOCK_UN)
+            cmd = self._build_cmd(hipcc, rocm_dir, src, output, std, opt, arch, include_dirs, extra_flags)
+            compile_env = self._cpu_env()
+
+            logger.info("BinaryBuilder : compiling — %s", " ".join(cmd))
+
+            self._stream_compile(
+                cmd=cmd,
+                env=compile_env,
+                src=src,
+                timeout=timeout,
+                inactivity_timeout=inactivity_timeout,
+                log_path=log_path,
+            )
+
+            logger.info("BinaryBuilder : compiled → %s", output)
+            return output
 
     # ---------------------------------------------------------------------------
     # Internal helpers
@@ -1363,7 +1377,9 @@ def autotools_make(
 
 @contextlib.contextmanager
 def external_build_lock(build_dir: str, *, timeout: float = 7200.0):
-    """Exclusive cross-process ``fcntl`` lock keyed on *build_dir*.
+    """Exclusive cross-process file lock keyed on *build_dir*.
+
+    Backed by ``filelock.FileLock`` (``fcntl`` on POSIX, ``msvcrt`` on Windows).
 
     Args:
         build_dir: Build directory used only as the lock key.
@@ -1379,25 +1395,8 @@ def external_build_lock(build_dir: str, *, timeout: float = 7200.0):
 
     digest = hashlib.sha256(build_dir.encode("utf-8")).hexdigest()[:16]
     lock_path = os.path.join(tempfile.gettempdir(), f"rocm-test-extbuild-{digest}.lock")
-    with open(lock_path, "w", encoding="utf-8") as lock_fh:
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                    raise
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"external-build: could not acquire build lock for {build_dir!r} "
-                        f"within {timeout}s — another worker may be hung."
-                    ) from exc
-                time.sleep(5)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+    with _exclusive_file_lock(lock_path, timeout=timeout, label=f"external-build({build_dir})"):
+        yield
 
 
 def _path_is_file(path: str, remote_executor) -> bool:

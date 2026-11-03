@@ -14,6 +14,13 @@ Detection strategy (layered enrichment):
                            covering MI300A unified-memory and any other APU variant.
   Fallback (no lspci):   KFD sysfs → system amd-smi → rock_dir amd-smi, in order.
 
+Windows Detection Strategy (local host; first method returning ≥1 GPU wins):
+  1. amd-smi static --json — system amd-smi, then <rock_dir>/bin/amd-smi.
+  2. hipInfo               — system hipInfo, then <rock_dir>/bin/hipInfo.exe; arch, VRAM, HIP ordinal.
+  3. Get-PnpDevice         — VEN_1002 Display devices; count only (arch="unknown", vram_mb=0).
+  rock_dir comes from --rock-dir / ROCK_DIR / ROCM_TEST_THEROCK_ROCK_DIR / rocm-test.toml, as on Linux.
+  Remote (SSH) detection always uses the Linux strategy — SshExecutor is bash-only.
+
 Diagnostics: amd-smi list runs once when GPUs are detected and its output is
 captured to output/artifacts/gpu-info-<node>.log for human inspection only.
 Use MockGpuDetector for --mock-gpu.
@@ -22,13 +29,20 @@ Use MockGpuDetector for --mock-gpu.
 from __future__ import annotations
 
 import abc
+import contextlib
 from dataclasses import dataclass
 import json
 import logging
 import os
 import pathlib
+import re
+import shutil
 import subprocess
+import sys
+import tempfile
 from typing import TYPE_CHECKING
+
+import psutil
 
 from framework.config.loader import FrameworkSection
 from framework.rocm.libs.amd_smi import _to_mb, _unwrap_entries
@@ -93,6 +107,31 @@ def _kfd_gfx_version(raw: str) -> str:
         return f"gfx{major}{minor:x}{step:x}"
     except ValueError:
         return raw
+
+
+def _get_gpu_detector(
+    rock_dir: str | None = None,
+    ssh_executor: SshExecutor | None = None,
+    artifact_dir: str | None = None,
+) -> AbstractGpuDetector:
+    """Return the GPU detector for the node being probed.
+
+    Local detection on a Windows host uses ``WindowsGpuDetector``. Everything
+    else — local Linux and all SSH targets (``SshExecutor`` is bash-only) —
+    uses ``GpuDetector``. Selecting on ``sys.platform`` alone would wrongly
+    probe Linux SSH nodes with Windows tooling from a Windows coordinator.
+
+    Args:
+        rock_dir:     Path to TheRock/ROCm install.
+        ssh_executor: SSH executor for remote detection.
+        artifact_dir: Directory for diagnostic logs.
+
+    Returns:
+        ``WindowsGpuDetector`` or ``GpuDetector``.
+    """
+    if ssh_executor is None and sys.platform == "win32":
+        return WindowsGpuDetector(rock_dir=rock_dir, artifact_dir=artifact_dir)
+    return GpuDetector(rock_dir=rock_dir, ssh_executor=ssh_executor, artifact_dir=artifact_dir)
 
 
 class GpuDetector(AbstractGpuDetector):
@@ -681,6 +720,371 @@ class GpuDetector(AbstractGpuDetector):
             arch = asic.get("target_graphics_version", "unknown")
             gpus.append(GpuInfo(index=i, arch=arch, vram_mb=vram_mb))
         return gpus
+
+
+_WIN_HIPINFO_TIMEOUT_SECS: float = 60.0
+
+# Stripped from the hipInfo env so a value inherited by the coordinator cannot hide GPUs.
+_GPU_MASK_ENV_KEYS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL")
+
+_HIPINFO_DEVICE_RE = re.compile(r"^device#[ \t]+(\d+)[ \t]*\r?$", re.MULTILINE)
+_HIPINFO_FIELD_RE = re.compile(r"^([A-Za-z][\w.]*):[ \t]*([^\r\n]*)", re.MULTILINE)
+_SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)[ \t]*([KMGT]?B)?\s*$", re.IGNORECASE)
+_SIZE_TO_MB = {"B": 1 / (1024 * 1024), "KB": 1 / 1024, "MB": 1, "GB": 1024, "TB": 1024 * 1024}
+
+
+def _size_to_mb(text: str) -> int:
+    """Convert a hipInfo size string (``"7.95 GB"``, ``"64.00 KB"``, ``"8589934592"``) to integer MB.
+
+    A bare number is treated as bytes. Invalid input is logged and returns 0
+    so the caller can try ``memInfo.total`` instead.
+    """
+    m = _SIZE_RE.match(text)
+    if not m:
+        if text.strip():
+            logger.warning("hipInfo returned an invalid memory size: %r", text)
+        return 0
+    unit = (m.group(2) or "B").upper()
+    try:
+        return int(float(m.group(1)) * _SIZE_TO_MB[unit])
+    except (ValueError, OverflowError):
+        logger.warning("hipInfo returned an out-of-range memory size: %r", text)
+        return 0
+
+
+def parse_hipinfo(output: str) -> list[GpuInfo]:
+    """Parse ``hipInfo`` text output into ``GpuInfo`` entries.
+
+    Each device block starts with ``device#  N``; ``N`` is the HIP ordinal (the
+    index honoured by ``HIP_VISIBLE_DEVICES``), which is not PCI bus order.
+    ``gcnArchName`` may carry feature suffixes (``gfx90a:sramecc+:xnack-``),
+    which are stripped.
+
+    Args:
+        output: Full stdout of ``hipInfo``.
+
+    Returns:
+        List of ``GpuInfo`` sorted by HIP ordinal. Empty if no device blocks found.
+    """
+    headers = list(_HIPINFO_DEVICE_RE.finditer(output))
+    gpus: list[GpuInfo] = []
+    for i, header in enumerate(headers):
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(output)
+        fields = {key: value.strip() for key, value in _HIPINFO_FIELD_RE.findall(output[header.end() : end])}
+        arch = fields.get("gcnArchName", "").split(":")[0] or "unknown"
+        vram_mb = _size_to_mb(fields.get("totalGlobalMem", "")) or _size_to_mb(fields.get("memInfo.total", ""))
+        gpus.append(GpuInfo(index=int(header.group(1)), arch=arch, vram_mb=vram_mb))
+    return sorted(gpus, key=lambda g: g.index)
+
+
+def _run_local_windows(argv: list[str], timeout: float, path_prepend: str | None = None) -> str:
+    """Run *argv* locally with a hard timeout that kills the whole process tree.
+
+    Output goes to temp files rather than pipes so a child that inherits the
+    handles cannot block us after the parent is killed.
+
+    Args:
+        argv:         Program and arguments (no shell).
+        timeout:      Seconds before the process tree is killed.
+        path_prepend: Directory prepended to ``PATH`` (DLL lookup for ROCm tools).
+
+    Returns:
+        Decoded stdout.
+
+    Raises:
+        RuntimeError: On non-zero exit or timeout.
+        FileNotFoundError: If the program does not exist.
+    """
+    env = {k: v for k, v in os.environ.items() if k.upper() not in _GPU_MASK_ENV_KEYS}
+    if path_prepend:
+        env["PATH"] = path_prepend + os.pathsep + env.get("PATH", "")
+    with tempfile.TemporaryFile() as out_fh, tempfile.TemporaryFile() as err_fh:
+        proc = subprocess.Popen(  # nosec B603 — fixed framework-controlled argv, no shell
+            argv, stdout=out_fh, stderr=err_fh, stdin=subprocess.DEVNULL, env=env
+        )
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            _kill_process_tree(proc.pid)
+            proc.wait()
+            raise RuntimeError(f"{argv[0]} timed out after {timeout}s") from exc
+        out_fh.seek(0)
+        err_fh.seek(0)
+        stdout = out_fh.read().decode("utf-8", errors="replace")
+        stderr = err_fh.read().decode("utf-8", errors="replace")
+    if rc != 0:
+        raise RuntimeError(f"{argv[0]} exited rc={rc}: {stderr.strip()[:500]}")
+    return stdout
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Kill *pid* and all its descendants (best-effort)."""
+    try:
+        parent = psutil.Process(pid)
+        procs = [*parent.children(recursive=True), parent]
+    except psutil.NoSuchProcess:
+        return
+    for proc in procs:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            proc.kill()
+    psutil.wait_procs(procs, timeout=5)
+
+
+class WindowsGpuDetector(AbstractGpuDetector):
+    """Detect AMD GPUs on Windows via amd-smi, hipInfo, or PnP enumeration.
+
+    Windows lacks lspci and KFD sysfs, so detection uses:
+    1. Primary: ``amd-smi static --json`` (requires ROCm installation)
+    2. Fallback: ``hipInfo`` (system PATH, then ``<rock_dir>/bin``) — arch, VRAM, HIP ordinal
+    3. Fallback: PowerShell PnP enumeration via ``Get-PnpDevice`` (no arch/vram details)
+
+    The detection result is cached after the first ``detect()`` call.
+
+    Args:
+        rock_dir:     Path to TheRock/ROCm install; used for fallback amd-smi and
+                      hipInfo locations (``<rock_dir>/bin``) if the system tools fail.
+        ssh_executor: When set, detection runs on the remote host via SSH.
+                      When ``None`` (default), detection runs locally.
+        artifact_dir: Directory for diagnostic logs (gpu-info-<node>.log).
+    """
+
+    def __init__(
+        self,
+        rock_dir: str | None = None,
+        ssh_executor: SshExecutor | None = None,
+        artifact_dir: str | None = None,
+    ) -> None:
+        self._rock_dir = rock_dir
+        self._ssh = ssh_executor
+        if artifact_dir is None:
+            artifact_dir = FrameworkSection().artifact_dir
+        self._artifact_dir = artifact_dir
+        self._cached: list[GpuInfo] | None = None
+
+    def detect(self) -> list[GpuInfo]:
+        """Detect AMD GPUs on Windows and return their descriptors.
+
+        Results are cached after the first call.
+
+        Detection strategy:
+        1. Try ``amd-smi static --json`` (primary, most complete)
+        2. Fall back to ``hipInfo`` (local only)
+        3. Fall back to ``Get-PnpDevice`` PowerShell (PnP enumeration)
+        4. Return empty list if all methods fail
+
+        Returns:
+            List of GpuInfo. Empty list if no GPUs found.
+        """
+        if self._cached is not None:
+            return list(self._cached)
+
+        target = f"remote({self._ssh.session_key})" if self._ssh else "local"
+        node_label = self._ssh.session_key if self._ssh else "localhost"
+
+        gpus: list[GpuInfo] = []
+
+        # PRIMARY: amd-smi static --json (most detailed: arch + VRAM)
+        try:
+            logger.info("GPU detection [%s]: trying amd-smi static --json", target)
+            gpus = self._detect_via_amd_smi_json()
+            if gpus:
+                logger.info("GPU detection [%s]: amd-smi detected %d GPU(s)", target, len(gpus))
+                self._cached = gpus
+                self._run_amd_smi_diagnostic(node_label=node_label)
+                return list(gpus)
+            logger.warning("GPU detection [%s]: amd-smi returned 0 GPU(s)", target)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning("GPU detection [%s]: amd-smi failed: %s", target, exc)
+
+        # FALLBACK 1: hipInfo (arch + VRAM + HIP ordinal); local only — SshExecutor is bash-only.
+        if self._ssh is None:
+            try:
+                logger.info("GPU detection [%s]: trying hipInfo", target)
+                gpus = self._detect_via_hipinfo()
+                if gpus:
+                    logger.info(
+                        "GPU detection [%s]: hipInfo detected %d GPU(s): %s",
+                        target,
+                        len(gpus),
+                        ", ".join(f"{g.index}:{g.arch}/{g.vram_mb}MB" for g in gpus),
+                    )
+                    self._cached = gpus
+                    return list(gpus)
+                logger.warning("GPU detection [%s]: hipInfo returned 0 GPU(s)", target)
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning("GPU detection [%s]: hipInfo failed: %s", target, exc)
+
+        # FALLBACK 2: PowerShell PnP enumeration (device count, no arch/vram)
+        try:
+            logger.info("GPU detection [%s]: trying PowerShell PnP enumeration", target)
+            gpus = self._detect_via_pnp()
+            if gpus:
+                logger.info(
+                    "GPU detection [%s]: PnP fallback detected %d GPU(s) " "(arch=unknown, vram_mb=0)",
+                    target,
+                    len(gpus),
+                )
+                self._cached = gpus
+                return list(gpus)
+            logger.warning("GPU detection [%s]: PnP enumeration returned 0 GPU(s)", target)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning("GPU detection [%s]: PnP enumeration failed: %s", target, exc)
+
+        self._cached = []
+        return []
+
+    def _run_command(self, cmd: str) -> str:
+        """Run *cmd* locally (via PowerShell) or via SSH and return stdout.
+
+        On Windows, commands are executed through powershell.exe to support
+        PowerShell cmdlets (Get-PnpDevice, etc.) used in GPU detection.
+
+        Args:
+            cmd: PowerShell command to run.
+
+        Returns:
+            Decoded stdout string.
+
+        Raises:
+            RuntimeError: If the command exits non-zero.
+        """
+        if self._ssh is not None:
+            result = self._ssh.run(cmd, timeout=30)
+            if result.exit_code != 0:
+                raise RuntimeError(f"Remote command failed (rc={result.exit_code}): {result.stderr}")
+            return result.stdout
+        # Local subprocess execution via PowerShell
+        proc = subprocess.run(  # nosec B602 — shell=False, powershell invoked explicitly as program
+            ["powershell", "-NoProfile", "-Command", cmd],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"Local command failed: {proc.stderr}")
+        return proc.stdout
+
+    def _detect_via_amd_smi_json(self) -> list[GpuInfo]:
+        """Detect GPUs using ``amd-smi static --json``.
+
+        Windows (and Linux) schema:
+          {"gpu_data": [{
+            asic: {target_graphics_version: "gfx942"},
+            vram: {size: {value: 65536, unit: "MB"}}
+          }, ...]}
+
+        Returns:
+            List of GpuInfo with arch and vram_mb populated.
+
+        Raises:
+            RuntimeError: If amd-smi fails or returns invalid JSON.
+        """
+        amd_smi_candidates: list[str] = ["amd-smi"]
+        if self._rock_dir:
+            amd_smi_candidates.append(os.path.join(self._rock_dir, "bin", "amd-smi"))
+
+        for amd_smi_path in amd_smi_candidates:
+            try:
+                raw = self._run_command(f"{amd_smi_path} static --json")
+                entries = _unwrap_entries(json.loads(raw))
+                gpus: list[GpuInfo] = []
+                for i, dev in enumerate(entries):
+                    asic = dev.get("asic", {})
+                    vram_mb = _to_mb(dev.get("vram", {}).get("size", 0))
+                    arch = asic.get("target_graphics_version", "unknown")
+                    gpus.append(GpuInfo(index=i, arch=arch, vram_mb=vram_mb))
+                return gpus
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.debug("amd-smi at %s failed: %s; trying next candidate", amd_smi_path, exc)
+                continue
+
+        raise RuntimeError("No amd-smi candidate succeeded")
+
+    def _detect_via_hipinfo(self) -> list[GpuInfo]:
+        """Detect GPUs by parsing ``hipInfo`` output.
+
+        Candidate order mirrors amd-smi on Linux: ``hipInfo`` on ``PATH`` first,
+        then ``<rock_dir>/bin/hipInfo.exe``. The binary's own directory is
+        prepended to ``PATH`` because hipInfo needs the HIP runtime DLLs beside it.
+
+        Returns:
+            List of GpuInfo with arch and vram_mb populated.
+
+        Raises:
+            RuntimeError: If no candidate produced any device.
+        """
+        candidates: list[str] = []
+        on_path = shutil.which("hipInfo")
+        if on_path:
+            candidates.append(on_path)
+        if self._rock_dir:
+            rock_hipinfo = os.path.join(self._rock_dir, "bin", "hipInfo.exe")
+            if not on_path or os.path.normcase(os.path.abspath(rock_hipinfo)) != os.path.normcase(
+                os.path.abspath(on_path)
+            ):
+                candidates.append(rock_hipinfo)
+
+        errors: list[str] = []
+        for program in candidates:
+            try:
+                raw = _run_local_windows(
+                    [program], timeout=_WIN_HIPINFO_TIMEOUT_SECS, path_prepend=os.path.dirname(program)
+                )
+                gpus = parse_hipinfo(raw)
+                if gpus:
+                    return gpus
+                errors.append(f"{program}: no device blocks in output")
+            except (OSError, RuntimeError, ValueError) as exc:
+                errors.append(f"{program}: {exc}")
+        raise RuntimeError("; ".join(errors) or "hipInfo not found on PATH or in <rock_dir>/bin")
+
+    def _detect_via_pnp(self) -> list[GpuInfo]:
+        """Detect GPUs via Windows PowerShell PnP enumeration.
+
+        Uses ``Get-PnpDevice`` to find AMD display devices (vendor 1002).
+        Returns device list with arch="unknown" and vram_mb=0 (PnP has no VRAM/arch).
+
+        Returns:
+            List of GpuInfo with arch="unknown" and vram_mb=0.
+
+        Raises:
+            RuntimeError: If the command fails.
+        """
+        # Use ConvertTo-Json to enumerate AMD GPUs and parse JSON for count.
+        # VEN_1002 is AMD's PCI vendor ID; we filter on Class Display for GPUs.
+        cmd = (
+            "Get-PnpDevice -PresentOnly -Class Display | "
+            'Where-Object { $_.InstanceId -imatch "VEN_1002&" } | '
+            "ConvertTo-Json | ConvertFrom-Json | Measure-Object | Select-Object -ExpandProperty Count"
+        )
+        count_str = self._run_command(cmd).strip()
+        try:
+            count = int(count_str)
+        except ValueError:
+            raise RuntimeError(f"PnP enumeration returned non-integer count: {count_str}") from None
+
+        if count <= 0:
+            return []
+
+        gpus = [GpuInfo(index=i, arch="unknown", vram_mb=0) for i in range(count)]
+        return gpus
+
+    def _run_amd_smi_diagnostic(self, node_label: str) -> None:
+        """Run ``amd-smi list`` once for diagnostic output (best-effort).
+
+        Args:
+            node_label: Human-readable node name for the log file.
+        """
+        safe_label = node_label.replace(" ", "_").replace("/", "_").replace(":", "_")
+        log_path = pathlib.Path(self._artifact_dir) / f"{safe_label}_gpu_info.log"
+        try:
+            out = self._run_command("amd-smi list")
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(out, encoding="utf-8")
+            logger.info("[%s] amd-smi diagnostic:\n%s", node_label, out)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.info("[%s] amd-smi diagnostic skipped: %s", node_label, exc)
 
 
 class MockGpuDetector(AbstractGpuDetector):
