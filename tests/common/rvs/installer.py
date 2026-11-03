@@ -16,10 +16,58 @@ import logging
 import os
 import pathlib
 import shlex
+import shutil
+import subprocess
 
 import pytest
 
 from framework.executors.local_executor import run_cmd_get_stdout_stderr
+
+# Build prerequisites for ROCmValidationSuite (yaml-cpp + dev headers).
+# Keyed by package manager; values are the package names to install.
+_RVS_BUILD_PREREQS: dict[str, list[str]] = {
+    "apt-get": ["libyaml-cpp-dev", "libdrm-dev"],
+    "dnf": ["yaml-cpp-devel", "libdrm-devel"],
+    "zypper": ["yaml-cpp-devel", "libdrm-devel"],
+}
+
+
+def _sudo() -> list[str]:
+    """Return ['sudo'] when not running as root, else []."""
+    return [] if getattr(os, "geteuid", lambda: 1)() == 0 else ["sudo"]
+
+
+def install_rvs_build_prereqs(executor=None) -> None:
+    """Install RVS build prerequisites using the first available package manager.
+
+    Installs yaml-cpp and libdrm development headers required by
+    ROCmValidationSuite's CMakeLists.txt. Safe to call multiple times
+    (idempotent via apt/dnf/zypper's already-installed detection).
+    """
+    for pm, pkgs in _RVS_BUILD_PREREQS.items():
+        if shutil.which(pm) is None:
+            continue
+        logger.info("RVS prereqs: installing %s via %s", pkgs, pm)
+        if pm == "apt-get":
+            cmd = [*_sudo(), "apt-get", "install", "-y", *pkgs]
+        elif pm == "dnf":
+            cmd = [*_sudo(), "dnf", "install", "-y", *pkgs]
+        else:
+            cmd = [*_sudo(), "zypper", "--non-interactive", "--no-gpg-checks", "install", *pkgs]
+
+        if executor is not None:
+            result = executor.run(" ".join(shlex.quote(c) for c in cmd), timeout=300.0)
+            if not result.ok:
+                logger.warning("RVS prereq install failed (exit=%d): %s", result.exit_code, result.stderr[:500])
+        else:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if proc.returncode != 0:
+                logger.warning("RVS prereq install failed (exit=%d): %s", proc.returncode, proc.stderr[:500])
+        return  # only use the first available PM
+    logger.warning(
+        "RVS prereqs: no supported package manager found (apt-get/dnf/zypper). " "Install libyaml-cpp-dev manually."
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +137,9 @@ def build_rvs_from_source(
     dest = pathlib.Path(compiler_build_dir) / "rvs" / "ROCmValidationSuite"
     src_dir = external_build.clone_repo(_RVS_REPO_URL, dest, ref=version)
     external_build.assert_license_present(src_dir)
+
+    # Install build prerequisites (yaml-cpp, libdrm) before cmake configure.
+    install_rvs_build_prereqs(executor)
 
     if executor is not None:
         executor.run(
