@@ -115,6 +115,7 @@ def build_rvs_from_source(
     built_binary_fn,
     executor=None,
     version: str = _RVS_REF,
+    gpu_arch: str | None = None,
 ) -> str:
     """Clone ROCmValidationSuite and build it via CMake.
 
@@ -167,8 +168,8 @@ def build_rvs_from_source(
         logger.info("RVS: using previously built binary: %s", prior)
         return str(prior)
 
-    logger.info("RVS: building from source at %s", src_dir)
-    build_dir = cmake_build_dir_fn(
+    logger.info("RVS: building from source at %s (gpu_arch=%s)", src_dir, gpu_arch or "auto")
+    cmake_kwargs: dict = dict(
         src=str(src_dir),
         subdir="rvs",
         extra_cmake_args=[
@@ -180,6 +181,10 @@ def build_rvs_from_source(
         label="rvs",
         artifact="rvs",
     )
+    if gpu_arch:
+        cmake_kwargs["gpu_arch"] = gpu_arch
+        cmake_kwargs["gpu_arch_var"] = "GPU_ARCH"
+    build_dir = cmake_build_dir_fn(**cmake_kwargs)
 
     if executor is not None:
         executor.run(f"mkdir -p {shlex.quote(str(install_dir))}")

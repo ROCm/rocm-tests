@@ -310,6 +310,7 @@ def rvs_binary(
     cmake_executor,
     built_binary,
     external_build,
+    gpu_arch: str | None,
 ) -> str:
     """Locate or build the RVS binary using the shared common installer."""
     # 1. Pre-installed
@@ -335,6 +336,7 @@ def rvs_binary(
         built_binary_fn=built_binary,
         executor=cmake_executor,
         version=_RVS_REF,
+        gpu_arch=gpu_arch,
     )
 
 
