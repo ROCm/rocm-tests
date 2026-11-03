@@ -16,6 +16,9 @@ import logging
 import os
 import pathlib
 import re
+import shlex
+import shutil
+import subprocess
 
 from framework.builder.binary_builder import find_rocm_clangpp
 
@@ -31,6 +34,74 @@ _DEFAULT_KFDTEST_REF = "develop"
 _THUNK_HEADERS = ("hsakmt/hsakmt.h", "hsakmt/linux/kfd_ioctl.h")
 # pkg-config modules kfdtest's CMakeLists.txt requires at configure time.
 _PROVISIONING_PKGS = ("libdrm", "libnuma")
+
+# Build prerequisites matching the original test's provisioning step.
+_KFD_BUILD_PREREQS: dict[str, list[str]] = {
+    "apt-get": ["libdrm-dev", "libnuma-dev", "pkg-config"],
+    "dnf": ["libdrm-devel", "numactl-devel", "pkgconfig"],
+    "zypper": ["libdrm-devel", "libnuma-devel", "pkg-config"],
+}
+
+
+def _sudo() -> list[str]:
+    return [] if getattr(os, "geteuid", lambda: 1)() == 0 else ["sudo"]
+
+
+def install_kfd_build_prereqs(executor=None) -> None:
+    """Install KFD/kfdtest build prerequisites using the first available package manager.
+
+    Installs libdrm, libnuma, and pkg-config dev headers required by
+    kfdtest's CMakeLists.txt, matching the original test's provisioning step.
+    """
+    for pm, pkgs in _KFD_BUILD_PREREQS.items():
+        if shutil.which(pm) is None:
+            continue
+        logger.info("KFD prereqs: installing %s via %s", pkgs, pm)
+        if pm == "apt-get":
+            cmd = [*_sudo(), "apt-get", "install", "-y", *pkgs]
+        elif pm == "dnf":
+            cmd = [*_sudo(), "dnf", "install", "-y", *pkgs]
+        else:
+            cmd = [*_sudo(), "zypper", "--non-interactive", "--no-gpg-checks", "install", *pkgs]
+
+        if executor is not None:
+            result = executor.run(" ".join(shlex.quote(c) for c in cmd), timeout=300.0)
+            if not result.ok:
+                logger.warning("KFD prereq install failed (exit=%d): %s", result.exit_code, result.stderr[:500])
+        else:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if proc.returncode != 0:
+                logger.warning("KFD prereq install failed (exit=%d): %s", proc.returncode, proc.stderr[:500])
+        return
+    logger.warning(
+        "KFD prereqs: no supported package manager found. Install libdrm-dev libnuma-dev pkg-config manually."
+    )
+
+
+def find_kfdtest_binary(rock_dir: str, executor=None) -> str:
+    """Locate a pre-installed kfdtest binary under the ROCm prefix.
+
+    Mirrors the original test which first tries to install the kfdtest
+    package before building from source.
+
+    Returns:
+        Absolute path to the kfdtest binary, or "" when not found.
+    """
+    candidates = [
+        pathlib.Path(rock_dir) / "bin" / "kfdtest",
+        pathlib.Path(rock_dir) / "kfdtest" / "bin" / "kfdtest",
+    ]
+    for base in sorted(pathlib.Path(rock_dir).glob("extras*")):
+        candidates.append(base / "bin" / "kfdtest")
+
+    for candidate in candidates:
+        if executor is not None:
+            if executor.run(f"test -x '{candidate}'", timeout=15.0).ok:
+                return str(candidate)
+        else:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    return ""
 
 
 def build_kfdtest_binary(
@@ -68,6 +139,9 @@ def build_kfdtest_binary(
     rocm_path = os.path.realpath(rock_dir)
     ref = os.environ.get("KFDTEST_REF", _DEFAULT_KFDTEST_REF)
     build_timeout = float(framework_config.therock.build_timeout_secs)
+
+    # Install build prerequisites (libdrm, libnuma, pkg-config) before cmake.
+    install_kfd_build_prereqs(cmake_executor)
 
     libhsakmt_src = external_build.clone_repo(
         url=_KFDTEST_MONOREPO_URL,
@@ -161,7 +235,10 @@ def _kfd_compiler_args(rocm_path: str) -> list[str]:
         )
     clangpp_str = str(clangpp)
     clang_str = clangpp_str[:-2] if clangpp_str.endswith("++") else clangpp_str
-    return [f"-DCMAKE_C_COMPILER={clang_str}"]
+    return [
+        f"-DCMAKE_C_COMPILER={clang_str}",
+        f"-DCMAKE_CXX_COMPILER={clangpp_str}",
+    ]
 
 
 def _missing_provisioning_pkg(output: str) -> str | None:

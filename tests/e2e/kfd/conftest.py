@@ -40,7 +40,7 @@ import logging
 
 import pytest
 
-from tests.common.kfd import build_kfdtest_binary
+from tests.common.kfd import build_kfdtest_binary, find_kfdtest_binary
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +56,18 @@ def kfdtest_binary(
     built_binary,
     cmake_build_dir,
 ) -> str:
-    """Sparse-clone and CMake-build ``kfdtest``; return the absolute binary path.
+    """Return the absolute path to the ``kfdtest`` binary.
 
-    Session-scoped so the clone + build happens once per session regardless of
-    how many test functions request it.
+    Mirrors the original test: checks for a pre-installed binary first (via
+    the kfdtest ROCm package), then builds from source as a fallback.
+    Session-scoped so the clone + build happens once per session.
     """
+    preinstalled = find_kfdtest_binary(rock_dir, cmake_executor)
+    if preinstalled:
+        logger.info("kfdtest: using pre-installed binary at %s", preinstalled)
+        return preinstalled
+
+    logger.info("kfdtest: no pre-installed binary found; building from source")
     return build_kfdtest_binary(
         rock_dir=rock_dir,
         external_build=external_build,

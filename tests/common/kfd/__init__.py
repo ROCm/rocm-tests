@@ -16,7 +16,7 @@ Public surface:
 
 from __future__ import annotations
 
-from .installer import assert_thunk_headers_present, build_kfdtest_binary
+from .installer import assert_thunk_headers_present, build_kfdtest_binary, find_kfdtest_binary
 from .runner import assert_kfd_no_crash_markers, ensure_kfd_device, run_kfdtest
 
 __all__ = [
@@ -24,5 +24,6 @@ __all__ = [
     "assert_thunk_headers_present",
     "build_kfdtest_binary",
     "ensure_kfd_device",
+    "find_kfdtest_binary",
     "run_kfdtest",
 ]
