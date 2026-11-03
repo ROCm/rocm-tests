@@ -309,6 +309,7 @@ def rvs_binary(
     cmake_build_dir,
     cmake_executor,
     built_binary,
+    external_build,
 ) -> str:
     """Locate or build the RVS binary using the shared common installer."""
     # 1. Pre-installed
@@ -328,7 +329,7 @@ def rvs_binary(
     # 3. Build from source
     return build_rvs_from_source(
         rock_dir=rock_dir,
-        external_build=None,  # clone already done by rvs_source fixture
+        external_build=external_build,
         compiler_build_dir=compiler_build_dir,
         cmake_build_dir_fn=cmake_build_dir,
         built_binary_fn=built_binary,
