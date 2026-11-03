@@ -378,7 +378,8 @@ class BinaryBuilder:
             stderr=subprocess.STDOUT,  # merged — single chronological log
             close_fds=True,
         )
-        os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
+        # Windows support for set_blocking starts in Python 3.12; pipe portability is a separate change.
+        os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr, attr-defined, unused-ignore]
 
         buf = b""
         t_start = time.monotonic()

@@ -307,8 +307,9 @@ def run_cmd_get_stdout_stderr(
             data = stdin if isinstance(stdin, bytes) else stdin.encode()
             process.stdin.write(data)  # type: ignore[union-attr]
 
-    os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
-    os.set_blocking(process.stderr.fileno(), False)  # type: ignore[union-attr]
+    # Windows support for set_blocking starts in Python 3.12; pipe portability is a separate change.
+    os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr, attr-defined, unused-ignore]
+    os.set_blocking(process.stderr.fileno(), False)  # type: ignore[union-attr, attr-defined, unused-ignore]
 
     def _read_stream(fd) -> bytes:
         chunk = fd.read()

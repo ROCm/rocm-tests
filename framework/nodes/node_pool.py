@@ -215,8 +215,9 @@ class NodePool:
 
     LOCAL mode (no ``--remote-node``):
         Pass ``node_specs=[NodeSpec(hostname="localhost", label="localhost")]``.
-        No SSH connections are opened.  ``GpuDetector(ssh_executor=None)``
-        runs detection locally.
+        No SSH connections are opened.  ``_get_gpu_detector(ssh_executor=None)``
+        runs detection locally — ``WindowsGpuDetector`` on a Windows host,
+        ``GpuDetector`` otherwise.
 
     REMOTE mode:
         Pass ``node_specs`` from ``HostConfigLoader.load(host_yaml_path)``.
