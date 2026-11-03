@@ -4,11 +4,12 @@
 """Shared parameters for the functional QMCPACK HIP suite.
 
 Imported by ``conftest.py`` (clone + build) and ``test_qmcpack_functional.py``
-(ctest) so the pin and the timeouts cannot drift.
+(ctest) so the pin, the four configurations, and the timeouts cannot drift.
 
 Environment overrides:
     QMCPACK_URL                 git URL to clone. Default QMCPACK/qmcpack.
     QMCPACK_REF                 git ref (branch/tag/SHA). Default ``develop``.
+    QMCPACK_BUILD_TIMEOUT       wall clock for all four configures, in seconds.
     QMCPACK_CTEST_TIMEOUT       per-test ``ctest --timeout`` in seconds.
     QMCPACK_CTEST_RUN_TIMEOUT   outer wall-clock cap for one configuration's ctest.
 """
@@ -29,10 +30,13 @@ CONFIGS = (
     ("omp_mixed_cmplx", "ON", "ON"),
 )
 
-# Per-test ctest timeout. Bounds a hung deterministic target.
-CTEST_TIMEOUT = os.environ.get("QMCPACK_CTEST_TIMEOUT", "1800")
+# Wall clock for all four Release builds together. The e2e job limit is 230
+# minutes, including the ROCm artifact install. 120 minutes here plus 20
+# minutes for each of the four deterministic ctests stays inside that job.
+BUILD_TIMEOUT = float(os.environ.get("QMCPACK_BUILD_TIMEOUT", "7200"))
 
-# Outer cap for one configuration's ``ctest -R deterministic``. Four
-# configurations run in sequence. The public e2e job limit is 230 minutes,
-# so each invocation stays under the remaining budget after the CMake builds.
-CTEST_RUN_TIMEOUT = float(os.environ.get("QMCPACK_CTEST_RUN_TIMEOUT", "3600"))
+# Per-test ctest timeout. Bounds a hung deterministic target.
+CTEST_TIMEOUT = os.environ.get("QMCPACK_CTEST_TIMEOUT", "600")
+
+# Outer cap for one configuration's ``ctest -R deterministic``.
+CTEST_RUN_TIMEOUT = float(os.environ.get("QMCPACK_CTEST_RUN_TIMEOUT", "1200"))

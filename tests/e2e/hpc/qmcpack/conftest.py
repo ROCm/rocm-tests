@@ -29,17 +29,17 @@ import pytest
 
 from framework.builder.binary_builder import resolve_parallel_jobs
 from framework.executors.background_process import _blocking_stream_run
-from tests.e2e.hpc.qmcpack._workload import CONFIGS, QMCPACK_REF, QMCPACK_URL
+from tests.e2e.hpc.qmcpack._workload import BUILD_TIMEOUT, CONFIGS, QMCPACK_REF, QMCPACK_URL
 
 logger = logging.getLogger(__name__)
 
 _BUILD_SENTINEL = "CTestTestfile.cmake"
 
 _BUILD_SCRIPT = r"""
-set -eu
+set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-export LD_LIBRARY_PATH="${ROCK}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-export PATH="${ROCK}/bin:${ROCK}/llvm/bin:${PATH}"
+export LD_LIBRARY_PATH="${ROCK}/lib:${ROCK}/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+export PATH="${ROCK}/bin:${ROCK}/llvm/bin:${ROCK}/lib/llvm/bin:${PATH}"
 
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update -qq
@@ -51,26 +51,50 @@ elif command -v dnf >/dev/null 2>&1; then
   dnf install -y \
     git cmake gcc-c++ make ca-certificates python3 \
     boost-devel lapack-devel openblas-devel hdf5-devel fftw3-devel \
-    libxml2-devel zlib-devel libomp-devel
+    libxml2-devel zlib-devel
+elif command -v zypper >/dev/null 2>&1; then
+  zypper --non-interactive install \
+    git cmake gcc-c++ make ca-certificates python3 \
+    boost-devel lapack-devel openblas-devel hdf5-devel fftw3-devel \
+    libxml2-devel zlib-devel
 fi
 
-if [ -x "${ROCK}/llvm/bin/amdclang++" ]; then
-  cc="${ROCK}/llvm/bin/amdclang"
-  cxx="${ROCK}/llvm/bin/amdclang++"
-else
-  cc="${ROCK}/bin/amdclang"
-  cxx="${ROCK}/bin/amdclang++"
+# Same candidate order as find_rocm_clangpp: TheRock flattened layout, then
+# the standard ROCm llvm/bin tree, then bin/. Prefer amdclang++ when that
+# name is present; QMCPACK's OpenMP+HIP configure uses it as the C++ compiler.
+cc=""
+cxx=""
+for bindir in "${ROCK}/lib/llvm/bin" "${ROCK}/llvm/bin" "${ROCK}/bin"; do
+  if [ -x "${bindir}/amdclang++" ]; then
+    cc="${bindir}/amdclang"
+    cxx="${bindir}/amdclang++"
+    break
+  fi
+  if [ -x "${bindir}/clang++" ]; then
+    cc="${bindir}/clang"
+    cxx="${bindir}/clang++"
+    break
+  fi
+done
+if [ -z "${cxx}" ]; then
+  echo "ROCm clang not found under ${ROCK}" >&2
+  exit 1
 fi
 
-build_one() {
-  name="$1"
-  complex="$2"
-  mixed="$3"
-  build="${SRC}/build_${name}"
+# QMC_CONFIGS is "name:complex:mixed" entries separated by spaces, from CONFIGS.
+IFS=' ' read -r -a specs <<< "${QMC_CONFIGS}"
+for spec in "${specs[@]}"; do
+  name="${spec%%:*}"
+  rest="${spec#*:}"
+  complex="${rest%%:*}"
+  mixed="${rest#*:}"
+  build="${SRC}/build_${name}-${ARCH_LABEL}"
   rm -rf "${build}"
   mkdir -p "${build}"
   # Nexus generation during cmake can fail when a user-site package prints
   # DeprecationWarning into the configure Python subprocess.
+  # QMC_OFFLOAD_MEM_ASSOCIATED is left unset: current QMCPACK only honors it
+  # for CUDA or SYCL, and forces it off for this HIP build.
   PYTHONWARNINGS="ignore::DeprecationWarning" \
     cmake -S "${SRC}" -B "${build}" \
       -DCMAKE_BUILD_TYPE=Release \
@@ -80,16 +104,10 @@ build_one() {
       -DQMC_MPI=OFF \
       "-DQMC_GPU=openmp;hip" \
       -DQMC_GPU_ARCHS="${GFX}" \
-      -DQMC_OFFLOAD_MEM_ASSOCIATED=ON \
       -DQMC_COMPLEX="${complex}" \
       -DQMC_MIXED_PRECISION="${mixed}"
   cmake --build "${build}" -j"${JOBS}"
-}
-
-build_one omp OFF OFF
-build_one omp_cmplx ON OFF
-build_one omp_mixed OFF ON
-build_one omp_mixed_cmplx ON ON
+done
 """
 
 
@@ -171,7 +189,7 @@ def qmcpack_functional_build(
     resolved_gpu_arch = resolved_gpu_arch.split(":", 1)[0]
 
     rocm_path = os.path.realpath(rock_dir) if cmake_executor is None else rock_dir
-    build_timeout = float(framework_config.therock.build_timeout_secs)
+    build_timeout = max(float(framework_config.therock.build_timeout_secs), BUILD_TIMEOUT)
 
     ref_label = _safe_ref_name(QMCPACK_REF)
     dest = pathlib.Path(compiler_build_dir) / "qmcpack" / f"qmcpack-{ref_label}"
@@ -183,7 +201,8 @@ def qmcpack_functional_build(
     else:
         qmc_dir = os.path.abspath(qmc_dir)
 
-    build_dirs = tuple(f"{qmc_dir}/build_{name}" for name, _complex, _mixed in CONFIGS)
+    arch_label = _safe_ref_name(resolved_gpu_arch)
+    build_dirs = tuple(f"{qmc_dir}/build_{name}-{arch_label}" for name, _complex, _mixed in CONFIGS)
     if all(_path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor) for build_dir in build_dirs):
         logger.info("QMCPACK: existing build trees under %s — skipping configure/build", qmc_dir)
         return QmcpackBuild(build_dirs=build_dirs, source_dir=qmc_dir)
@@ -192,9 +211,12 @@ def qmcpack_functional_build(
     log_dir = os.path.join(framework_config.framework.artifact_dir, "qmcpack")
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "qmcpack-build.log")
+    config_specs = " ".join(f"{name}:{complex_}:{mixed}" for name, complex_, mixed in CONFIGS)
     cmd = (
         f"env ROCK={shlex.quote(rocm_path)} GFX={shlex.quote(resolved_gpu_arch)} "
+        f"ARCH_LABEL={shlex.quote(arch_label)} "
         f"SRC={shlex.quote(qmc_dir)} JOBS={jobs} "
+        f"QMC_CONFIGS={shlex.quote(config_specs)} "
         f"bash -lc {shlex.quote(_BUILD_SCRIPT)}"
     )
     logger.info("QMCPACK: configuring HIP builds (gpu_arch=%s, rocm=%s)", resolved_gpu_arch, rocm_path)

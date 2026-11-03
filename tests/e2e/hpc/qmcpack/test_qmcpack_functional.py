@@ -32,7 +32,7 @@ def _cpx_rocblas_prefix(target_executor) -> str:
     inside the deterministic tests. Other partitions leave the default.
     """
     probe = target_executor.run(
-        "bash -lc 'command -v amd-smi >/dev/null 2>&1 && amd-smi partition --current'",
+        "bash -lc 'command -v rocm-smi >/dev/null 2>&1 && rocm-smi --showcomputepartition'",
         timeout=60,
     )
     text = (probe.stdout or "") + "\n" + (probe.stderr or "")
@@ -46,7 +46,7 @@ def test_qmcpack_functional(target_executor, rock_dir: str, ld_path: dict, qmcpa
     """QMCPACK HIP deterministic tests must build and pass ctest."""
     rocblas = _cpx_rocblas_prefix(target_executor)
     ld = ld_path["LD_LIBRARY_PATH"]
-    path = f"{rock_dir}/bin:{rock_dir}/llvm/bin"
+    path = f"{rock_dir}/bin:{rock_dir}/llvm/bin:{rock_dir}/lib/llvm/bin"
     for build_dir in qmcpack_functional_build.build_dirs:
         name = build_dir.rsplit("/", 1)[-1]
         ctest_log = f"{build_dir}/deterministic.log"
@@ -56,12 +56,12 @@ def test_qmcpack_functional(target_executor, rock_dir: str, ld_path: dict, qmcpa
             f"LD_LIBRARY_PATH={shlex.quote(ld)}:${{LD_LIBRARY_PATH:-}} "
             f"{rocblas}"
             f"ctest --test-dir {shlex.quote(build_dir)} -R deterministic "
-            f"--output-on-failure --timeout {CTEST_TIMEOUT} "
+            f"--output-on-failure --timeout {shlex.quote(str(CTEST_TIMEOUT))} "
             f"--output-log {shlex.quote(ctest_log)}"
         )
         logger.info("QMCPACK %s ctest starting; full log -> %s", name, ctest_log)
         result = target_executor.run(cmd, timeout=CTEST_RUN_TIMEOUT)
-        output = result.stdout or ""
+        output = (result.stdout or "") + "\n" + (result.stderr or "")
         no_tests = f"QMCPACK {name} ctest ran no tests:\n{output[-2000:]}"
         assert "No tests were found" not in output, no_tests
         assert output.strip(), no_tests
