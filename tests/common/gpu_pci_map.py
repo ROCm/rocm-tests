@@ -267,7 +267,7 @@ def resolve_power_variant(key: str, *, cmake_executor=None) -> str:
         return key
 
     watts = _max_power_watts(cmake_executor)
-    variant = variants.get(watts)
+    variant = variants.get(watts) if watts is not None else None
     if not variant:
         raise ConfDirUnresolvedError(
             f"Device {key} ships in {sorted(variants)}W variants with different RVS configs, "
