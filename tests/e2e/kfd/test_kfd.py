@@ -86,17 +86,20 @@ def test_kfd_full_suite(
     """Run the full kfdtest suite (the original ``./run_kfdtest.sh`` default).
 
     The complete KFD suite exercises memory, queue, event, topology and eviction
-    paths and can run for tens of minutes, so it is weekly/soak rather than nightly.
+    paths. On high-GPU-count hosts the sweep visits every GPU node sequentially
+    and can exceed 60 min; weekly/soak with a 2-hour wall-clock ceiling leaves
+    headroom without masking genuine hangs.
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld} {kfdtest_binary}",
-        timeout=3600.0,
+        timeout=7200.0,
     )
     _assert_gtest_passed(result, "kfdtest full suite")
 
 
-@pytest.mark.runtime.medium
+@pytest.mark.ci.weekly
+@pytest.mark.runtime.soak
 def test_kfd_hmm_svm(
     target_executor,
     ld_path: dict,
@@ -104,19 +107,21 @@ def test_kfd_hmm_svm(
 ):
     """Run the HMM/SVM KFD path (KFDSVMRangeTest / KFDSVMEvictTest).
 
-    Mirrors the original test's ``"HMM"`` case, which appended these shared-virtual-
-    memory gtest filters for heterogeneous-memory-management coverage.
+    Mirrors the original test's ``"HMM"`` case. The SVM eviction suite sweeps
+    every GPU node and can exceed 30 min on high-GPU-count hosts, so it is
+    weekly/soak with a 2-hour ceiling.
     """
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
         f"env LD_LIBRARY_PATH={ld} {kfdtest_binary} --gtest_filter={_HMM_SVM_FILTER}",
-        timeout=1800.0,
+        timeout=7200.0,
     )
     _assert_gtest_passed(result, "kfdtest HMM/SVM suite")
 
 
 @pytest.mark.hw.multi_gpu
-@pytest.mark.runtime.medium
+@pytest.mark.ci.weekly
+@pytest.mark.runtime.soak
 def test_kfd_multi_gpu_parallel(
     target_executor,
     ld_path: dict,
@@ -125,16 +130,15 @@ def test_kfd_multi_gpu_parallel(
 ):
     """Run kfdtest in parallel multi-GPU mode via HSA_TEST_GPUS_NUM.
 
-    Mirrors the original test's ``--hsa_test_gpus_num`` option, which set
-    ``HSA_TEST_GPUS_NUM=<n>`` to fan kfdtest out across ``n`` GPUs concurrently.
-    The count is bound to the GPUs the framework acquired (``requested_gpu_count``);
-    GPU visibility is injected by ``target_executor``.
+    Mirrors the original test's ``--hsa_test_gpus_num`` option. GPU count is bound
+    to the GPUs the framework acquired (``requested_gpu_count``). On multi-GPU hosts
+    the full sweep can exceed 1 hour, so it is weekly/soak with a 2-hour ceiling.
     """
     if requested_gpu_count < 2:
         pytest.skip("kfdtest parallel multi-GPU mode requires at least 2 acquired GPUs")
     ld = ld_path["LD_LIBRARY_PATH"]
     result = target_executor.run(
         f"env HSA_TEST_GPUS_NUM={requested_gpu_count} LD_LIBRARY_PATH={ld} {kfdtest_binary}",
-        timeout=3600.0,
+        timeout=7200.0,
     )
     _assert_gtest_passed(result, f"kfdtest parallel ({requested_gpu_count} GPUs)")
