@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import posixpath
 import shlex
-import subprocess
+import subprocess  # nosec B404 - local bash invocation when there is no remote executor
 
 import pytest
 
@@ -27,7 +27,7 @@ from tests.e2e.hpc.gromacs._workload import GROMACS_REF, GROMACS_URL, GromacsBui
 from tests.e2e.hpc.ucx.conftest import ucx_build as ucx_build
 
 _OPENMPI_VERSION = "4.1.4"
-_PREFIX = "/tmp/hpc-gromacs"
+_PREFIX = "/tmp/hpc-gromacs"  # nosec B108 - shared build dir, serialized by build_lock
 
 _BUILD = r"""
 set -euo pipefail
@@ -69,38 +69,20 @@ cmake --build "${build}" --target tests -j"$(nproc)"
 """
 
 
-def _os_id(cmake_executor) -> str:
-    """Return the build node's OS id from /etc/os-release."""
-    command = "bash -lc '. /etc/os-release; printf %s \"$ID\"'"
+def _bash(cmake_executor, script: str, env: dict[str, str], timeout: float):
+    """Run a bash script on the cmake node, or locally when there is no remote."""
     if cmake_executor is not None:
-        result = cmake_executor.run(command, timeout=60)
-        if not result.ok:
-            raise RuntimeError(f"could not read /etc/os-release:\n{result.stdout}\n{result.stderr}")
-        return (result.stdout or "").strip()
-    proc = subprocess.run(
-        command,
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"could not read /etc/os-release:\n{proc.stdout}\n{proc.stderr}")
-    return (proc.stdout or "").strip()
-
-
-def _run(cmake_executor, command: str, timeout: float) -> None:
-    """Run a shell command on the cmake node, or locally when there is no remote."""
-    if cmake_executor is not None:
+        prefix = " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
+        command = f"env {prefix} bash -lc {shlex.quote(script)}" if prefix else f"bash -lc {shlex.quote(script)}"
         result = cmake_executor.run(command, timeout=timeout, stream=True)
         if not result.ok:
             text = (result.stdout or "") + "\n" + (result.stderr or "")
             raise RuntimeError(f"command failed (exit={result.exit_code}):\n{text[-4000:]}")
-        return
-    proc = subprocess.run(
-        command,
-        shell=True,
+        return result
+    # Arguments are fixed framework scripts, not a shell string.
+    proc = subprocess.run(  # nosec B603 B607
+        ["bash", "-lc", script],
+        env={**os.environ, **env},
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -109,6 +91,13 @@ def _run(cmake_executor, command: str, timeout: float) -> None:
     if proc.returncode != 0:
         text = (proc.stdout or "") + "\n" + (proc.stderr or "")
         raise RuntimeError(f"command failed (exit={proc.returncode}):\n{text[-4000:]}")
+    return proc
+
+
+def _os_id(cmake_executor) -> str:
+    """Return the build node's OS id from /etc/os-release."""
+    result = _bash(cmake_executor, '. /etc/os-release; printf %s "$ID"', {}, 60)
+    return (result.stdout or "").strip()
 
 
 @pytest.fixture(scope="session")
@@ -142,13 +131,17 @@ def gromacs_build(
         source = str(source_dir).replace("\\", "/")
         build_dir = posixpath.join(source, "build-mpi")
         install_dir = posixpath.join(posixpath.dirname(source), "install")
-        env = (
-            f"ROCK={shlex.quote(rock_dir)} "
-            f"MPI_HOME={shlex.quote(str(mpi_home))} "
-            f"UCX_PREFIX={shlex.quote(ucx_prefix)} "
-            f"GROMACS_SRC={shlex.quote(source)} "
-            f"GROMACS_INSTALL={shlex.quote(install_dir)}"
+        _bash(
+            cmake_executor,
+            _BUILD,
+            {
+                "ROCK": rock_dir,
+                "MPI_HOME": str(mpi_home),
+                "UCX_PREFIX": ucx_prefix,
+                "GROMACS_SRC": source,
+                "GROMACS_INSTALL": install_dir,
+            },
+            build_timeout,
         )
-        _run(cmake_executor, f"env {env} bash -lc {shlex.quote(_BUILD)}", build_timeout)
 
     return GromacsBuild(build_dir=build_dir, mpi_home=str(mpi_home), ucx_prefix=ucx_prefix)
