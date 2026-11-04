@@ -8,8 +8,10 @@ remote-transparent external-build primitives:
 
     * ``external_build.clone_repo``             -- idempotent git clone
     * ``external_build.assert_license_present`` -- provenance guard
-    * a cmake configure/build runner with the ROCm environment injected via
-      an ``env VAR=... cmd`` prefix rather than by mutating ``os.environ``.
+    * ``external_build.detect_mpi_runtime`` /
+      ``external_build.provision_openmpi_runtime`` -- MPI discovery / bootstrap
+    * a cmake configure/build runner with the ROCm and MPI environment injected
+      via an ``env VAR=... cmd`` prefix rather than by mutating ``os.environ``.
 
 ``test_raja_functional`` then runs ctest on the GPU node. This is the
 functional suite. It does not build or score RAJAPerf.
@@ -34,22 +36,28 @@ logger = logging.getLogger(__name__)
 
 _BUILD_SENTINEL = "CTestTestfile.cmake"
 
-_BUILD_SCRIPT = r"""
-set -eu
-export DEBIAN_FRONTEND=noninteractive
-export LD_LIBRARY_PATH="${ROCK}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-export PATH="${ROCK}/bin:${ROCK}/llvm/bin:${PATH}"
+# OpenMPI to build when discovery finds no launcher with an MPI_HOME.
+# Override with ROCM_TEST_RAJA_OPENMPI_VERSION or OPENMPI_VERSION.
+_OPENMPI_VERSION = "4.1.4"
 
+_PACKAGE_SCRIPT = r"""
+set -eu
 if command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y --no-install-recommends \
     git cmake g++ make ca-certificates openmpi-bin libopenmpi-dev libomp-dev
 fi
-if [ -d /usr/lib/x86_64-linux-gnu/openmpi ]; then
-  export MPI_HOME=/usr/lib/x86_64-linux-gnu/openmpi
-elif [ -d /usr/lib64/openmpi ]; then
-  export MPI_HOME=/usr/lib64/openmpi
+"""
+
+_BUILD_SCRIPT = r"""
+set -eu
+if [ -z "${MPI_HOME:-}" ]; then
+  echo "RAJA build requires MPI_HOME" >&2
+  exit 1
 fi
+export LD_LIBRARY_PATH="${ROCK}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+export PATH="${ROCK}/bin:${ROCK}/llvm/bin:${PATH}"
 
 if [ -x "${ROCK}/llvm/bin/amdclang++" ]; then
   cc="${ROCK}/llvm/bin/amdclang"
@@ -192,9 +200,36 @@ def raja_functional_build(
     log_dir = os.path.join(framework_config.framework.artifact_dir, "raja")
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "raja-build.log")
+    _run_build(
+        f"bash -lc {shlex.quote(_PACKAGE_SCRIPT)}",
+        cmake_executor=cmake_executor,
+        timeout=build_timeout,
+        log_path=log_path,
+    )
+    mpi_runtime = external_build.detect_mpi_runtime()
+    if mpi_runtime is None or not mpi_runtime.env.get("MPI_HOME"):
+        version = (
+            os.environ.get("ROCM_TEST_RAJA_OPENMPI_VERSION") or os.environ.get("OPENMPI_VERSION") or _OPENMPI_VERSION
+        )
+        logger.info("RAJA: no discovered MPI_HOME; provisioning OpenMPI %s", version)
+        mpi_runtime = external_build.provision_openmpi_runtime(version=version)
+    mpi_home = mpi_runtime.env.get("MPI_HOME", "")
+    if not mpi_home:
+        pytest.fail(
+            "RAJA build requires MPI_HOME. "
+            "detect_mpi_runtime and provision_openmpi_runtime left it unset "
+            f"(launcher={mpi_runtime.launcher})."
+        )
+    mpi_bin = os.path.dirname(mpi_runtime.launcher)
+    mpi_lib = mpi_runtime.env.get("LD_LIBRARY_PATH", "")
+    mpi_path = f"{shlex.quote(mpi_bin)}:$PATH" if mpi_bin else "$PATH"
+    mpi_ld = f"{shlex.quote(mpi_lib)}:$LD_LIBRARY_PATH" if mpi_lib else "$LD_LIBRARY_PATH"
+    logger.info("RAJA: using MPI_HOME=%s launcher=%s", mpi_home, mpi_runtime.launcher)
     cmd = (
         f"env ROCK={shlex.quote(rocm_path)} GFX={shlex.quote(resolved_gpu_arch)} "
         f"SRC={shlex.quote(raja_dir)} BUILD={shlex.quote(build_dir)} JOBS={jobs} "
+        f"MPI_HOME={shlex.quote(mpi_home)} "
+        f"PATH={mpi_path} LD_LIBRARY_PATH={mpi_ld} "
         f"bash -lc {shlex.quote(_BUILD_SCRIPT)}"
     )
     logger.info("RAJA: configuring HIP build (gpu_arch=%s, rocm=%s)", resolved_gpu_arch, rocm_path)
