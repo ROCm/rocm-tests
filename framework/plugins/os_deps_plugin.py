@@ -52,11 +52,11 @@ Platform support:
 from __future__ import annotations
 
 from collections.abc import Callable
-import contextlib
 from dataclasses import dataclass, field
 import hashlib
 import logging
 import os
+import re
 import shlex
 from typing import TYPE_CHECKING
 
@@ -75,8 +75,13 @@ _current_executor: AbstractExecutor | None = None
 
 _ENV_POLICY = os.environ.get("ROCM_TEST_PKG_ON_MISSING", "install").lower()
 
-_BACKEND_ATTR = "_os_deps_backend"
-_SUDO_ATTR = "_os_deps_sudo_prefix"
+_BACKEND_CACHE: dict[tuple, _Backend] = {}
+_SUDO_CACHE: dict[tuple, str] = {}
+
+
+def _executor_key(executor) -> tuple:
+    return (getattr(executor, "hostname", "local"), getattr(executor, "node_id", 0))
+
 
 # ---------------------------------------------------------------------------
 # Public result type
@@ -550,6 +555,7 @@ class _WindowsPM:
                 missing.append(line[5:])
         # Fall back to individual probes if batching produced no output
         if not present and not missing:
+            logger.warning("os_deps: Windows batch probe returned no output - falling back to individual probes")
             for pkg in pkgs:
                 probe = backend.probe_cmds[backend.key](pkg)
                 r = executor.run(probe)
@@ -707,7 +713,7 @@ def _resolve_pkgs(pkg_specs: tuple, backend: _Backend) -> list[str]:
 
 
 def _detect_backend(executor) -> _Backend:
-    cached = getattr(executor, _BACKEND_ATTR, None)
+    cached = _BACKEND_CACHE.get(_executor_key(executor))
     if isinstance(cached, _Backend):
         logger.debug("os_deps: using cached backend '%s'", cached.key)
         return cached
@@ -748,8 +754,7 @@ def _detect_backend(executor) -> _Backend:
 
 
 def _cache_backend(executor, backend: _Backend) -> None:
-    with contextlib.suppress(AttributeError, TypeError):
-        object.__setattr__(executor, _BACKEND_ATTR, backend)
+    _BACKEND_CACHE[_executor_key(executor)] = backend
 
 
 # ---------------------------------------------------------------------------
@@ -764,7 +769,8 @@ def _resolve_sudo_prefix(executor, backend: _Backend) -> str:
     """
     if not backend.needs_sudo:
         return ""
-    cached = getattr(executor, _SUDO_ATTR, None)
+    key = _executor_key(executor)
+    cached = _SUDO_CACHE.get(key)
     if isinstance(cached, str):
         return cached
     result = executor.run("bash -c 'command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null && echo OK || echo NO'")
@@ -773,8 +779,7 @@ def _resolve_sudo_prefix(executor, backend: _Backend) -> str:
         logger.debug("os_deps: sudo available — will use 'sudo -n' prefix")
     else:
         logger.debug("os_deps: sudo not available — running without sudo (root or container)")
-    with contextlib.suppress(AttributeError, TypeError):
-        object.__setattr__(executor, _SUDO_ATTR, prefix)
+    _SUDO_CACHE[key] = prefix
     return prefix
 
 
@@ -1067,9 +1072,13 @@ def _os_deps_autouse(request: pytest.FixtureRequest) -> None:
     global _current_executor
     _current_executor = _resolve_executor(request)
 
-    # Serialise installs across xdist workers on the same node.
-    # The lock path is fixed per session so all workers on one host share it.
-    _lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".os_deps_install.lock")
+    # Serialise installs per remote node: each fleet node gets its own lock
+    # file so workers targeting different hosts never block each other.
+    _node_key = re.sub(r"[^\w\-]", "_", getattr(_current_executor, "hostname", None) or "local")
+    _lock_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        f".os_deps_install_{_node_key}.lock",
+    )
     _lock = filelock.FileLock(_lock_path, timeout=300)
 
     spec = _resolve_os_deps(request)
