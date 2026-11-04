@@ -68,3 +68,29 @@ only the pytest harness is checked in here.
 The libhsakmt/kfdtest sources are fetched during test execution, built with CMake,
 and run on AMD GPU hardware. No kfdtest source is redistributed as part of this
 repository; only the pytest harness is checked in here.
+
+## ROCm Libraries (hipBLAS samples)
+
+- Used by: `tests/e2e/rocm_libs/test_hipblas_samples.py` (cloned at runtime; see the
+  `hipblas_samples_bin_dir` fixture in `tests/e2e/rocm_libs/conftest.py`).
+- Upstream: https://github.com/ROCm/rocm-libraries
+- Sparse subtree: `projects/hipblas`
+- License: MIT (see the `LICENSE.md` file in the upstream repository).
+- Copyright (c) Advanced Micro Devices, Inc.
+
+The hipBLAS sample binaries are either fetched from the pre-installed ROCm package
+or built at test runtime via a sparse clone of ROCm/rocm-libraries. No hipBLAS
+source is redistributed as part of this repository; only the pytest harness is
+checked in here.
+
+## Kokkos
+
+- Used by: `tests/e2e/hpc/kokkos/test_gpu_rdc_kokkos.py` (cloned at runtime; see the
+  `kokkos_rdc_build` fixture in `tests/e2e/hpc/kokkos/conftest.py`).
+- Upstream: https://github.com/kokkos/kokkos
+- License: Apache License v2.0 with LLVM Exceptions (see the `LICENSE` file in the upstream repository).
+- Copyright (c) 2022 National Technology & Engineering Solutions of Sandia, LLC (NTESS).
+
+The Kokkos performance-portability library sources are fetched during test execution,
+built with HIP RDC enabled, and run on AMD GPU hardware. No Kokkos source is
+redistributed as part of this repository; only the pytest harness is checked in here.
