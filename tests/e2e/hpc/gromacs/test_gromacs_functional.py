@@ -13,7 +13,7 @@ import shlex
 
 import pytest
 
-from tests.e2e.hpc.gromacs._workload import RUN_TIMEOUT
+from tests.e2e.hpc.gromacs._workload import CTEST_TIMEOUT, RUN_TIMEOUT, GromacsBuild
 
 
 def _os_id(target_executor) -> str:
@@ -27,15 +27,34 @@ def _os_id(target_executor) -> str:
 
 
 @pytest.mark.runtime.soak
-def test_gromacs_functional(target_executor, rock_dir: str, gromacs_build_script: str):
-    """GROMACS HIP MPI tests must build and pass ctest."""
+def test_gromacs_functional(target_executor, rock_dir: str, gromacs_build: GromacsBuild):
+    """GROMACS HIP MPI tests must pass ctest. The session fixture already built."""
     os_id = _os_id(target_executor)
     if os_id not in {"ubuntu", "debian"}:
         pytest.skip(f"gromacs functional build uses apt; this host is {os_id or 'unknown'}")
-    result = target_executor.run(
-        f"env ROCK={shlex.quote(rock_dir)} bash -lc {shlex.quote(gromacs_build_script)}",
-        timeout=RUN_TIMEOUT,
+    mpi_bin = shlex.quote(gromacs_build.mpi_home + "/bin")
+    libraries = ":".join(
+        [
+            shlex.quote(rock_dir + "/lib"),
+            shlex.quote(gromacs_build.ucx_prefix + "/lib"),
+            shlex.quote(gromacs_build.mpi_home + "/lib"),
+            shlex.quote(gromacs_build.mpi_home + "/lib64"),
+            "${LD_LIBRARY_PATH:-}",
+        ]
     )
+    command = "\n".join(
+        [
+            "set -euo pipefail",
+            f"export PATH={mpi_bin}:$PATH",
+            f"export LD_LIBRARY_PATH={libraries}",
+            "export OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1",
+            "export OMPI_MCA_plm=isolated OMPI_MCA_btl=tcp,self OMPI_MCA_pml=ob1",
+            "export OMPI_MCA_rmaps_base_oversubscribe=1 OMPI_MCA_hwloc_base_binding_policy=none",
+            "ctest --test-dir "
+            f"{shlex.quote(gromacs_build.build_dir)} --output-on-failure --timeout {shlex.quote(str(CTEST_TIMEOUT))}",
+        ]
+    )
+    result = target_executor.run(f"bash -lc {shlex.quote(command)}", timeout=RUN_TIMEOUT)
     text = (result.stdout or "") + "\n" + (result.stderr or "")
     assert result.ok, f"gromacs functional tests failed:\n{text[-4000:]}"
     assert "The following tests FAILED" not in text, text[-4000:]
