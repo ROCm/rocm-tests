@@ -88,11 +88,7 @@ def _bash(cmake_executor, script: str, env: dict[str, str], timeout: float):
     """
     if cmake_executor is not None:
         prefix = " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
-        command = (
-            f"env {prefix} bash -lc {shlex.quote(script)}"
-            if prefix
-            else f"bash -lc {shlex.quote(script)}"
-        )
+        command = f"env {prefix} bash -lc {shlex.quote(script)}" if prefix else f"bash -lc {shlex.quote(script)}"
         result = cmake_executor.run(command, timeout=timeout, stream=True)
     else:
         local = CpuExecutor(env_overrides=env, suppress_output_log=True)
@@ -137,14 +133,10 @@ def gromacs_build(
     are already present.
     """
     if not rock_dir:
-        pytest.skip(
-            "GROMACS build requires a ROCm install; pass --rock-dir / set ROCK_DIR"
-        )
+        pytest.skip("GROMACS build requires a ROCm install; pass --rock-dir / set ROCK_DIR")
     os_id = _os_id(cmake_executor)
     if os_id not in {"ubuntu", "debian"}:
-        pytest.skip(
-            f"gromacs functional build uses apt; this host is {os_id or 'unknown'}"
-        )
+        pytest.skip(f"gromacs functional build uses apt; this host is {os_id or 'unknown'}")
 
     build_timeout = float(framework_config.therock.build_timeout_secs)
     build_key = _build_key(cmake_executor, rock_dir)
@@ -173,6 +165,4 @@ def gromacs_build(
             build_timeout,
         )
 
-    return GromacsBuild(
-        build_dir=build_dir, mpi_home=str(mpi_home), ucx_prefix=ucx_prefix
-    )
+    return GromacsBuild(build_dir=build_dir, mpi_home=str(mpi_home), ucx_prefix=ucx_prefix)
