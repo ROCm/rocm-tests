@@ -69,6 +69,18 @@ The libhsakmt/kfdtest sources are fetched during test execution, built with CMak
 and run on AMD GPU hardware. No kfdtest source is redistributed as part of this
 repository; only the pytest harness is checked in here.
 
+## rocHPL
+
+- Used by: `tests/e2e/hpc/rochpl/conftest.py` (cloned at test runtime; see `_ROCHPL_URL` in
+  `tests/e2e/hpc/rochpl/conftest.py`).
+- Upstream: https://github.com/ROCm/rocHPL
+- License: MIT (see the `LICENSE` file in the upstream repository).
+- Copyright (c) Advanced Micro Devices, Inc.
+
+The rocHPL sources are fetched during test execution, built via its `install.sh` wrapper
+against an MPI runtime and rocBLAS, and run on AMD GPU hardware. No rocHPL source is
+redistributed as part of this repository; only the pytest harness is checked in here.
+
 ## ROCm Libraries (hipBLAS samples)
 
 - Used by: `tests/e2e/rocm_libs/test_hipblas_samples.py` (cloned at runtime; see the
