@@ -40,9 +40,7 @@ def test_kokkos_hip_functional_ctest(
 ):
     """Kokkos 5.1.1 HIP ctest must pass with relocatable device code off."""
     build = kokkos_functional_build
-    assert (
-        not build.rdc_enabled
-    ), "functional Kokkos build must keep relocatable device code off"
+    assert not build.rdc_enabled, "functional Kokkos build must keep relocatable device code off"
 
     ld = ld_path["LD_LIBRARY_PATH"]
     ctest_log = f"{build.build_dir}/results.log"
