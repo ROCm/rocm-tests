@@ -14,6 +14,7 @@ UCX-enabled Open MPI. The GROMACS tree is taken under
 from __future__ import annotations
 
 import os
+import pathlib
 import posixpath
 import shlex
 
@@ -27,7 +28,6 @@ from tests.e2e.hpc.gromacs._workload import GROMACS_REF, GROMACS_URL, GromacsBui
 from tests.e2e.hpc.ucx.conftest import ucx_build as ucx_build
 
 _OPENMPI_VERSION = "4.1.4"
-_PREFIX = "/tmp/hpc-gromacs"  # nosec B108 - shared build dir, serialized by build_lock
 
 # Build and install dirs are keyed by ROCm version and GPU arch, so a new ROCm
 # or a different GPU never reuses a GROMACS binary built against another stack.
@@ -88,7 +88,11 @@ def _bash(cmake_executor, script: str, env: dict[str, str], timeout: float):
     """
     if cmake_executor is not None:
         prefix = " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
-        command = f"env {prefix} bash -lc {shlex.quote(script)}" if prefix else f"bash -lc {shlex.quote(script)}"
+        command = (
+            f"env {prefix} bash -lc {shlex.quote(script)}"
+            if prefix
+            else f"bash -lc {shlex.quote(script)}"
+        )
         result = cmake_executor.run(command, timeout=timeout, stream=True)
     else:
         local = CpuExecutor(env_overrides=env, suppress_output_log=True)
@@ -121,20 +125,26 @@ def gromacs_build(
     external_build,
     framework_config,
     cmake_executor,
+    compiler_build_dir: str,
 ) -> GromacsBuild:
     """Clone and build GROMACS HIP once for every test in the session.
 
     Requesting ``ucx_build`` builds UCX through the shared hpc/ucx fixture.
-    Open MPI is the framework's private 4.1.4 prefix. Build and install dirs
-    are keyed by ROCm version and GPU arch, so a different stack gets a fresh
-    build. A later session on the same stack reuses the tree when ``gmx`` and
-    the ctest file are already present.
+    Open MPI is the framework's private 4.1.4 prefix. The checkout lives under
+    ``compiler_build_dir`` and is keyed by ROCm version and GPU arch, so a
+    different stack never reuses a binary built against another ROCm. A later
+    session on the same stack reuses the tree when ``gmx`` and the ctest file
+    are already present.
     """
     if not rock_dir:
-        pytest.skip("GROMACS build requires a ROCm install; pass --rock-dir / set ROCK_DIR")
+        pytest.skip(
+            "GROMACS build requires a ROCm install; pass --rock-dir / set ROCK_DIR"
+        )
     os_id = _os_id(cmake_executor)
     if os_id not in {"ubuntu", "debian"}:
-        pytest.skip(f"gromacs functional build uses apt; this host is {os_id or 'unknown'}")
+        pytest.skip(
+            f"gromacs functional build uses apt; this host is {os_id or 'unknown'}"
+        )
 
     build_timeout = float(framework_config.therock.build_timeout_secs)
     build_key = _build_key(cmake_executor, rock_dir)
@@ -142,8 +152,9 @@ def gromacs_build(
     mpi_home = mpi.env.get("MPI_HOME") or os.path.dirname(os.path.dirname(mpi.launcher))
     ucx_prefix = f"{ucx_build}/ucx"
 
-    with external_build.build_lock("hpc-gromacs", timeout=build_timeout):
-        source_dir = external_build.clone_repo(GROMACS_URL, f"{_PREFIX}/gromacs", ref=GROMACS_REF)
+    dest = pathlib.Path(compiler_build_dir) / "hpc-gromacs" / build_key / "gromacs"
+    with external_build.build_lock(f"hpc-gromacs-{build_key}", timeout=build_timeout):
+        source_dir = external_build.clone_repo(GROMACS_URL, dest, ref=GROMACS_REF)
         external_build.assert_license_present(source_dir)
         source = str(source_dir).replace("\\", "/")
         build_dir = posixpath.join(source, f"build-mpi-{build_key}")
@@ -162,4 +173,6 @@ def gromacs_build(
             build_timeout,
         )
 
-    return GromacsBuild(build_dir=build_dir, mpi_home=str(mpi_home), ucx_prefix=ucx_prefix)
+    return GromacsBuild(
+        build_dir=build_dir, mpi_home=str(mpi_home), ucx_prefix=ucx_prefix
+    )
