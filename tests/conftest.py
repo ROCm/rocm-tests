@@ -162,3 +162,37 @@ def workload_scale() -> str:
     if scale not in _VALID_WORKLOAD_SCALES:
         raise ValueError(f"ROCM_TEST_WORKLOAD_SCALE must be one of {_VALID_WORKLOAD_SCALES}, got {scale!r}")
     return scale
+
+
+# ---------------------------------------------------------------------------
+# Node environment prerequisites (previously installed via CI workflow apt-get)
+# ---------------------------------------------------------------------------
+
+from framework.plugins.os_deps_plugin import OS_DEPS
+
+# Packages needed on the test node for build tools, GPU detection, and NUMA.
+# Previously installed via apt-get in .github/workflows/e2e-tests.yml.
+_NODE_BUILD_DEPS = {
+    "apt": [
+        "make", "pciutils", "autoconf", "automake", "libtool",
+        "pkg-config", "g++", "flex", "libdrm-dev", "libnuma-dev",
+    ],
+    "dnf": [
+        "make", "pciutils", "autoconf", "automake", "libtool",
+        "pkgconfig", "gcc-c++", "flex", "libdrm-devel", "numactl-devel",
+    ],
+    "zypper": [
+        "make", "pciutils", "autoconf", "automake", "libtool",
+        "pkg-config", "gcc-c++", "flex", "libdrm-devel", "libnuma-devel",
+    ],
+}
+
+
+@pytest.fixture(autouse=True)
+def _node_build_deps(target_executor) -> None:
+    """Install node-level build/tool prerequisites on the test node.
+
+    Replaces the apt-get install step in e2e-tests.yml workflow.
+    Probe-before-install makes this instant when packages are already present.
+    """
+    OS_DEPS(_NODE_BUILD_DEPS).install()

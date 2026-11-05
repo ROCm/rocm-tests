@@ -11,6 +11,9 @@ import subprocess
 
 import pytest
 
+from framework.plugins.os_deps_plugin import OS_DEPS
+
+
 logger = logging.getLogger(__name__)
 
 _ROCM_EXAMPLES_URL = "https://github.com/ROCm/rocm-examples.git"
@@ -21,11 +24,49 @@ _SUBDIR = "rocm_examples"
 # Vulkan/GLEW/GLM/VAAPI/elfutils). The minimal OSSCI container lacks these, so
 # install them best-effort before configure (container runs as root). Missing
 # deps otherwise fail the CMake configure (e.g. FindFFmpeg).
-_SYSTEM_DEPS = (
-    "libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavdevice-dev "
-    "libopencv-dev libglfw3-dev libvulkan-dev glslang-tools libglew-dev libglm-dev "
-    "libva-dev libdw-dev"
-)
+_SYSTEM_DEPS = [
+    "libavcodec-dev",
+    "libavformat-dev",
+    "libavutil-dev",
+    "libswscale-dev",
+    "libavdevice-dev",
+    "libopencv-dev",
+    "libglfw3-dev",
+    "libvulkan-dev",
+    "glslang-tools",
+    "libglew-dev",
+    "libglm-dev",
+    "libva-dev",
+    "libdw-dev",
+]
+
+
+# Per-distro package names for _SYSTEM_DEPS used by OS_DEPS.
+_SYSTEM_DEPS_SPEC = {
+    "apt": _SYSTEM_DEPS,
+    "dnf": [
+        "ffmpeg-free-devel",
+        "opencv-devel",
+        "glfw-devel",
+        "vulkan-devel",
+        "glslang",
+        "glew-devel",
+        "glm-devel",
+        "libva-devel",
+        "elfutils-devel",
+    ],
+    "zypper": [
+        "ffmpeg-devel",
+        "opencv-devel",
+        "libglfw-devel",
+        "vulkan-devel",
+        "glslang",
+        "glew-devel",
+        "glm-devel",
+        "libva-devel",
+        "elfutils-devel",
+    ],
+}
 
 
 def _run_on_target(cmake_executor, cmd: str, timeout: float):
@@ -46,20 +87,13 @@ def _run_on_target(cmake_executor, cmd: str, timeout: float):
 def _install_system_deps(cmake_executor) -> None:
     """Install rocm-examples system build dependencies on the build target.
 
-    Runs on the remote node via ``cmake_executor`` when present, else locally.
-    Aborts on failure: a missing dep otherwise surfaces later as an opaque CMake
-    ``Find<Pkg>`` error, so fail fast here with the apt diagnostics.
+    Uses OS_DEPS for cross-distro package management. Runs on the remote
+    node via ``cmake_executor`` when present, else locally via subprocess.
+    Aborts on failure: a missing dep otherwise surfaces as an opaque CMake error.
     """
-    sudo = "" if os.geteuid() == 0 else "sudo "
-    cmd = f"{sudo}apt-get update && {sudo}apt-get install -y --no-install-recommends {_SYSTEM_DEPS}"
-    try:
-        rc, err = _run_on_target(cmake_executor, cmd, timeout=1800)
-    except Exception as exc:
-        pytest.fail(f"rocm_examples system-deps install failed: {exc}")
-    if rc != 0:
-        pytest.fail(f"rocm_examples system-deps install failed (exit={rc}):\n{err[-2000:]}")
-
-
+    result = OS_DEPS(_SYSTEM_DEPS_SPEC).install(executor=cmake_executor)
+    if not result.ok:
+        pytest.fail("rocm_examples system-deps install failed via OS_DEPS")
 def _install_runtime_python_deps(cmake_executor, rock_dir: str) -> None:
     """Best-effort pip install of rocprofiler-compute requirements (needed by tools samples).
 
