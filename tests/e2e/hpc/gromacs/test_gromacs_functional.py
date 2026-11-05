@@ -51,7 +51,8 @@ def test_gromacs_functional(target_executor, rock_dir: str, gromacs_build: Groma
             "export OMPI_MCA_plm=isolated OMPI_MCA_btl=tcp,self OMPI_MCA_pml=ob1",
             "export OMPI_MCA_rmaps_base_oversubscribe=1 OMPI_MCA_hwloc_base_binding_policy=none",
             "ctest --test-dir "
-            f"{shlex.quote(gromacs_build.build_dir)} --output-on-failure --timeout {shlex.quote(str(CTEST_TIMEOUT))}",
+            f"{shlex.quote(gromacs_build.build_dir)} --no-tests=error --output-on-failure "
+            f"--timeout {shlex.quote(str(CTEST_TIMEOUT))}",
         ]
     )
     result = target_executor.run(f"bash -lc {shlex.quote(command)}", timeout=RUN_TIMEOUT)

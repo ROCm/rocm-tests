@@ -16,10 +16,10 @@ from __future__ import annotations
 import os
 import posixpath
 import shlex
-import subprocess  # nosec B404 - local bash invocation when there is no remote executor
 
 import pytest
 
+from framework.executors.cpu_executor import CpuExecutor
 from tests.e2e.hpc.gromacs._workload import GROMACS_REF, GROMACS_URL, GromacsBuild
 
 # Re-export so pytest registers the shared session fixture for this directory.
@@ -70,28 +70,22 @@ cmake --build "${build}" --target tests -j"$(nproc)"
 
 
 def _bash(cmake_executor, script: str, env: dict[str, str], timeout: float):
-    """Run a bash script on the cmake node, or locally when there is no remote."""
+    """Run a bash script on the build node through the framework executors.
+
+    Remote runs use the session ``cmake_executor``. Local runs use a ``CpuExecutor``,
+    the same local executor the criu fixtures use, with ``env`` merged on top.
+    """
     if cmake_executor is not None:
         prefix = " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
         command = f"env {prefix} bash -lc {shlex.quote(script)}" if prefix else f"bash -lc {shlex.quote(script)}"
         result = cmake_executor.run(command, timeout=timeout, stream=True)
-        if not result.ok:
-            text = (result.stdout or "") + "\n" + (result.stderr or "")
-            raise RuntimeError(f"command failed (exit={result.exit_code}):\n{text[-4000:]}")
-        return result
-    # Arguments are fixed framework scripts, not a shell string.
-    proc = subprocess.run(  # nosec B603 B607
-        ["bash", "-lc", script],
-        env={**os.environ, **env},
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
-    if proc.returncode != 0:
-        text = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        raise RuntimeError(f"command failed (exit={proc.returncode}):\n{text[-4000:]}")
-    return proc
+    else:
+        local = CpuExecutor(env_overrides=env, suppress_output_log=True)
+        result = local.run(f"bash -lc {shlex.quote(script)}", timeout=timeout)
+    if not result.ok:
+        text = (result.stdout or "") + "\n" + (result.stderr or "")
+        raise RuntimeError(f"command failed (exit={result.exit_code}):\n{text[-4000:]}")
+    return result
 
 
 def _os_id(cmake_executor) -> str:
