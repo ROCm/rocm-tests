@@ -54,7 +54,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-import select
+import selectors
 import shlex
 import subprocess
 import sys
@@ -320,7 +320,12 @@ def run_cmd_get_stdout_stderr(
     stdout_buf, stderr_buf = b"", b""
     chunk: bytes = b"x"  # non-empty sentinel to enter the loop
     while chunk != b"":
-        ready = select.select([s for s in [process.stdout, process.stderr] if s is not None], [], [], timeout)[0]
+        selector = selectors.DefaultSelector()
+        for stream in [process.stdout, process.stderr]:
+            if stream is not None:
+                selector.register(stream, selectors.EVENT_READ)
+        ready = [key.fileobj for key, _ in selector.select(timeout=timeout)]
+        selector.close()
         if not ready:
             msg = f"Reached timeout of {timeout}s — killing process."
             logger.warning(msg)
