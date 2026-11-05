@@ -29,13 +29,24 @@ from tests.e2e.hpc.ucx.conftest import ucx_build as ucx_build
 _OPENMPI_VERSION = "4.1.4"
 _PREFIX = "/tmp/hpc-gromacs"  # nosec B108 - shared build dir, serialized by build_lock
 
+# Build and install dirs are keyed by ROCm version and GPU arch, so a new ROCm
+# or a different GPU never reuses a GROMACS binary built against another stack.
+_KEY_SCRIPT = r"""
+set -euo pipefail
+ver=$(head -n1 "${ROCK}/.info/version" 2>/dev/null || basename "$(readlink -f "${ROCK}")")
+gfx=$("${ROCK}/bin/rocminfo" | awk '/Name:[[:space:]]+gfx/{print $2; exit}')
+gfx=${gfx%%:*}
+test -n "$gfx"
+printf '%s-%s' "$ver" "$gfx" | tr -c 'A-Za-z0-9._-' '_'
+"""
+
 _BUILD = r"""
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export PATH="${MPI_HOME}/bin:${ROCK}/bin:${ROCK}/llvm/bin:${PATH}"
 export LD_LIBRARY_PATH="${ROCK}/lib:${UCX_PREFIX}/lib:${MPI_HOME}/lib:${MPI_HOME}/lib64:${LD_LIBRARY_PATH:-}"
 src="${GROMACS_SRC}"
-build="${src}/build-mpi"
+build="${src}/build-mpi-${BUILD_KEY}"
 sentinel="${build}/tests/CTestTestfile.cmake"
 if [ -x "${build}/bin/gmx" ] && [ -f "${sentinel}" ]; then
   echo "reusing GROMACS build at ${build}"
@@ -94,6 +105,15 @@ def _os_id(cmake_executor) -> str:
     return (result.stdout or "").strip()
 
 
+def _build_key(cmake_executor, rock_dir: str) -> str:
+    """Return the ROCm-version-and-GPU-arch key the build script uses for its dirs."""
+    result = _bash(cmake_executor, _KEY_SCRIPT, {"ROCK": rock_dir}, 120)
+    key = (result.stdout or "").strip()
+    if not key:
+        raise RuntimeError("could not derive a ROCm/GPU build key for GROMACS")
+    return key
+
+
 @pytest.fixture(scope="session")
 def gromacs_build(
     rock_dir: str,
@@ -105,8 +125,10 @@ def gromacs_build(
     """Clone and build GROMACS HIP once for every test in the session.
 
     Requesting ``ucx_build`` builds UCX through the shared hpc/ucx fixture.
-    Open MPI is the framework's private 4.1.4 prefix. A later session reuses
-    the tree when ``gmx`` and the ctest file are already present.
+    Open MPI is the framework's private 4.1.4 prefix. Build and install dirs
+    are keyed by ROCm version and GPU arch, so a different stack gets a fresh
+    build. A later session on the same stack reuses the tree when ``gmx`` and
+    the ctest file are already present.
     """
     if not rock_dir:
         pytest.skip("GROMACS build requires a ROCm install; pass --rock-dir / set ROCK_DIR")
@@ -115,6 +137,7 @@ def gromacs_build(
         pytest.skip(f"gromacs functional build uses apt; this host is {os_id or 'unknown'}")
 
     build_timeout = float(framework_config.therock.build_timeout_secs)
+    build_key = _build_key(cmake_executor, rock_dir)
     mpi = external_build.provision_openmpi_runtime(_OPENMPI_VERSION)
     mpi_home = mpi.env.get("MPI_HOME") or os.path.dirname(os.path.dirname(mpi.launcher))
     ucx_prefix = f"{ucx_build}/ucx"
@@ -123,8 +146,8 @@ def gromacs_build(
         source_dir = external_build.clone_repo(GROMACS_URL, f"{_PREFIX}/gromacs", ref=GROMACS_REF)
         external_build.assert_license_present(source_dir)
         source = str(source_dir).replace("\\", "/")
-        build_dir = posixpath.join(source, "build-mpi")
-        install_dir = posixpath.join(posixpath.dirname(source), "install")
+        build_dir = posixpath.join(source, f"build-mpi-{build_key}")
+        install_dir = posixpath.join(posixpath.dirname(source), f"install-{build_key}")
         _bash(
             cmake_executor,
             _BUILD,
@@ -134,6 +157,7 @@ def gromacs_build(
                 "UCX_PREFIX": ucx_prefix,
                 "GROMACS_SRC": source,
                 "GROMACS_INSTALL": install_dir,
+                "BUILD_KEY": build_key,
             },
             build_timeout,
         )
