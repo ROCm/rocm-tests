@@ -32,15 +32,17 @@ _EXCLUDED_TESTS = r"^Kokkos_CoreUnitTest_HIP$|^Kokkos_CoreUnitTest_HIPInterOpGra
 
 
 @pytest.mark.runtime.soak  # type: ignore[attr-defined]
-def test_kokkos_functional(
+def test_kokkos_hip_functional_ctest(
     target_executor,
     rock_dir: str,
     ld_path: dict,
     kokkos_functional_build,
 ):
-    """Kokkos HIP functional ctest must pass. Relocatable device code stays off."""
+    """Kokkos 5.1.1 HIP ctest must pass with relocatable device code off."""
     build = kokkos_functional_build
-    assert not build.rdc_enabled, "functional Kokkos build must keep relocatable device code off"
+    assert (
+        not build.rdc_enabled
+    ), "functional Kokkos build must keep relocatable device code off"
 
     ld = ld_path["LD_LIBRARY_PATH"]
     ctest_log = f"{build.build_dir}/results.log"

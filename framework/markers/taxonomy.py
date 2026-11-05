@@ -157,8 +157,9 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "os.linux",
     ],
     # Kokkos HIP: third-party CMake build of the Kokkos HPC library, then ctest.
-    # test_gpu_rdc_kokkos enables relocatable device code; test_kokkos_functional
-    # leaves it off. Both share this profile.
+    # test_gpu_rdc_kokkos enables relocatable device code;
+    # test_kokkos_hip_functional_ctest leaves it off and runs the HIP ctest
+    # suite. Both share this profile.
     # layer.runtime (not math_lib): the feature under test is the HIP compiler's
     # -fgpu-rdc codegen path (a runtime/toolchain capability); Kokkos is only the
     # vehicle that drives RDC compilation, not the compute-under-test (contrast
