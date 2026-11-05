@@ -45,6 +45,42 @@ this repository; only the pytest harness is checked in here. mixbench is license
 under GPL-2.0 license; it is neither vendored nor linked into this project's own
 sources — it is built and executed as a standalone external binary at test time.
 
+## ROCmValidationSuite (RVS)
+
+- Used by: `tests/common/rvs/installer.py` and `tests/e2e/system_tools/rvs/conftest.py`
+  (cloned at test runtime; see `build_rvs_binary` in `tests/common/rvs/installer.py`).
+- Upstream: https://github.com/ROCm/ROCmValidationSuite
+- License: MIT (see the `LICENSE` file in the upstream repository).
+- Copyright (c) 2018-2025 Advanced Micro Devices, Inc. All rights reserved.
+
+The ROCmValidationSuite sources are fetched during test execution, built with CMake,
+and run on AMD GPU hardware. No RVS source is redistributed as part of this repository;
+only the pytest harness is checked in here.
+
+## rocm-systems / libhsakmt (kfdtest)
+
+- Used by: `tests/common/kfd/installer.py` and `tests/e2e/kfd/conftest.py`
+  (sparse-cloned at test runtime; see `build_kfdtest_binary` in `tests/common/kfd/installer.py`).
+- Upstream: https://github.com/ROCm/rocm-systems (sparse subtree: `projects/rocr-runtime/libhsakmt`)
+- License: MIT (see `LICENSE.md` in the upstream repository).
+- Copyright (c) 2016 Advanced Micro Devices, Inc. All rights reserved.
+
+The libhsakmt/kfdtest sources are fetched during test execution, built with CMake,
+and run on AMD GPU hardware. No kfdtest source is redistributed as part of this
+repository; only the pytest harness is checked in here.
+
+## rocHPL
+
+- Used by: `tests/e2e/hpc/rochpl/conftest.py` (cloned at test runtime; see `_ROCHPL_URL` in
+  `tests/e2e/hpc/rochpl/conftest.py`).
+- Upstream: https://github.com/ROCm/rocHPL
+- License: MIT (see the `LICENSE` file in the upstream repository).
+- Copyright (c) Advanced Micro Devices, Inc.
+
+The rocHPL sources are fetched during test execution, built via its `install.sh` wrapper
+against an MPI runtime and rocBLAS, and run on AMD GPU hardware. No rocHPL source is
+redistributed as part of this repository; only the pytest harness is checked in here.
+
 ## ROCm Libraries (hipBLAS samples)
 
 - Used by: `tests/e2e/rocm_libs/test_hipblas_samples.py` (cloned at runtime; see the
