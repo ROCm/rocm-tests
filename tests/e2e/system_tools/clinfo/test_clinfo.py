@@ -43,7 +43,7 @@ def _device_count(stdout: str) -> int | None:
 
 
 @pytest.mark.runtime.fast
-def test_clinfo(target_executor, rock_dir: str, ld_path: dict):
+def test_clinfo(target_executor, rock_dir: str, ld_path: dict, clinfo_requires):
     """Run clinfo and validate its reported OpenCL GPU devices."""
     ld = ld_path["LD_LIBRARY_PATH"]
     # A relocatable TheRock install does not register its OpenCL vendor in
