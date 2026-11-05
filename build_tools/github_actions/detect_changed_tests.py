@@ -140,6 +140,9 @@ def _e2e_area(path: PurePosixPath) -> str | None:
     # For paths like tests/e2e/hpc/quda/... we want tests/e2e/hpc/quda.
     # We use all directory components after tests/e2e/ as the area.
     area_parts = parts[2:depth]
+    # Sources under <area>/src/** belong to <area>; the src tree has no tests.
+    if "src" in area_parts:
+        area_parts = area_parts[: area_parts.index("src")]
     if not area_parts:
         return None
     return "tests/e2e/" + "/".join(area_parts)
