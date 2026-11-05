@@ -33,7 +33,11 @@ import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 import errno
-import fcntl
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]  # Windows — fcntl not available
 import glob
 import hashlib
 import json
@@ -364,7 +368,9 @@ class BinaryBuilder:
             stderr=subprocess.STDOUT,  # merged — single chronological log
             close_fds=True,
         )
-        os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
+        _set_nonblocking = getattr(os, "set_blocking", None)
+        if _set_nonblocking:
+            _set_nonblocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
 
         buf = b""
         t_start = time.monotonic()
