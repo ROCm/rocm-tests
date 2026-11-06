@@ -68,9 +68,9 @@ _CASES += [
 ]
 
 
-@pytest.mark.hw.multi_gpu       # GPU visible the binary reports the host as SPX and a DPX or CPX run exits 2.
-@pytest.mark.gpu_count("all")   # Reserve every GPU so each partition on every card is scored.
-@pytest.mark.runtime.fast       # finishes in under 5 minutes
+@pytest.mark.hw.multi_gpu # GPU visible the binary reports the host as SPX and a DPX or CPX run exits 2.
+@pytest.mark.gpu_count("all") # Reserve every GPU so each partition on every card is scored.
+@pytest.mark.runtime.fast # finishes in under 5 minutes
 @pytest.mark.parametrize(("binary_name", "args"), _CASES)
 def test_rocdecode_one_stream_per_partition(
     target_executor,
