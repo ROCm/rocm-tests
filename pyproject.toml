@@ -53,6 +53,7 @@ markers = [
     "runtime: expected duration dimension (use runtime.fast / runtime.medium / …)",
     "os: target platform dimension (use os.linux / os.windows / os.wsl / os.both)",
     "e2e: scenario type dimension (use e2e.stack / e2e.multinode / e2e.app / e2e.upgrade)",
+    "partition: compute or memory partition (partition.spx/dpx/tpx/qpx/cpx, partition.nps1/nps2/nps4)",
     # Hardware
     "hw.gpu: requires AMD GPU hardware",
     "hw.multi_gpu: requires two or more AMD GPUs",
@@ -82,6 +83,15 @@ markers = [
     "e2e.multinode: multi-node test",
     "e2e.app: third-party application integration test",
     "e2e.upgrade: ROCm upgrade path test",
+    # Compute and memory partition — skip hook is framework/plugins/partition_plugin.py
+    "partition.spx: run only when every GPU compute partition is SPX",
+    "partition.dpx: run only when every GPU compute partition is DPX",
+    "partition.tpx: run only when every GPU compute partition is TPX",
+    "partition.qpx: run only when every GPU compute partition is QPX",
+    "partition.cpx: run only when every GPU compute partition is CPX",
+    "partition.nps1: run only when every GPU memory partition is NPS1",
+    "partition.nps2: run only when every GPU memory partition is NPS2",
+    "partition.nps4: run only when every GPU memory partition is NPS4",
     # Resource requirements (optional)
     "gpu_vram(n): minimum VRAM required in GB (e.g. @pytest.mark.gpu_vram(16))",
     "gpu_count(n): minimum GPU count per node (e.g. @pytest.mark.gpu_count(2))",
