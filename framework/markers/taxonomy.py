@@ -124,6 +124,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # Media pipelines (rocDecode and later video paths). The rocDecode test
+    # overrides hw.gpu with hw.multi_gpu + gpu_count("all") so every partition
+    # on the node is visible.
+    "tests/e2e/media": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # KFD (Kernel Fusion Driver) — lowest layer of the ROCm stack, exercised via
     # the libhsakmt kfdtest GTest suite. layer.driver because KFD is the kernel
     # driver / thunk layer under the HIP runtime.
