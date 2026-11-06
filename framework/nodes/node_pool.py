@@ -18,7 +18,7 @@ import threading
 import time
 
 from framework.gpu.allocator import GpuAllocator
-from framework.gpu.detector import AbstractGpuDetector, GpuDetector, GpuInfo
+from framework.gpu.detector import AbstractGpuDetector, GpuInfo, _get_gpu_detector
 from framework.markers.gpu_count import GPU_COUNT_ALL
 from framework.nodes.gpu_file_lock import GpuFileLock
 from framework.nodes.node_spec import NodeSpec
@@ -215,8 +215,9 @@ class NodePool:
 
     LOCAL mode (no ``--remote-node``):
         Pass ``node_specs=[NodeSpec(hostname="localhost", label="localhost")]``.
-        No SSH connections are opened.  ``GpuDetector(ssh_executor=None)``
-        runs detection locally.
+        No SSH connections are opened.  ``_get_gpu_detector(ssh_executor=None)``
+        runs detection locally — ``WindowsGpuDetector`` on a Windows host,
+        ``GpuDetector`` otherwise.
 
     REMOTE mode:
         Pass ``node_specs`` from ``HostConfigLoader.load(host_yaml_path)``.
@@ -342,7 +343,7 @@ class NodePool:
             self._ssh_sessions[spec.label] = ssh
             logger.info("NodePool: opened SSH session to %s (%s)", spec.label, spec.hostname)
 
-        detector = self._detector_override or GpuDetector(
+        detector = self._detector_override or _get_gpu_detector(
             rock_dir=self._rock_dir, ssh_executor=ssh, artifact_dir=self._artifact_dir
         )
         gpus = detector.detect()

@@ -584,8 +584,9 @@ def _blocking_stream_run(
         stderr=subprocess.PIPE,
         close_fds=True,
     )
-    os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
-    os.set_blocking(process.stderr.fileno(), False)  # type: ignore[union-attr]
+    # Windows support for set_blocking starts in Python 3.12; pipe portability is a separate change.
+    os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr, attr-defined, unused-ignore]
+    os.set_blocking(process.stderr.fileno(), False)  # type: ignore[union-attr, attr-defined, unused-ignore]
 
     stdout_buf, stderr_buf = b"", b""
     t0 = time.monotonic()
@@ -692,8 +693,9 @@ def _make_background_process(
         stderr=subprocess.PIPE,
         close_fds=True,
     )
-    os.set_blocking(proc.stdout.fileno(), False)  # type: ignore[union-attr]
-    os.set_blocking(proc.stderr.fileno(), False)  # type: ignore[union-attr]
+    # Windows support for set_blocking starts in Python 3.12; pipe portability is a separate change.
+    os.set_blocking(proc.stdout.fileno(), False)  # type: ignore[union-attr, attr-defined, unused-ignore]
+    os.set_blocking(proc.stderr.fileno(), False)  # type: ignore[union-attr, attr-defined, unused-ignore]
 
     stop_evt = threading.Event()
     stdout_chunks: _BoundedChunks[bytes] = _BoundedChunks()

@@ -14,7 +14,7 @@ import logging
 
 import pytest
 
-from framework.gpu.detector import GpuDetector, MockGpuDetector
+from framework.gpu.detector import MockGpuDetector, _get_gpu_detector
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +78,9 @@ def pytest_configure(config: pytest.Config) -> None:
             or os.environ.get("ROCM_TEST_THEROCK_ROCK_DIR")
         )
         cfg = load_config(config_path=config.getoption("--rocm-config", default=None))
+        rock_dir = rock_dir or cfg.therock.rock_dir or None
         config._framework_config = cfg  # type: ignore[attr-defined]  # reused by framework_config fixture
-        config._gpu_detector = GpuDetector(  # type: ignore[attr-defined]
+        config._gpu_detector = _get_gpu_detector(  # type: ignore[attr-defined]
             rock_dir=rock_dir, artifact_dir=cfg.framework.artifact_dir
         )
         logger.info(

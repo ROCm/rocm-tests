@@ -11,12 +11,10 @@ import pathlib
 import posixpath
 import shlex
 import subprocess
-from typing import TYPE_CHECKING
+from typing import Protocol, TypeGuard
 
 from framework.executors.abstract_executor import AbstractExecutor
-
-if TYPE_CHECKING:
-    from framework.executors.executor_group import NodeExecutorGroup
+from framework.executors.executor_group import NodeExecutorGroup
 
 
 @dataclass(frozen=True)
@@ -101,7 +99,7 @@ def _connection_executor(executor: AbstractExecutor | None) -> object | None:
     return inner
 
 
-def is_remote_executor(executor: AbstractExecutor | None) -> bool:
+def is_remote_executor(executor: AbstractExecutor | None) -> TypeGuard[AbstractExecutor]:
     """Return True when *executor* runs its commands on another machine."""
     from framework.executors.ssh_executor import SshExecutor
 
@@ -143,10 +141,12 @@ def node_path_for(executor: AbstractExecutor | None, path: os.PathLike[str] | st
     framework's managed remote workspace. Returns *path* unchanged when the
     workload runs here.
     """
-    mapper = getattr(_connection_executor(executor), "workspace_path_for", None)
-    if mapper is None or not is_remote_executor(executor):
+    from framework.executors.ssh_executor import SshExecutor
+
+    connection = _connection_executor(executor)
+    if not isinstance(connection, SshExecutor):
         return str(path)
-    return mapper(path)
+    return connection.workspace_path_for(path)
 
 
 def fetch_remote_file(
@@ -181,7 +181,7 @@ def workload_executor_from(
     target_executor: NodeExecutorGroup | AbstractExecutor,
 ) -> AbstractExecutor:
     """First executor behind a ``NodeExecutorGroup`` (``target_executor``)."""
-    if hasattr(target_executor, "run") and hasattr(target_executor, "_executors"):
+    if isinstance(target_executor, NodeExecutorGroup):
         return target_executor._executors[0]
     return target_executor
 
@@ -337,10 +337,16 @@ def run_command_redirect(
     return rc
 
 
+class _Pollable(Protocol):
+    """Minimal status interface shared by subprocess and executor handles."""
+
+    def poll(self) -> int | None: ...
+
+
 class BackgroundSessionAdapter:
     """Expose ``poll()`` like ``subprocess.Popen`` for executor sessions."""
 
-    def __init__(self, handle) -> None:
+    def __init__(self, handle: _Pollable) -> None:
         self._handle = handle
 
     def poll(self) -> int | None:

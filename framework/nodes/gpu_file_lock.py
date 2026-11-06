@@ -38,6 +38,8 @@ import os
 import pathlib
 import time
 
+import psutil
+
 logger = logging.getLogger(__name__)
 
 _LOCK_DIR = os.path.join("output", ".gpu-locks")
@@ -199,12 +201,12 @@ class GpuFileLock:
         """Return ``False`` if the lock's holder process no longer exists.
 
         Reads the ``.info`` sidecar written by ``acquire()`` to extract the
-        holder PID, then probes it with ``os.kill(pid, 0)`` (signal 0 checks
-        existence without sending a signal).
+        holder PID, then checks it with ``psutil.pid_exists`` without signaling
+        the process. Unlike ``os.kill(pid, 0)``, this is safe on Windows.
 
         Used by ``NodePool.acquire_specific_slot/slots`` to detect dead-process
         lock remnants: if the holder is gone, the kernel has already released
-        the ``flock()`` and the slot can be retried immediately rather than
+        the OS lock and the slot can be retried immediately rather than
         sleeping the full 0.5 s poll interval.
 
         Returns:
@@ -216,9 +218,8 @@ class GpuFileLock:
             with open(self.info_path, encoding="utf-8") as fh:
                 data = json.load(fh)
             pid = int(data["pid"])
-            os.kill(pid, 0)  # signal 0 = existence probe; raises OSError if gone
-            return True
-        except (OSError, KeyError, ValueError, json.JSONDecodeError):
+            return bool(psutil.pid_exists(pid))
+        except (OSError, KeyError, ValueError):
             return False  # PID gone, file absent, or unreadable → treat as free
 
     def __enter__(self) -> GpuFileLock:

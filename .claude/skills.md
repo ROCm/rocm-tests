@@ -142,7 +142,9 @@ Section-to-dataclass: `[framework]` → `FrameworkSection`, `[gpu]` → `GpuSect
 ```bash
 git clone https://github.com/ROCm/rocm-tests.git
 cd rocm-tests
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate   # Linux/macOS
+# Windows PowerShell: python -m venv .venv; Set-ExecutionPolicy -Scope Process Bypass; .\.venv\Scripts\Activate.ps1
+# Windows CMD:        python -m venv .venv & .venv\Scripts\activate.bat
 pip install -r requirements-dev.txt   # or: uv pip install -r requirements-dev.txt
 
 # Verify wiring before writing code
