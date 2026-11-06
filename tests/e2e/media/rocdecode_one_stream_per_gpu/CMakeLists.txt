@@ -27,7 +27,7 @@ enable_testing()
 find_package(hip REQUIRED)
 find_library(ROCDECODE_LIBRARY NAMES rocdecode PATHS ${ROCM_PATH}/lib REQUIRED)
 
-set(SAMPLE_STREAM ${CMAKE_CURRENT_SOURCE_DIR}/media/sample_stream.h264)
+set(SAMPLE_STREAM ${CMAKE_CURRENT_SOURCE_DIR}/data/sample_stream.h264)
 if(NOT EXISTS ${SAMPLE_STREAM})
     message(FATAL_ERROR "Missing H.264 elementary stream: ${SAMPLE_STREAM}")
 endif()

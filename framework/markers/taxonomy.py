@@ -127,7 +127,7 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     # Media pipelines (rocDecode and later video paths). The rocDecode test
     # overrides hw.gpu with hw.multi_gpu + gpu_count("all") so every partition
     # on the node is visible.
-    "tests/e2e/media_pipelines": [
+    "tests/e2e/media": [
         "hw.gpu",
         "layer.runtime",
         "ci.nightly",

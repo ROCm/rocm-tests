@@ -10,7 +10,7 @@ Type : Functional
 - **DPX:** two halves per card (P0, P1).
 - **CPX:** eight slices per card (P0–P7). P0/P1, P2/P3, P4/P5, and P6/P7 share an engine.
 
-Run the program that matches the host mode. Input is `media/sample_stream.h264`.
+Run the program that matches the host mode. Input is `data/sample_stream.h264`.
 
 | Program | Host mode | Partitions per card |
 |---|---|---|
@@ -31,7 +31,7 @@ flowchart LR
   E --> F[Inference or processing<br/>on the same GPU]
 ```
 
-The test replaces the MP4 demux step with a raw H.264 file, `media/sample_stream.h264`. The check covers steps C and D, so the frames and engine time it reports come from the partition that was selected.
+The test replaces the MP4 demux step with a raw H.264 file, `data/sample_stream.h264`. The check covers steps C and D, so the frames and engine time it reports come from the partition that was selected.
 
 ## Pair time and other time
 

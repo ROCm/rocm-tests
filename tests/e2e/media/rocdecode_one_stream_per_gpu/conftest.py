@@ -4,7 +4,7 @@
 """
 conftest.py -- CMake build fixture for the rocDecode one-stream-per-partition suite.
 
-This directory lives at ``tests/e2e/media_pipelines/rocdecode_one_stream_per_gpu/``. The
+This directory lives at ``tests/e2e/media/rocdecode_one_stream_per_gpu/``. The
 fixture builds the three mode binaries in one CMake invocation:
 
     output/test-binaries/rocdecode_one_stream_per_gpu/build/rocdecode_spx_one_stream_per_card
@@ -21,7 +21,7 @@ import os
 
 import pytest
 
-_SRC_DIR = "tests/e2e/media_pipelines/rocdecode_one_stream_per_gpu"
+_SRC_DIR = "tests/e2e/media/rocdecode_one_stream_per_gpu"
 _BINARIES = (
     "rocdecode_spx_one_stream_per_card",
     "rocdecode_dpx_one_stream_per_half",
