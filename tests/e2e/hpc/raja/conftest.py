@@ -28,7 +28,7 @@ import shlex
 
 import pytest
 
-from framework.builder.binary_builder import resolve_parallel_jobs
+from framework.builder.binary_builder import find_rocm_clangpp, resolve_parallel_jobs
 from framework.executors.background_process import _blocking_stream_run
 from tests.e2e.hpc.raja._workload import RAJA_REF, RAJA_URL
 
@@ -57,16 +57,15 @@ if [ -z "${MPI_HOME:-}" ]; then
   exit 1
 fi
 export LD_LIBRARY_PATH="${ROCK}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-export PATH="${ROCK}/bin:${ROCK}/llvm/bin:${PATH}"
-
-if [ -x "${ROCK}/llvm/bin/amdclang++" ]; then
-  cc="${ROCK}/llvm/bin/amdclang"
-  cxx="${ROCK}/llvm/bin/amdclang++"
-  hip_path="${ROCK}/llvm/bin"
-else
-  cc="${ROCK}/bin/amdclang"
-  cxx="${ROCK}/bin/amdclang++"
-  hip_path="${ROCK}/bin"
+# find_rocm_clangpp's first candidate is lib/llvm/bin. Keep that directory on
+# PATH even when the selected compiler lives in llvm/bin or bin.
+export PATH="${HIP_PATH}:${ROCK}/lib/llvm/bin:${ROCK}/llvm/bin:${ROCK}/bin:${PATH}"
+cc="${CC}"
+cxx="${CXX}"
+hip_path="${HIP_PATH}"
+if [ -z "${cxx}" ] || [ ! -x "${cxx}" ]; then
+  echo "RAJA build requires CXX from find_rocm_clangpp" >&2
+  exit 1
 fi
 
 git -C "${SRC}" submodule update --init --recursive
@@ -109,10 +108,14 @@ class RajaBuild:
     Attributes:
         build_dir: CMake build directory. The ctest suite runs here.
         source_dir: Cloned RAJA checkout.
+        mpi_bin: Directory containing the MPI launcher, for non-apt installs.
+        mpi_lib: MPI library path to prepend at ctest time. Empty when unset.
     """
 
     build_dir: str
     source_dir: str
+    mpi_bin: str
+    mpi_lib: str
 
 
 def _safe_ref_name(ref: str) -> str:
@@ -125,6 +128,56 @@ def _path_exists(path: str, cmake_executor) -> bool:
     if cmake_executor is not None:
         return bool(cmake_executor.run(f"test -f {shlex.quote(path)}", timeout=30.0).ok)
     return os.path.isfile(path)
+
+
+def _resolve_compilers(rock_dir: str, cmake_executor) -> tuple[str, str]:
+    """Return ``(cc, cxx)`` from the same candidates as ``find_rocm_clangpp``.
+
+    Locally the framework helper probes the install. On a remote build node the
+    ROCm tree is on that host, so the same three paths are checked there.
+    """
+    if cmake_executor is None:
+        clangpp = find_rocm_clangpp(rock_dir)
+        if clangpp is None:
+            pytest.fail(f"ROCm clang++ not found under {rock_dir}")
+        cxx = str(clangpp)
+        return cxx.replace("clang++", "clang"), cxx
+
+    candidates = (
+        f"{rock_dir}/lib/llvm/bin/clang++",
+        f"{rock_dir}/llvm/bin/clang++",
+        f"{rock_dir}/bin/amdclang++",
+    )
+    probe = " ; ".join(
+        f"if [ -x {shlex.quote(path)} ]; then printf '%s\\n' 'CXX={path}'; exit 0; fi" for path in candidates
+    )
+    result = cmake_executor.run(f"bash -lc {shlex.quote(probe)}", timeout=30)
+    cxx = next(
+        (ln.split("=", 1)[1].strip() for ln in (result.stdout or "").splitlines() if ln.startswith("CXX=")),
+        "",
+    )
+    if not result.ok or not cxx:
+        pytest.fail(f"ROCm clang++ not found under {rock_dir}. Checked: {', '.join(candidates)}")
+    return cxx.replace("clang++", "clang"), cxx
+
+
+def _raja_mpi(external_build):
+    """Return a runtime whose ``MPI_HOME`` and launcher ctest can use."""
+    mpi_runtime = external_build.detect_mpi_runtime()
+    if mpi_runtime is None or not mpi_runtime.env.get("MPI_HOME"):
+        version = (
+            os.environ.get("ROCM_TEST_RAJA_OPENMPI_VERSION") or os.environ.get("OPENMPI_VERSION") or _OPENMPI_VERSION
+        )
+        logger.info("RAJA: no discovered MPI_HOME; provisioning OpenMPI %s", version)
+        mpi_runtime = external_build.provision_openmpi_runtime(version=version)
+    launcher = getattr(mpi_runtime, "launcher", None)
+    if mpi_runtime is None or not mpi_runtime.env.get("MPI_HOME"):
+        pytest.fail(
+            "RAJA build requires MPI_HOME. "
+            "detect_mpi_runtime and provision_openmpi_runtime left it unset "
+            f"(launcher={launcher})."
+        )
+    return mpi_runtime
 
 
 def _run_build(cmd: str, *, cmake_executor, timeout: float, log_path: str) -> None:
@@ -192,46 +245,41 @@ def raja_functional_build(
         raja_dir = os.path.abspath(raja_dir)
 
     build_dir = f"{raja_dir}/raja_fn_build-{resolved_gpu_arch}"
-    if _path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor):
-        logger.info("RAJA: existing build tree at %s — skipping configure/build", build_dir)
-        return RajaBuild(build_dir=build_dir, source_dir=raja_dir)
-
-    jobs = resolve_parallel_jobs(remote_executor=cmake_executor)
     log_dir = os.path.join(framework_config.framework.artifact_dir, "raja")
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "raja-build.log")
-    _run_build(
-        f"bash -lc {shlex.quote(_PACKAGE_SCRIPT)}",
-        cmake_executor=cmake_executor,
-        timeout=build_timeout,
-        log_path=log_path,
-    )
-    mpi_runtime = external_build.detect_mpi_runtime()
-    if mpi_runtime is None or not mpi_runtime.env.get("MPI_HOME"):
-        version = (
-            os.environ.get("ROCM_TEST_RAJA_OPENMPI_VERSION") or os.environ.get("OPENMPI_VERSION") or _OPENMPI_VERSION
+    have_build = _path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor)
+    if not have_build:
+        # Install Open MPI before discovery so apt's launcher wins over a source build.
+        _run_build(
+            f"bash -lc {shlex.quote(_PACKAGE_SCRIPT)}",
+            cmake_executor=cmake_executor,
+            timeout=build_timeout,
+            log_path=log_path,
         )
-        logger.info("RAJA: no discovered MPI_HOME; provisioning OpenMPI %s", version)
-        mpi_runtime = external_build.provision_openmpi_runtime(version=version)
-    mpi_home = mpi_runtime.env.get("MPI_HOME", "")
-    if not mpi_home:
-        pytest.fail(
-            "RAJA build requires MPI_HOME. "
-            "detect_mpi_runtime and provision_openmpi_runtime left it unset "
-            f"(launcher={mpi_runtime.launcher})."
-        )
+
+    mpi_runtime = _raja_mpi(external_build)
+    mpi_home = mpi_runtime.env["MPI_HOME"]
     mpi_bin = os.path.dirname(mpi_runtime.launcher)
     mpi_lib = mpi_runtime.env.get("LD_LIBRARY_PATH", "")
+    logger.info("RAJA: using MPI_HOME=%s launcher=%s", mpi_home, mpi_runtime.launcher)
+    built = RajaBuild(build_dir=build_dir, source_dir=raja_dir, mpi_bin=mpi_bin, mpi_lib=mpi_lib)
+    if have_build:
+        logger.info("RAJA: existing build tree at %s — skipping configure/build", build_dir)
+        return built
+
+    cc, cxx = _resolve_compilers(rocm_path, cmake_executor)
+    jobs = resolve_parallel_jobs(remote_executor=cmake_executor)
     mpi_path = f"{shlex.quote(mpi_bin)}:$PATH" if mpi_bin else "$PATH"
     mpi_ld = f"{shlex.quote(mpi_lib)}:$LD_LIBRARY_PATH" if mpi_lib else "$LD_LIBRARY_PATH"
-    logger.info("RAJA: using MPI_HOME=%s launcher=%s", mpi_home, mpi_runtime.launcher)
     cmd = (
         f"env ROCK={shlex.quote(rocm_path)} GFX={shlex.quote(resolved_gpu_arch)} "
         f"SRC={shlex.quote(raja_dir)} BUILD={shlex.quote(build_dir)} JOBS={jobs} "
         f"MPI_HOME={shlex.quote(mpi_home)} "
+        f"CC={shlex.quote(cc)} CXX={shlex.quote(cxx)} HIP_PATH={shlex.quote(os.path.dirname(cxx))} "
         f"PATH={mpi_path} LD_LIBRARY_PATH={mpi_ld} "
         f"bash -lc {shlex.quote(_BUILD_SCRIPT)}"
     )
     logger.info("RAJA: configuring HIP build (gpu_arch=%s, rocm=%s)", resolved_gpu_arch, rocm_path)
     _run_build(cmd, cmake_executor=cmake_executor, timeout=build_timeout, log_path=log_path)
-    return RajaBuild(build_dir=build_dir, source_dir=raja_dir)
+    return built
