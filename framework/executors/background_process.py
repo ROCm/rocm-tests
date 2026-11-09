@@ -72,7 +72,7 @@ import contextlib
 import logging
 import os
 import pathlib
-import select
+import selectors
 import signal
 import subprocess
 import sys
@@ -81,6 +81,8 @@ import time
 from typing import Generic, TypeVar
 
 from framework.common.helpers import ExecutionResult
+
+_IS_WINDOWS = sys.platform == "win32"
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +224,10 @@ def _bg_graceful_kill(proc: subprocess.Popen, grace_secs: float = 30.0) -> None:
                     ``SIGKILL`` (default 30 s).
     """
     try:
-        proc.send_signal(signal.SIGTERM)
+        if sys.platform == "win32":
+            proc.terminate()
+        else:
+            proc.send_signal(signal.SIGTERM)
         proc.wait(timeout=grace_secs)
     except subprocess.TimeoutExpired:
         proc.kill()
@@ -264,7 +269,12 @@ def _reader_loop(
         if stop_evt.is_set() and proc.poll() is not None:
             break
 
-        ready = select.select([s for s in [proc.stdout, proc.stderr] if s is not None], [], [], 0.5)[0]
+        selector = selectors.DefaultSelector()
+        for stream in [proc.stdout, proc.stderr]:
+            if stream is not None:
+                selector.register(stream, selectors.EVENT_READ)
+        ready = [key.fileobj for key, _ in selector.select(timeout=0.5)]
+        selector.close()
 
         if proc.stdout in ready:
             chunk = proc.stdout.read()
@@ -541,6 +551,136 @@ class NoOpBackgroundProcess(AbstractBackgroundProcess):
 # ---------------------------------------------------------------------------
 
 
+def _windows_threaded_drain(
+    process: subprocess.Popen,
+    command: str,
+    timeout: float,
+    stdout_console,
+    stderr_console,
+    log_fh,
+) -> tuple[bytes, bytes]:
+    """Drain *process*'s stdout/stderr with one blocking-read thread per stream.
+
+    Anonymous pipes on Windows cannot be made non-blocking (there is no Windows
+    equivalent of ``os.set_blocking`` for them), so a single-threaded poll loop
+    would serialize stdout/stderr behind whichever stream's next read happens to
+    block. Each stream is instead drained by its own daemon thread, forwarding
+    output live via ``_bg_pipe_write``.
+
+    Args:
+        process:        Running ``subprocess.Popen`` with stdout/stderr as PIPE.
+        command:        Original command string, for the ``TimeoutError`` message.
+        timeout:        Wall-clock seconds before forced termination.
+        stdout_console: Binary stream target for STDOUT console output, or ``None``.
+        stderr_console: Binary stream target for STDERR console output, or ``None``.
+        log_fh:         Open binary file handle for disk logging, or ``None``.
+
+    Returns:
+        Tuple of ``(stdout_bytes, stderr_bytes)`` fully accumulated.
+
+    Raises:
+        TimeoutError: If the command exceeds *timeout* seconds.
+    """
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+
+    def _drain(pipe, chunks: list[bytes], console) -> None:
+        for chunk in iter(lambda: pipe.read(4096), b""):
+            _bg_pipe_write(chunk, console, log_fh)
+            chunks.append(chunk)
+
+    readers = [
+        threading.Thread(target=_drain, args=(process.stdout, stdout_chunks, stdout_console), daemon=True),
+        threading.Thread(target=_drain, args=(process.stderr, stderr_chunks, stderr_console), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _bg_graceful_kill(process)
+        for reader in readers:
+            reader.join(timeout=5.0)
+        raise TimeoutError(f"Command timed out after {timeout}s: {command}") from exc
+
+    for reader in readers:
+        reader.join(timeout=5.0)
+    return b"".join(stdout_chunks), b"".join(stderr_chunks)
+
+
+def _posix_select_drain(
+    process: subprocess.Popen,
+    command: str,
+    timeout: float,
+    t0: float,
+    stdout_console,
+    stderr_console,
+    log_fh,
+) -> tuple[bytes, bytes]:
+    """Drain *process*'s stdout/stderr using ``select()`` for I/O multiplexing.
+
+    Args:
+        process:        Running ``subprocess.Popen`` with stdout/stderr as PIPE.
+        command:        Original command string, for the ``TimeoutError`` message.
+        timeout:        Wall-clock seconds before forced termination.
+        t0:             ``time.monotonic()`` timestamp the process started at.
+        stdout_console: Binary stream target for STDOUT console output, or ``None``.
+        stderr_console: Binary stream target for STDERR console output, or ``None``.
+        log_fh:         Open binary file handle for disk logging, or ``None``.
+
+    Returns:
+        Tuple of ``(stdout_bytes, stderr_bytes)`` fully accumulated.
+
+    Raises:
+        TimeoutError: If the command exceeds *timeout* seconds.
+    """
+    stdout_buf, stderr_buf = b"", b""
+    while True:
+        elapsed = time.monotonic() - t0
+        if elapsed >= timeout:
+            _bg_graceful_kill(process)
+            raise TimeoutError(f"Command timed out after {timeout}s: {command}")
+
+        # process.stdout/.stderr are always real streams here — Popen was called
+        # with stdout=PIPE, stderr=PIPE.
+        assert process.stdout is not None
+        assert process.stderr is not None
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        selector.register(process.stderr, selectors.EVENT_READ)
+        timeout_remaining = min(max(timeout - elapsed, 0.1), 5.0)
+        ready = [key.fileobj for key, _ in selector.select(timeout=timeout_remaining)]
+        selector.close()
+
+        if process.stdout in ready:
+            chunk = process.stdout.read()
+            if chunk:
+                _bg_pipe_write(chunk, stdout_console, log_fh)
+                stdout_buf += chunk
+
+        if process.stderr in ready:
+            chunk = process.stderr.read()
+            if chunk:
+                _bg_pipe_write(chunk, stderr_console, log_fh)
+                stderr_buf += chunk
+
+        if process.poll() is not None:
+            for pipe, is_stdout in [
+                (process.stdout, True),
+                (process.stderr, False),
+            ]:
+                tail = pipe.read()
+                if tail:
+                    target = stdout_console if is_stdout else stderr_console
+                    _bg_pipe_write(tail, target, log_fh)
+                    if is_stdout:
+                        stdout_buf += tail
+                    else:
+                        stderr_buf += tail
+            return stdout_buf, stderr_buf
+
+
 def _blocking_stream_run(
     command: str,
     env: dict,
@@ -584,8 +724,9 @@ def _blocking_stream_run(
         stderr=subprocess.PIPE,
         close_fds=True,
     )
-    os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
-    os.set_blocking(process.stderr.fileno(), False)  # type: ignore[union-attr]
+    if not _IS_WINDOWS:
+        os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
+        os.set_blocking(process.stderr.fileno(), False)  # type: ignore[union-attr]
 
     stdout_buf, stderr_buf = b"", b""
     t0 = time.monotonic()
@@ -595,45 +736,14 @@ def _blocking_stream_run(
     with contextlib.ExitStack() as stack:
         log_fh = stack.enter_context(open(log_path, "ab")) if log_path else None
 
-        while True:
-            elapsed = time.monotonic() - t0
-            if elapsed >= timeout:
-                _bg_graceful_kill(process)
-                raise TimeoutError(f"Command timed out after {timeout}s: {command}")
-
-            ready = select.select(
-                [s for s in [process.stdout, process.stderr] if s is not None],
-                [],
-                [],
-                min(max(timeout - elapsed, 0.1), 5.0),
-            )[0]
-
-            if process.stdout in ready:
-                chunk = process.stdout.read()
-                if chunk:
-                    _bg_pipe_write(chunk, stdout_console, log_fh)
-                    stdout_buf += chunk
-
-            if process.stderr in ready:
-                chunk = process.stderr.read()
-                if chunk:
-                    _bg_pipe_write(chunk, stderr_console, log_fh)
-                    stderr_buf += chunk
-
-            if process.poll() is not None:
-                for pipe, is_stdout in [
-                    (process.stdout, True),
-                    (process.stderr, False),
-                ]:
-                    tail = pipe.read()  # type: ignore[union-attr]
-                    if tail:
-                        target = stdout_console if is_stdout else stderr_console
-                        _bg_pipe_write(tail, target, log_fh)
-                        if is_stdout:
-                            stdout_buf += tail
-                        else:
-                            stderr_buf += tail
-                break
+        if _IS_WINDOWS:
+            stdout_buf, stderr_buf = _windows_threaded_drain(
+                process, command, timeout, stdout_console, stderr_console, log_fh
+            )
+        else:
+            stdout_buf, stderr_buf = _posix_select_drain(
+                process, command, timeout, t0, stdout_console, stderr_console, log_fh
+            )
 
         if log_fh is not None:
             log_fh.flush()
@@ -692,8 +802,11 @@ def _make_background_process(
         stderr=subprocess.PIPE,
         close_fds=True,
     )
-    os.set_blocking(proc.stdout.fileno(), False)  # type: ignore[union-attr]
-    os.set_blocking(proc.stderr.fileno(), False)  # type: ignore[union-attr]
+    # os.set_blocking() only supports Windows pipes since Python 3.12 (absent
+    # entirely pre-3.12, where attribute access raises AttributeError).
+    if hasattr(os, "set_blocking"):
+        os.set_blocking(proc.stdout.fileno(), False)  # type: ignore[union-attr]
+        os.set_blocking(proc.stderr.fileno(), False)  # type: ignore[union-attr]
 
     stop_evt = threading.Event()
     stdout_chunks: _BoundedChunks[bytes] = _BoundedChunks()

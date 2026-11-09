@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from framework.gpu.detector import GpuDetector
+from framework.gpu.detector import _get_gpu_detector
 from framework.rocm.libs.amd_smi import list_devices
 from tests.common.gpu_monitored.config import Config
 from tests.common.gpu_monitored.environment import apply_framework_environment
@@ -71,7 +71,7 @@ def resolve_host_gpu_count(
     if devices:
         return len(devices)
 
-    detected = GpuDetector(rock_dir=rock_dir).detect()
+    detected = _get_gpu_detector(rock_dir=rock_dir).detect()
     return len(detected)
 
 
@@ -93,7 +93,7 @@ def resolve_gpu_identity(
             model = devices[0].asic_serial
 
     if not arch or arch == "unknown":
-        for gpu in GpuDetector(rock_dir=rock_dir).detect():
+        for gpu in _get_gpu_detector(rock_dir=rock_dir).detect():
             if gpu.arch and gpu.arch != "unknown":
                 arch = gpu.arch
                 break
