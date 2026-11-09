@@ -106,18 +106,41 @@ def _get_gpu_detector(
     rock_dir: str | None = None,
     ssh_executor: SshExecutor | None = None,
     artifact_dir: str | None = None,
+    remote_platform: str | None = None,
 ) -> AbstractGpuDetector:
-    """Factory function to instantiate the correct GPU detector for the platform.
+    """Factory function to instantiate the correct GPU detector for the target platform.
 
     Args:
-        rock_dir:     Path to TheRock/ROCm install.
-        ssh_executor: SSH executor for remote detection.
-        artifact_dir: Directory for diagnostic logs.
+        rock_dir:        Path to TheRock/ROCm install.
+        ssh_executor:     SSH executor for remote detection.
+        artifact_dir:     Directory for diagnostic logs.
+        remote_platform:  The *target* node's OS (``"linux"`` or ``"windows"``),
+                          required whenever *ssh_executor* is set. ``sys.platform``
+                          is the coordinator's own OS and says nothing about a
+                          remote node reached over SSH, so it must not be used
+                          to pick a detector in that case. Ignored for local
+                          detection (``ssh_executor=None``), where the
+                          coordinator's ``sys.platform`` is the target.
 
     Returns:
-        WindowsGpuDetector on Windows, GpuDetector on Linux.
+        WindowsGpuDetector for a Windows target, GpuDetector for a Linux target.
+
+    Raises:
+        ValueError: If *ssh_executor* is set but *remote_platform* is not
+                    ``"linux"`` or ``"windows"`` — silently guessing the wrong
+                    OS for a remote node runs the wrong detection commands
+                    against it.
     """
-    if sys.platform == "win32":
+    if ssh_executor is not None:
+        if remote_platform not in ("linux", "windows"):
+            raise ValueError(
+                f"remote_platform must be 'linux' or 'windows' when ssh_executor is set, got {remote_platform!r}"
+            )
+        is_windows_target = remote_platform == "windows"
+    else:
+        is_windows_target = sys.platform == "win32"
+
+    if is_windows_target:
         return WindowsGpuDetector(
             rock_dir=rock_dir, ssh_executor=ssh_executor, artifact_dir=artifact_dir
         )
@@ -787,9 +810,11 @@ class WindowsGpuDetector(AbstractGpuDetector):
             )
             gpus = self._detect_via_pnp()
             if gpus:
-                logger.info(
-                    "GPU detection [%s]: PnP fallback detected %d GPU(s) "
-                    "(arch=unknown, vram_mb=0)",
+                logger.warning(
+                    "GPU detection [%s]: PnP fallback active (%d GPU(s) found) — "
+                    "arch and VRAM unknown (vram_mb=0). @pytest.mark.gpu_vram "
+                    "filtering will not work correctly. Install amd-smi for full "
+                    "GPU detail.",
                     target,
                     len(gpus),
                 )

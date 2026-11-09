@@ -307,8 +307,11 @@ def run_cmd_get_stdout_stderr(
             data = stdin if isinstance(stdin, bytes) else stdin.encode()
             process.stdin.write(data)  # type: ignore[union-attr]
 
-    os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
-    os.set_blocking(process.stderr.fileno(), False)  # type: ignore[union-attr]
+    # os.set_blocking() only supports Windows pipes since Python 3.12 (absent
+    # entirely pre-3.12, where attribute access raises AttributeError).
+    if hasattr(os, "set_blocking"):
+        os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
+        os.set_blocking(process.stderr.fileno(), False)  # type: ignore[union-attr]
 
     def _read_stream(fd) -> bytes:
         chunk = fd.read()

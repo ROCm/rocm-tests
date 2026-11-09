@@ -419,7 +419,10 @@ class BinaryBuilder:
             stderr=subprocess.STDOUT,  # merged — single chronological log
             close_fds=True,
         )
-        os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
+        # os.set_blocking() only supports Windows pipes since Python 3.12 (absent
+        # entirely pre-3.12, where attribute access raises AttributeError).
+        if hasattr(os, "set_blocking"):
+            os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
 
         buf = b""
         t_start = time.monotonic()

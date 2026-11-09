@@ -24,6 +24,7 @@ Platform:
 from __future__ import annotations
 
 import logging
+import pathlib
 
 import pytest
 
@@ -39,7 +40,7 @@ _REQUIRED_KEYS = [
 
 
 @pytest.mark.hw.gpu
-@pytest.mark.ci.pr
+@pytest.mark.ci.nightly
 @pytest.mark.layer.runtime
 @pytest.mark.os.windows
 @pytest.mark.runtime.fast
@@ -61,10 +62,14 @@ def test_hipinfo(target_executor, rock_dir: str) -> None:
             "Set it to the TheRock/ROCm installation path (e.g., C:\\Program Files\\AMD\\ROCm)."
         )
 
-    hipinfo_path = f"{rock_dir}/bin/hipInfo.exe"
+    hipinfo_path = pathlib.Path(rock_dir) / "bin" / "hipInfo.exe"
     logger.info("Running hipInfo.exe from %s", hipinfo_path)
 
-    result = target_executor.run(hipinfo_path, timeout=30.0)
+    # Quoted because target_executor.run() hands this string to a shell — an
+    # unquoted path containing spaces (e.g. "C:\Program Files\...") can
+    # silently resolve to the wrong executable if hipinfo_path doesn't exist,
+    # instead of failing with a clear "not found" error.
+    result = target_executor.run(f'"{hipinfo_path}"', timeout=30.0)
 
     assert result.ok, (
         f"hipInfo.exe failed (exit={result.exit_code}):\n"

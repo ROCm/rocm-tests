@@ -343,7 +343,10 @@ class NodePool:
             logger.info("NodePool: opened SSH session to %s (%s)", spec.label, spec.hostname)
 
         detector = self._detector_override or _get_gpu_detector(
-            rock_dir=self._rock_dir, ssh_executor=ssh, artifact_dir=self._artifact_dir
+            rock_dir=self._rock_dir,
+            ssh_executor=ssh,
+            artifact_dir=self._artifact_dir,
+            remote_platform=spec.platform if ssh is not None else None,
         )
         gpus = detector.detect()
 
