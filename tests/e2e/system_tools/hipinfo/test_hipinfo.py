@@ -77,9 +77,9 @@ def test_hipinfo(target_executor, rock_dir: str) -> None:
         f"stderr: {result.stderr[:500]}"
     )
 
-    assert result.stdout and len(result.stdout) > 100, (
-        f"hipInfo.exe produced insufficient output (length={len(result.stdout or '')}). "
-        f"Output:\n{result.stdout or '(empty)'}"
+    assert result.stdout, "hipInfo.exe produced no output"
+    assert len(result.stdout) > 100, (
+        f"hipInfo.exe produced insufficient output (length={len(result.stdout)}). " f"Output:\n{result.stdout}"
     )
 
     missing_keys = [key for key in _REQUIRED_KEYS if key not in result.stdout]

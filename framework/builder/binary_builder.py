@@ -56,9 +56,11 @@ from framework.common.workspace_layout import REMOTE_WORKSPACE_DIR, category_roo
 # Platform-specific file locking
 if sys.platform == "win32":
     import msvcrt
+
     _HAS_FCNTL = False
 else:
     import fcntl
+
     _HAS_FCNTL = True
 
 logger = logging.getLogger(__name__)
@@ -138,10 +140,8 @@ def _release_exclusive_lock(lock_fh) -> None:
         fcntl.flock(lock_fh, fcntl.LOCK_UN)
     else:
         fd = lock_fh.fileno()
-        try:
+        with contextlib.suppress(OSError):
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        except OSError:
-            pass
 
 
 def _write_build_skip_log(log_path: str, src: str, binary: str) -> None:

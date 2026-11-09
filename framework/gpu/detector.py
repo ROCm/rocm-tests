@@ -141,12 +141,8 @@ def _get_gpu_detector(
         is_windows_target = sys.platform == "win32"
 
     if is_windows_target:
-        return WindowsGpuDetector(
-            rock_dir=rock_dir, ssh_executor=ssh_executor, artifact_dir=artifact_dir
-        )
-    return GpuDetector(
-        rock_dir=rock_dir, ssh_executor=ssh_executor, artifact_dir=artifact_dir
-    )
+        return WindowsGpuDetector(rock_dir=rock_dir, ssh_executor=ssh_executor, artifact_dir=artifact_dir)
+    return GpuDetector(rock_dir=rock_dir, ssh_executor=ssh_executor, artifact_dir=artifact_dir)
 
 
 class GpuDetector(AbstractGpuDetector):
@@ -793,9 +789,7 @@ class WindowsGpuDetector(AbstractGpuDetector):
             logger.info("GPU detection [%s]: trying amd-smi static --json", target)
             gpus = self._detect_via_amd_smi_json()
             if gpus:
-                logger.info(
-                    "GPU detection [%s]: amd-smi detected %d GPU(s)", target, len(gpus)
-                )
+                logger.info("GPU detection [%s]: amd-smi detected %d GPU(s)", target, len(gpus))
                 self._cached = gpus
                 self._run_amd_smi_diagnostic(node_label=node_label)
                 return list(gpus)
@@ -805,9 +799,7 @@ class WindowsGpuDetector(AbstractGpuDetector):
 
         # FALLBACK: PowerShell PnP enumeration (device count, no arch/vram)
         try:
-            logger.info(
-                "GPU detection [%s]: trying PowerShell PnP enumeration", target
-            )
+            logger.info("GPU detection [%s]: trying PowerShell PnP enumeration", target)
             gpus = self._detect_via_pnp()
             if gpus:
                 logger.warning(
@@ -890,9 +882,7 @@ class WindowsGpuDetector(AbstractGpuDetector):
                     gpus.append(GpuInfo(index=i, arch=arch, vram_mb=vram_mb))
                 return gpus
             except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.debug(
-                    "amd-smi at %s failed: %s; trying next candidate", amd_smi_path, exc
-                )
+                logger.debug("amd-smi at %s failed: %s; trying next candidate", amd_smi_path, exc)
                 continue
 
         raise RuntimeError("No amd-smi candidate succeeded")
@@ -912,22 +902,20 @@ class WindowsGpuDetector(AbstractGpuDetector):
         # Use ConvertTo-Json to enumerate AMD GPUs and parse JSON for count.
         # VEN_1002 is AMD's PCI vendor ID; we filter on Class Display for GPUs.
         cmd = (
-            'Get-PnpDevice -PresentOnly -Class Display | '
+            "Get-PnpDevice -PresentOnly -Class Display | "
             'Where-Object { $_.InstanceId -imatch "VEN_1002&" } | '
-            'ConvertTo-Json | ConvertFrom-Json | Measure-Object | Select-Object -ExpandProperty Count'
+            "ConvertTo-Json | ConvertFrom-Json | Measure-Object | Select-Object -ExpandProperty Count"
         )
         count_str = self._run_command(cmd).strip()
         try:
             count = int(count_str)
-        except ValueError:
-            raise RuntimeError(f"PnP enumeration returned non-integer count: {count_str}")
+        except ValueError as exc:
+            raise RuntimeError(f"PnP enumeration returned non-integer count: {count_str}") from exc
 
         if count <= 0:
             return []
 
-        gpus = [
-            GpuInfo(index=i, arch="unknown", vram_mb=0) for i in range(count)
-        ]
+        gpus = [GpuInfo(index=i, arch="unknown", vram_mb=0) for i in range(count)]
         return gpus
 
     def _run_amd_smi_diagnostic(self, node_label: str) -> None:
