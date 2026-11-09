@@ -56,6 +56,29 @@ in `conftest.py`. IDE linters may flag it — this is expected.
 - `@pytest.mark.gpu_count(4)` — number of GPUs to acquire
 - `@pytest.mark.container_image("rocm/pytorch:6.3")` — per-test container image override
 
+**GPU state-changing tests:** add `@pytest.mark.gpu_state.mutating` to any
+test that changes persistent GPU settings or host driver state, such as clocks,
+power limits, writable GPU sysfs attributes, resets, or driver reloads. Ordinary
+GPU computation and read-only telemetry do not require it. The default
+`--gpu-execution-mode=shared` skips marked tests before fixture setup, including
+when selected directly by node ID, `-k`, or CI marker. Use
+`--gpu-execution-mode=exclusive` only on a host reserved from all other GPU
+workloads. This option does not reserve hardware or grant permissions, and
+mutations must not occur during collection or session initialization.
+
+### GPU runner prerequisites
+
+Do not advertise GPU runner labels on hosts without `/dev/kfd` and `/dev/dri`.
+Check these devices on the same physical host before starting a GPU container.
+Runner provisioning must ensure these devices exist before accepting GPU jobs.
+For jobs using a job-level container, an ordinary workflow step runs after
+container setup and cannot validate host prerequisites before startup.
+Do not add `--privileged` to the default e2e container. Tests requiring writable
+host sysfs or driver reloads need separate, explicitly provisioned execution
+environments. Reserve the entire host from all other GPU workloads before using
+exclusive mode; workflow concurrency alone cannot isolate it from other
+workflows or repositories.
+
 **Minimum valid test:**
 
 ```python

@@ -13,6 +13,7 @@ Plugin responsibilities (registration order — markers_plugin MUST be first):
     markers_plugin      -- Category-profile marker injection (CATEGORY_PROFILES in taxonomy.py)
     session_plugin      -- framework_config, run_ctx, _attach_test_log (foundational session fixtures)
     gpu_plugin          -- GPU acquisition, --no-gpu/--gpu-arch/--mock-gpu options
+    gpu_safety          -- Skip GPU/driver state mutations in shared execution
     remote_node_plugin  -- --remote-node/--gpu-acquire-timeout, NodePool, target_executor
     scheduling_plugin   -- --schedule-policy/--collect-runtimes, unified collection hook + runtime collector
     executor_plugin     -- --container-mode/--container-image, cpu_executor/container_executor
@@ -32,6 +33,8 @@ directory layout (plugin fixtures are not bound to a conftest subtree).
 
 from __future__ import annotations
 
+from typing import cast
+
 from _pytest.mark.structures import MarkDecorator
 import pytest
 
@@ -43,10 +46,10 @@ def _mark_getattr(self: MarkDecorator, name: str) -> MarkDecorator:
     MarkDecorator and `.pr` raises AttributeError. This restores the behaviour
     by delegating to pytest.mark with the fully-qualified dotted name.
     """
-    return getattr(pytest.mark, f"{self.mark.name}.{name}")
+    return cast(MarkDecorator, getattr(pytest.mark, f"{self.mark.name}.{name}"))
 
 
-MarkDecorator.__getattr__ = _mark_getattr  # type: ignore[assignment]
+MarkDecorator.__getattr__ = _mark_getattr  # type: ignore[attr-defined]
 
 # Declare all plugin modules — loaded by pytest before test collection begins.
 # Each module is a standard Python dotted path resolvable via PYTHONPATH=".".
@@ -63,10 +66,11 @@ MarkDecorator.__getattr__ = _mark_getattr  # type: ignore[assignment]
 # before remote_node_plugin, executor_plugin, health_plugin, builder_plugin,
 # and install_plugin resolve their own fixtures.
 pytest_plugins = [
-    "framework.plugins.markers_plugin",  # FIRST: category-profile marker injection (CATEGORY_PROFILES in taxonomy.py)  # noqa: E501
+    "framework.plugins.markers_plugin",  # FIRST: category-profile marker injection (CATEGORY_PROFILES in taxonomy.py)
     "framework.plugins.session_plugin",  # framework_config, run_ctx, _attach_test_log
     "framework.plugins.gpu_plugin",  # --no-gpu/--gpu-arch/--mock-gpu, gpu_arch/dry_run_executor
-    "framework.plugins.remote_node_plugin",  # --remote-node/--gpu-acquire-timeout, node_pool/target_executor  # noqa: E501
+    "framework.plugins.gpu_safety",  # --gpu-execution-mode, shared-suite mutation guard
+    "framework.plugins.remote_node_plugin",  # --remote-node/--gpu-acquire-timeout, node_pool/target_executor
     "framework.plugins.scheduling_plugin",  # --schedule-policy/--collect-runtimes, unified collection hook + runtime collector  # noqa: E501
     "framework.plugins.executor_plugin",  # --container-mode/--container-image/--container-runtime, cpu_executor/container_executor  # noqa: E501
     "framework.plugins.os_plugin",  # os_adapter/platform_name fixtures, os.* marker skip hook

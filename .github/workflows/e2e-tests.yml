@@ -358,6 +358,7 @@ jobs:
           fi
 
           pytest "${TEST_PATHS_ARRAY[@]}" \
+            --gpu-execution-mode=shared \
             --rock-dir=therock_build \
             --gpu-arch="${COMPILER_GPU_ARCH}" \
             --html=nightly_report.html --self-contained-html \

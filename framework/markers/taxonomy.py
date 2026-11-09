@@ -29,6 +29,8 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     "os": {"linux"},
     # Scenario type (optional)
     "e2e": {"stack", "multinode"},
+    # Persistent GPU configuration or host driver changes (optional)
+    "gpu_state": {"mutating"},
 }
 
 REQUIRED_DIMENSIONS: set[str] = {"hw", "ci", "layer"}
@@ -64,6 +66,7 @@ ALLURE_DIMENSION_MAP: dict[str, str] = {
     "e2e": "epic",  # allure.dynamic.epic(...)
     "os": "tag",  # allure.dynamic.tag(...)
     "runtime": "tag",
+    "gpu_state": "tag",
 }
 
 # Allure severity level for each hw.* value.

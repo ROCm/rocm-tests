@@ -53,6 +53,8 @@ markers = [
     "runtime: expected duration dimension (use runtime.fast / runtime.medium / …)",
     "os: target platform dimension (use os.linux / os.windows / os.wsl / os.both)",
     "e2e: scenario type dimension (use e2e.stack / e2e.multinode / e2e.app / e2e.upgrade)",
+    "gpu_state: persistent GPU configuration or host driver changes",
+    "gpu_state.mutating: changes GPU/driver state; skipped in shared execution",
     # Hardware
     "hw.gpu: requires AMD GPU hardware",
     "hw.multi_gpu: requires two or more AMD GPUs",

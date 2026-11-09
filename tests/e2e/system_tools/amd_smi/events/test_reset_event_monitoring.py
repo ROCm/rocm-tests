@@ -94,7 +94,8 @@ def _assert_event_log(name: str, metrics: dict[str, int]) -> None:
     assert metrics["dup"] == 0, f"{name}: found {metrics['dup']} consecutive duplicate event group(s)"
 
 
-@pytest.mark.runtime.soak
+@pytest.mark.gpu_state.mutating  # type: ignore[attr-defined]
+@pytest.mark.runtime.soak  # type: ignore[attr-defined]
 def test_repeated_reset_event_stress(target_executor, random_events_env):
     """Stress the event subsystem across N GPU reset cycles with a single background amd-smi event monitor.
 
@@ -146,7 +147,8 @@ def test_repeated_reset_event_stress(target_executor, random_events_env):
     logger.info("no crashes detected — test complete")
 
 
-@pytest.mark.runtime.fast
+@pytest.mark.gpu_state.mutating  # type: ignore[attr-defined]
+@pytest.mark.runtime.fast  # type: ignore[attr-defined]
 def test_concurrent_event_monitoring(target_executor, random_events_env):
     """Launch N concurrent amd-smi event monitors, trigger a single GPU reset, and validate each monitor independently.
 

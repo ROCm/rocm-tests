@@ -122,6 +122,13 @@ For a full guide on adding a new test case — including marker requirements, fi
 build fixtures, and AI-assisted authoring commands — see the
 **[Development Guide](docs/development-guide.md)**.
 
+Tests that change persistent GPU settings or host driver state must use
+`@pytest.mark.gpu_state.mutating`. The default `--gpu-execution-mode=shared`
+skips them before fixture setup, including when selected directly by node ID,
+keyword, or CI marker. Use `--gpu-execution-mode=exclusive` only on a host
+reserved from all other GPU workloads. This option does not reserve hardware or
+grant permissions; test authors must explicitly mark mutating tests.
+
 Quick validation commands:
 
 ```bash

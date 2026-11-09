@@ -40,9 +40,10 @@ def _parse_int_field(stdout: str, field: str) -> int:
     return int(numeric.group())
 
 
-@pytest.mark.hw.multi_gpu
-@pytest.mark.runtime.medium
+@pytest.mark.hw.multi_gpu  # type: ignore[attr-defined]
+@pytest.mark.runtime.medium  # type: ignore[attr-defined]
 @pytest.mark.gpu_count(_GPU_COUNT)
+@pytest.mark.gpu_state.mutating  # type: ignore[attr-defined]
 def test_ptl_runtime_toggle_rccl_workload(
     target_executor,
     rock_dir: str,
