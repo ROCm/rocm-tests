@@ -218,7 +218,7 @@ class GpuFileLock:
             with open(self.info_path, encoding="utf-8") as fh:
                 data = json.load(fh)
             pid = int(data["pid"])
-            return psutil.pid_exists(pid)
+            return bool(psutil.pid_exists(pid))
         except (KeyError, ValueError, json.JSONDecodeError):
             return False  # PID gone, file absent, or unreadable → treat as free
 

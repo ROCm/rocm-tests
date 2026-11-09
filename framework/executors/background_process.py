@@ -644,6 +644,8 @@ def _posix_select_drain(
 
         # process.stdout/.stderr are always real streams here — Popen was called
         # with stdout=PIPE, stderr=PIPE.
+        assert process.stdout is not None
+        assert process.stderr is not None
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ)
         selector.register(process.stderr, selectors.EVENT_READ)
@@ -668,7 +670,7 @@ def _posix_select_drain(
                 (process.stdout, True),
                 (process.stderr, False),
             ]:
-                tail = pipe.read()  # type: ignore[union-attr]
+                tail = pipe.read()
                 if tail:
                     target = stdout_console if is_stdout else stderr_console
                     _bg_pipe_write(tail, target, log_fh)

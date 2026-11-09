@@ -117,7 +117,7 @@ def _acquire_exclusive_lock(lock_fh, timeout: float = 7200.0) -> None:
         fd = lock_fh.fileno()
         while True:
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[name-defined]
                 break
             except OSError as exc:
                 if time.monotonic() >= deadline:
@@ -141,7 +141,7 @@ def _release_exclusive_lock(lock_fh) -> None:
     else:
         fd = lock_fh.fileno()
         with contextlib.suppress(OSError):
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[name-defined]
 
 
 def _write_build_skip_log(log_path: str, src: str, binary: str) -> None:
