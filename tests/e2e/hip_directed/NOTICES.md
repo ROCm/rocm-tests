@@ -22,8 +22,9 @@ terms, and disclaimers.
 The `hip_catch_repo` fixture clones the
 [ROCm/rocm-systems](https://github.com/ROCm/rocm-systems) monorepo at runtime and
 configures `projects/hip-tests/catch`, building only the executables that hold the
-directed tests (`DeviceTest`, `StreamTest`, `MemoryTest1`, `ModuleTest`). The clone
-is pinned to the exact commit the installed ROCm was built from (the TheRock
+directed tests (`DeviceTest`, `StreamTest`, `MemoryTest1`, `ModuleTest`) plus the
+`MemoryPerformance` executable that holds the memory performance scenarios. The
+clone is pinned to the exact commit the installed ROCm was built from (the TheRock
 manifest `pin_sha`), overridable via `ROCM_TEST_ROCM_SYSTEMS_REF`, falling back to
 `develop`.
 
@@ -41,7 +42,7 @@ resolved by hip-tests' own CMake, not by this repository: it first tries
 `find_package(Catch2 3.8.1)`, and otherwise downloads a pinned, hash-verified
 archive via CMake `FetchContent` from AMD's third-party dependency mirror
 (`https://rocm-third-party-deps.s3.us-east-2.amazonaws.com/Catch2-3.8.1.tar.gz`).
-The resulting library is linked into the four test executables built above.
+The resulting library is linked into the test executables built above.
 
 - **Copyright:** Copyright Catch2 Authors
 - **License:** Boost Software License 1.0 (BSL-1.0)
@@ -147,8 +148,9 @@ hip-tests, BSL-1.0 for Catch2, and BSD-2-Clause for picojson.
 ## First-Party Test Code
 
 The Python files in this directory (`conftest.py`, `test_hip_directed_catch2.py`,
-`__init__.py`) are original AMD-authored code, copyright Advanced Micro Devices,
-Inc., licensed under the MIT License (the same license as the parent repository).
+`test_hip_mem_pool.py`, `__init__.py`) are original AMD-authored code, copyright
+Advanced Micro Devices, Inc., licensed under the MIT License (the same license as
+the parent repository).
 They do not derive from
 `hip-tests`, Catch2, or picojson source code; they clone, configure, build, and
 execute those projects and assert on their results.
