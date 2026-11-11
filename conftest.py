@@ -35,6 +35,10 @@ from __future__ import annotations
 from _pytest.mark.structures import MarkDecorator
 import pytest
 
+# Allow pytest to rewrite assertions in os_deps_plugin so error messages are
+# detailed when assertions inside the plugin fail during testing.
+pytest.register_assert_rewrite("framework.plugins.os_deps_plugin")
+
 
 def _mark_getattr(self: MarkDecorator, name: str) -> MarkDecorator:
     """Enable @pytest.mark.dim.val dotted syntax (e.g. @pytest.mark.ci.pr).
@@ -77,4 +81,5 @@ pytest_plugins = [
     "framework.plugins.reports_plugin",  # Allure label mapping, outcome_fixture
     "framework.plugins.builder_plugin",  # --rock-dir/--compiler-build-dir, rock_dir/compile_binary/ld_path fixtures
     "framework.plugins.install_plugin",  # --pre-install rocm=X / pkg=X, parallel pre-session node install
+    "framework.plugins.os_deps_plugin",  # os_deps fixture + @pytest.mark.os_deps per-test OS package install
 ]
