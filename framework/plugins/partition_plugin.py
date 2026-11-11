@@ -13,24 +13,21 @@ Other tests are unchanged.
 A test that uses ``target_executor`` is checked on the node that fixture acquired.
 The sysfs read goes through that executor, so ``--remote-node`` reads the GPU host
 rather than the controller running pytest. A partition-marked test with no
-``target_executor`` is checked on the controller. The result is cached per node for
-the session. The marker does not change the partition.
-
-Set the mode before pytest, for example ``sudo amd-smi set -C CPX`` or
+``target_executor`` is checked on the controller. The marker does not change the
+partition. Set it before pytest, for example ``sudo amd-smi set -C CPX`` or
 ``sudo amd-smi set -M NPS1``.
 
-When the matching sysfs file is not readable, that half of the check does not skip.
+The ``/sys`` probe runs only on Linux. On any other platform, including Windows,
+the probe is not attempted and the test is not skipped. A missing or unreadable
+file on Linux also does not skip.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
 import logging
 import pathlib
 
 import pytest
-
-from framework.executors.abstract_executor import AbstractExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -39,96 +36,109 @@ _MEMORY_MODES = ("nps1", "nps2", "nps4")
 _COMPUTE_FILE = "current_compute_partition"
 _MEMORY_FILE = "current_memory_partition"
 _PROBE_TIMEOUT_SECS = 30.0
-_CACHE_ATTR = "_partition_mode_cache"
 
 
 def _modes_from_text(text: str) -> set[str]:
     """Return distinct non-empty lines of partition text, lower-cased."""
-    modes: set[str] = set()
-    for line in text.splitlines():
-        token = line.strip().lower()
-        if token:
-            modes.add(token)
-    return modes
+    return {line.strip().lower() for line in text.splitlines() if line.strip()}
 
 
-def _read_partition_file(filename: str) -> set[str]:
+def _local_has_sysfs() -> bool:
+    """True when this pytest process is Linux and ``/sys`` can be read."""
+    from framework.os_adapter import os_adapter_factory  # pylint: disable=import-outside-toplevel
+
+    return os_adapter_factory().get_platform_name() in ("linux", "wsl")
+
+
+def _executor_has_sysfs(executor: object) -> bool | None:
+    """True when ``executor``'s node is Linux.
+
+    ``None`` means ``uname`` failed and the caller must not cache the result.
+    ``False`` means another platform, such as Windows, so ``/sys`` is not read.
+    """
+    host = str(getattr(executor, "host", None) or id(executor))
+    cache: dict[str, bool] = getattr(_executor_has_sysfs, "cache", {})
+    if host in cache:
+        return cache[host]
+    result = executor.run("uname -s", timeout=_PROBE_TIMEOUT_SECS)  # type: ignore[attr-defined]
+    if not result.ok:
+        logger.info("partition probe could not run uname (exit %s); not skipping", result.exit_code)
+        return None
+    cache[host] = result.stdout.strip().lower().startswith("linux")
+    _executor_has_sysfs.cache = cache  # type: ignore[attr-defined]
+    return cache[host]
+
+
+def _read_local(filename: str) -> set[str]:
     """Return distinct values of one sysfs partition file on this machine."""
+    if not _local_has_sysfs():
+        logger.info("partition sysfs check does not apply on this platform; not skipping")
+        return set()
     modes: set[str] = set()
     for path in pathlib.Path("/sys/bus/pci/devices").glob(f"*/{filename}"):
         try:
-            text = path.read_text(encoding="utf-8")
+            modes.update(_modes_from_text(path.read_text(encoding="utf-8")))
         except OSError:
             continue
-        modes.update(_modes_from_text(text))
     return modes
 
 
-def _probe_command(filename: str) -> str:
-    """Shell command that prints one partition file from every PCI device."""
-    return f'for f in /sys/bus/pci/devices/*/{filename}; do [ -r "$f" ] && cat "$f"; done'
-
-
-def _probe_executor(executor: AbstractExecutor, filename: str) -> tuple[set[str], bool]:
+def _read_executor(executor: object, filename: str) -> set[str] | None:
     """Read ``filename`` through ``executor``.
 
-    Returns:
-        A pair of the modes found and whether that result is safe to cache.
-        ``DryRunExecutor`` reports no modes. A command that prints nothing and
-        writes no stderr is treated as "no partition file" and cached. A command
-        that fails with stderr is not cached, so a later test can probe again.
+    Returns ``None`` when the command failed and the result must not be cached.
+    An empty set means the file is absent or the node is not Linux, so the caller
+    does not skip.
     """
     from framework.executors.dry_run_executor import DryRunExecutor  # pylint: disable=import-outside-toplevel
 
     if isinstance(executor, DryRunExecutor):
-        return set(), True
-
-    result = executor.run(_probe_command(filename), timeout=_PROBE_TIMEOUT_SECS)
+        return set()
+    has_sysfs = _executor_has_sysfs(executor)
+    if has_sysfs is None:
+        return None
+    if not has_sysfs:
+        logger.info("partition sysfs check does not apply on the assigned node; not skipping")
+        return set()
+    command = f'for f in /sys/bus/pci/devices/*/{filename}; do [ -r "$f" ] && cat "$f"; done'
+    result = executor.run(command, timeout=_PROBE_TIMEOUT_SECS)  # type: ignore[attr-defined]
     modes = _modes_from_text(result.stdout)
     if modes or result.ok or not result.stderr.strip():
-        return modes, True
-    logger.info(
-        "partition probe of %s failed (exit %s); not skipping",
-        filename,
-        result.exit_code,
-    )
-    return set(), False
+        return modes
+    logger.info("partition probe of %s failed (exit %s); not skipping", filename, result.exit_code)
+    return None
 
 
-def _cache_key(executor: AbstractExecutor) -> str:
-    """Identity of the machine ``executor`` runs on."""
-    host = getattr(executor, "host", None)
-    if isinstance(host, str) and host:
-        return f"ssh:{host}"
-    return f"local:{type(executor).__name__}"
-
-
-def _mode_cache(config: pytest.Config) -> dict[tuple[str, str], set[str]]:
-    """Session cache of partition modes, keyed by node and sysfs filename."""
-    cache = getattr(config, _CACHE_ATTR, None)
+def _cached_modes(config: pytest.Config, key: tuple[str, str], read) -> set[str]:
+    """Return partition modes for ``key``, reading them once per session."""
+    cache = getattr(config, "_partition_mode_cache", None)
     if cache is None:
         cache = {}
-        setattr(config, _CACHE_ATTR, cache)
-    return cache
-
-
-def _modes_on_executor(config: pytest.Config, executor: AbstractExecutor, filename: str) -> set[str]:
-    """Return cached partition modes for ``executor``'s node."""
-    cache = _mode_cache(config)
-    key = (_cache_key(executor), filename)
+        config._partition_mode_cache = cache  # type: ignore[attr-defined]
     if key not in cache:
-        modes, cacheable = _probe_executor(executor, filename)
-        if not cacheable:
-            return modes
+        modes = read()
+        if modes is None:
+            return set()
         cache[key] = modes
     return set(cache[key])
 
 
-def _modes_on_group(config: pytest.Config, group: Iterable[AbstractExecutor], filename: str) -> set[str]:
-    """Return the union of partition modes across every executor in ``group``."""
+def _partition_modes(request: pytest.FixtureRequest, filename: str) -> set[str]:
+    """Read ``filename`` on the assigned node, or on the controller."""
+    if "target_executor" not in request.fixturenames:
+        return _cached_modes(request.config, ("controller", filename), lambda: _read_local(filename))
+
+    group = request.getfixturevalue("target_executor")
     modes: set[str] = set()
     for executor in group:
-        modes.update(_modes_on_executor(config, executor, filename))
+        host = getattr(executor, "host", None) or type(executor).__name__
+        modes.update(
+            _cached_modes(
+                request.config,
+                (str(host), filename),
+                lambda executor=executor: _read_executor(executor, filename),
+            )
+        )
     return modes
 
 
@@ -146,21 +156,11 @@ def _marked_modes(item: pytest.Item, allowed: tuple[str, ...]) -> list[str]:
 
 
 def _skip_unless(
-    item: pytest.Item,
-    kind: str,
-    filename: str,
-    wanted: list[str],
-    set_flag: str,
-    modes: set[str],
+    item: pytest.Item, kind: str, filename: str, wanted: list[str], set_flag: str, modes: set[str]
 ) -> None:
     """Skip ``item`` when ``modes`` is not exactly one of ``wanted``."""
     if not modes:
-        logger.info(
-            "partition.%s on %s but no %s value; not skipping",
-            wanted[0],
-            item.nodeid,
-            filename,
-        )
+        logger.info("partition.%s on %s but no %s value; not skipping", wanted[0], item.nodeid, filename)
         return
     if len(modes) > 1:
         pytest.skip(
@@ -175,43 +175,18 @@ def _skip_unless(
         )
 
 
-def _apply_partition_markers(item: pytest.Item, modes_for: Callable[[str], set[str]]) -> None:
-    """Apply compute and memory marker checks using ``modes_for(filename)``."""
-    compute = _marked_modes(item, _COMPUTE_MODES)
-    memory = _marked_modes(item, _MEMORY_MODES)
-    if compute:
-        _skip_unless(item, "compute", _COMPUTE_FILE, compute, "-C", modes_for(_COMPUTE_FILE))
-    if memory:
-        _skip_unless(item, "memory", _MEMORY_FILE, memory, "-M", modes_for(_MEMORY_FILE))
-
-
 @pytest.fixture(autouse=True)
 def _partition_on_execution_node(request: pytest.FixtureRequest) -> None:
     """Skip a test whose partition marker does not match the assigned node.
 
     Tests without a ``partition.*`` marker return immediately and do not acquire
     a GPU. When the test already requests ``target_executor``, the sysfs files
-    are read through that executor after the node is acquired. Otherwise the
-    controller's own sysfs is read.
+    are read through that executor after the node is acquired.
     """
     item = request.node
-    if not _marked_modes(item, _COMPUTE_MODES) and not _marked_modes(item, _MEMORY_MODES):
-        return
-
-    if "target_executor" in request.fixturenames:
-        group = request.getfixturevalue("target_executor")
-        _apply_partition_markers(
-            item,
-            lambda filename: _modes_on_group(request.config, group, filename),
-        )
-        return
-
-    cache = _mode_cache(request.config)
-
-    def _local_modes(filename: str) -> set[str]:
-        key = ("controller", filename)
-        if key not in cache:
-            cache[key] = _read_partition_file(filename)
-        return set(cache[key])
-
-    _apply_partition_markers(item, _local_modes)
+    compute = _marked_modes(item, _COMPUTE_MODES)
+    memory = _marked_modes(item, _MEMORY_MODES)
+    if compute:
+        _skip_unless(item, "compute", _COMPUTE_FILE, compute, "-C", _partition_modes(request, _COMPUTE_FILE))
+    if memory:
+        _skip_unless(item, "memory", _MEMORY_FILE, memory, "-M", _partition_modes(request, _MEMORY_FILE))
