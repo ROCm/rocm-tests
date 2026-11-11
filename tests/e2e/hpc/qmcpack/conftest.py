@@ -26,6 +26,7 @@ import os
 import pathlib
 import re
 import shlex
+import time
 
 from filelock import FileLock
 import pytest
@@ -42,7 +43,7 @@ _LOCK_DIR = pathlib.Path("output") / ".pkg-locks"
 _RUN_ID = os.environ.get("PYTEST_XDIST_TESTRUNUID") or str(os.getpid())
 
 # Ubuntu names are installed as given. install_packages appends ``-devel`` on
-# RHEL and SLES, so those lists are the base names.
+# RHEL and SLES, so this list is the base names that suffix correctly.
 _UBUNTU_PACKAGES = [
     "git",
     "cmake",
@@ -60,15 +61,21 @@ _UBUNTU_PACKAGES = [
     "libomp-dev",
     "libfftw3-dev",
 ]
-_RPM_PACKAGES = [
+_RPM_DEVEL_PACKAGES = [
     "boost",
     "lapack",
     "openblas",
     "hdf5",
-    "fftw3",
     "libxml2",
     "zlib",
 ]
+# These names must not go through install_packages: it would turn them into
+# git-devel, cmake-devel, and fftw3-devel. RHEL's FFTW devel package is
+# fftw-devel; SLES's is fftw3-devel.
+_RPM_EXACT_PACKAGES = {
+    "rhel": ["git", "cmake", "gcc-c++", "make", "python3", "fftw-devel"],
+    "sles": ["git", "cmake", "gcc-c++", "make", "python3", "fftw3-devel"],
+}
 
 
 @dataclass(frozen=True)
@@ -116,8 +123,27 @@ def _shell(cmake_executor):
     return cmake_executor if cmake_executor is not None else _LocalShell()
 
 
+def _install_exact(executor, family: str, packages: list[str]) -> None:
+    """Install package names that must not receive the ``-devel`` suffix."""
+    pkg_str = " ".join(packages)
+    if family == "rhel":
+        cmd = f"sudo dnf install -y --nogpgcheck {pkg_str}"
+    else:
+        cmd = f"sudo zypper install -y --no-gpg-checks {pkg_str}"
+    logger.info("installing exact packages [%s]: %s", family, pkg_str)
+    result = executor.run(cmd, timeout=600)
+    if not result.ok:
+        logger.warning(
+            "exact package install [%s] returned non-zero (exit=%s) for [%s]\n%s",
+            family,
+            result.exit_code,
+            pkg_str,
+            (result.stderr or "")[:500],
+        )
+
+
 def _install_build_packages(executor) -> None:
-    """Install QMCPACK's OS build dependencies once, through ``install_packages``."""
+    """Install QMCPACK's OS build dependencies once."""
     family = detect_os(executor)
     if family == "ubuntu":
         update = executor.run("sudo apt-get update -qq", timeout=600)
@@ -125,8 +151,8 @@ def _install_build_packages(executor) -> None:
             logger.warning("apt-get update failed:\n%s", (update.stderr or "")[:500])
         install_packages(executor, _UBUNTU_PACKAGES)
         return
-    # install_packages appends -devel on RHEL and SLES.
-    install_packages(executor, _RPM_PACKAGES)
+    install_packages(executor, _RPM_DEVEL_PACKAGES)
+    _install_exact(executor, family, _RPM_EXACT_PACKAGES[family])
 
 
 def _resolve_compilers(executor, rock_dir: str) -> tuple[str, str]:
@@ -242,6 +268,19 @@ def qmcpack_functional_build(
         f"LD_LIBRARY_PATH={shlex.quote(lib)}:${{LD_LIBRARY_PATH:-}}"
     )
     logger.info("QMCPACK: configuring HIP builds (gpu_arch=%s, rocm=%s)", resolved_gpu_arch, rocm_path)
+    # BUILD_TIMEOUT is the wall clock for every configure, build, and install
+    # across the four configurations, not the cap of each step.
+    build_deadline = time.monotonic() + BUILD_TIMEOUT
+
+    def step_timeout() -> float:
+        remaining = build_deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(
+                "QMCPACK configure/build/install exceeded the "
+                f"{BUILD_TIMEOUT:.0f}s budget shared by all four configurations"
+            )
+        return remaining
+
     for name, complex_, mixed in CONFIGS:
         build = f"{qmc_dir}/build_{name}-{arch_label}"
         install = f"{qmc_dir}/install_{name}-{arch_label}"
@@ -271,21 +310,21 @@ def qmcpack_functional_build(
         _run_step(
             configure_cmd,
             executor=executor,
-            timeout=build_timeout,
+            timeout=step_timeout(),
             label=f"{name} configure",
             log_path=os.path.join(log_dir, f"{name}-configure.log"),
         )
         _run_step(
             build_cmd,
             executor=executor,
-            timeout=build_timeout,
+            timeout=step_timeout(),
             label=f"{name} build",
             log_path=os.path.join(log_dir, f"{name}-build.log"),
         )
         _run_step(
             install_cmd,
             executor=executor,
-            timeout=build_timeout,
+            timeout=step_timeout(),
             label=f"{name} install",
             log_path=os.path.join(log_dir, f"{name}-install.log"),
         )
