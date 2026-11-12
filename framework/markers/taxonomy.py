@@ -29,6 +29,9 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     "os": {"linux"},
     # Scenario type (optional)
     "e2e": {"stack", "multinode"},
+    # Compute partition (spx/dpx/tpx/qpx/cpx) and memory partition (nps1/nps2/nps4).
+    # Optional. A test runs only when the host mode matches.
+    "partition": {"spx", "dpx", "tpx", "qpx", "cpx", "nps1", "nps2", "nps4"},
 }
 
 REQUIRED_DIMENSIONS: set[str] = {"hw", "ci", "layer"}
@@ -75,6 +78,7 @@ ALLURE_DIMENSION_MAP: dict[str, str] = {
     "e2e": "epic",  # allure.dynamic.epic(...)
     "os": "tag",  # allure.dynamic.tag(...)
     "runtime": "tag",
+    "partition": "tag",
 }
 
 # Allure severity level for each hw.* value.
@@ -125,6 +129,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "os.linux",
     ],
     "tests/e2e/hip_runtime": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # Media pipelines (rocDecode and later video paths). The rocDecode test
+    # overrides hw.gpu with hw.multi_gpu + gpu_count("all") so every partition
+    # on the node is visible.
+    "tests/e2e/media": [
         "hw.gpu",
         "layer.runtime",
         "ci.nightly",
