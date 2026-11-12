@@ -18,8 +18,9 @@ partition. Set it before pytest, for example ``sudo amd-smi set -C CPX`` or
 ``sudo amd-smi set -M NPS1``.
 
 The ``/sys`` probe runs only on Linux. On any other platform, including Windows,
-the probe is not attempted and the test is not skipped. A missing or unreadable
-file on Linux also does not skip.
+the probe is not attempted and the test is not skipped. On Linux, a missing or
+unreadable partition file skips the marked test: the partition state is
+unavailable, so the marker cannot be enforced.
 """
 
 from __future__ import annotations
@@ -36,6 +37,9 @@ _MEMORY_MODES = ("nps1", "nps2", "nps4")
 _COMPUTE_FILE = "current_compute_partition"
 _MEMORY_FILE = "current_memory_partition"
 _PROBE_TIMEOUT_SECS = 30.0
+# Non-Linux nodes have no ``/sys`` partition files. An empty read there is not a
+# failed probe, so the marked test is allowed to run.
+_SYSFS_NOT_APPLICABLE = object()
 
 
 def _modes_from_text(text: str) -> set[str]:
@@ -62,18 +66,18 @@ def _executor_has_sysfs(executor: object) -> bool | None:
         return cache[host]
     result = executor.run("uname -s", timeout=_PROBE_TIMEOUT_SECS)  # type: ignore[attr-defined]
     if not result.ok:
-        logger.info("partition probe could not run uname (exit %s); not skipping", result.exit_code)
+        logger.info("partition probe could not run uname (exit %s); partition state unavailable", result.exit_code)
         return None
     cache[host] = result.stdout.strip().lower().startswith("linux")
     _executor_has_sysfs.cache = cache  # type: ignore[attr-defined]
     return cache[host]
 
 
-def _read_local(filename: str) -> set[str]:
+def _read_local(filename: str) -> set[str] | object:
     """Return distinct values of one sysfs partition file on this machine."""
     if not _local_has_sysfs():
         logger.info("partition sysfs check does not apply on this platform; not skipping")
-        return set()
+        return _SYSFS_NOT_APPLICABLE
     modes: set[str] = set()
     for path in pathlib.Path("/sys/bus/pci/devices").glob(f"*/{filename}"):
         try:
@@ -83,29 +87,29 @@ def _read_local(filename: str) -> set[str]:
     return modes
 
 
-def _read_executor(executor: object, filename: str) -> set[str] | None:
+def _read_executor(executor: object, filename: str) -> set[str] | object | None:
     """Read ``filename`` through ``executor``.
 
     Returns ``None`` when the command failed and the result must not be cached.
-    An empty set means the file is absent or the node is not Linux, so the caller
-    does not skip.
+    ``_SYSFS_NOT_APPLICABLE`` means the node is not Linux, so the caller does not
+    skip. An empty set on Linux means the partition state is unavailable.
     """
     from framework.executors.dry_run_executor import DryRunExecutor  # pylint: disable=import-outside-toplevel
 
     if isinstance(executor, DryRunExecutor):
-        return set()
+        return _SYSFS_NOT_APPLICABLE
     has_sysfs = _executor_has_sysfs(executor)
     if has_sysfs is None:
         return None
     if not has_sysfs:
         logger.info("partition sysfs check does not apply on the assigned node; not skipping")
-        return set()
+        return _SYSFS_NOT_APPLICABLE
     command = f'for f in /sys/bus/pci/devices/*/{filename}; do [ -r "$f" ] && cat "$f"; done'
     result = executor.run(command, timeout=_PROBE_TIMEOUT_SECS)  # type: ignore[attr-defined]
     modes = _modes_from_text(result.stdout)
     if modes or result.ok or not result.stderr.strip():
         return modes
-    logger.info("partition probe of %s failed (exit %s); not skipping", filename, result.exit_code)
+    logger.info("partition probe of %s failed (exit %s); partition state unavailable", filename, result.exit_code)
     return None
 
 
@@ -120,25 +124,33 @@ def _cached_modes(config: pytest.Config, key: tuple[str, str], read) -> set[str]
         if modes is None:
             return set()
         cache[key] = modes
-    return set(cache[key])
+    found = cache[key]
+    if found is _SYSFS_NOT_APPLICABLE:
+        return found
+    return set(found)
 
 
-def _partition_modes(request: pytest.FixtureRequest, filename: str) -> set[str]:
+def _partition_modes(request: pytest.FixtureRequest, filename: str) -> set[str] | object:
     """Read ``filename`` on the assigned node, or on the controller."""
     if "target_executor" not in request.fixturenames:
         return _cached_modes(request.config, ("controller", filename), lambda: _read_local(filename))
 
     group = request.getfixturevalue("target_executor")
     modes: set[str] = set()
+    saw_node = False
     for executor in group:
         host = getattr(executor, "host", None) or type(executor).__name__
-        modes.update(
-            _cached_modes(
-                request.config,
-                (str(host), filename),
-                lambda executor=executor: _read_executor(executor, filename),
-            )
+        found = _cached_modes(
+            request.config,
+            (str(host), filename),
+            lambda executor=executor: _read_executor(executor, filename),
         )
+        if found is _SYSFS_NOT_APPLICABLE:
+            continue
+        saw_node = True
+        modes.update(found)
+    if not saw_node:
+        return _SYSFS_NOT_APPLICABLE
     return modes
 
 
@@ -156,13 +168,18 @@ def _marked_modes(item: pytest.Item, allowed: tuple[str, ...]) -> list[str]:
 
 
 def _skip_unless(
-    item: pytest.Item, kind: str, filename: str, wanted: list[str], set_flag: str, modes: set[str]
+    item: pytest.Item, kind: str, filename: str, wanted: list[str], set_flag: str, modes: set[str] | object
 ) -> None:
     """Skip ``item`` when ``modes`` is not exactly one of ``wanted``."""
     marked = ",".join(wanted)
-    if not modes:
-        logger.info("partition.%s on %s but no %s value; not skipping", marked, item.nodeid, filename)
+    if modes is _SYSFS_NOT_APPLICABLE:
+        logger.info("partition.%s on %s: sysfs check does not apply; not skipping", marked, item.nodeid)
         return
+    if not modes:
+        pytest.skip(
+            f"partition.{marked} test skipped: {kind} partition state unavailable "
+            f"({filename} missing or unreadable on the assigned node)."
+        )
     if len(modes) > 1:
         pytest.skip(
             f"partition test skipped: GPUs report mixed {kind} partitions {sorted(modes)}. "
