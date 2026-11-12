@@ -25,6 +25,8 @@ unavailable, so the marker cannot be enforced.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+import enum
 import logging
 import pathlib
 
@@ -37,9 +39,20 @@ _MEMORY_MODES = ("nps1", "nps2", "nps4")
 _COMPUTE_FILE = "current_compute_partition"
 _MEMORY_FILE = "current_memory_partition"
 _PROBE_TIMEOUT_SECS = 30.0
-# Non-Linux nodes have no ``/sys`` partition files. An empty read there is not a
-# failed probe, so the marked test is allowed to run.
-_SYSFS_NOT_APPLICABLE = object()
+
+
+class _SysfsNotApplicable(enum.Enum):
+    """Sentinel: this node has no Linux sysfs partition files.
+
+    An empty read there is not a failed probe, so the marked test is allowed to run.
+    This is an enum rather than ``object()``. ``set[str] | object`` collapses to
+    ``object``, and mypy then rejects ``len``, ``sorted``, and ``iter`` on the result.
+    """
+
+    VALUE = "not_applicable"
+
+
+_SYSFS_NOT_APPLICABLE = _SysfsNotApplicable.VALUE
 
 
 def _modes_from_text(text: str) -> set[str]:
@@ -73,7 +86,7 @@ def _executor_has_sysfs(executor: object) -> bool | None:
     return cache[host]
 
 
-def _read_local(filename: str) -> set[str] | object:
+def _read_local(filename: str) -> set[str] | _SysfsNotApplicable:
     """Return distinct values of one sysfs partition file on this machine."""
     if not _local_has_sysfs():
         logger.info("partition sysfs check does not apply on this platform; not skipping")
@@ -87,7 +100,7 @@ def _read_local(filename: str) -> set[str] | object:
     return modes
 
 
-def _read_executor(executor: object, filename: str) -> set[str] | object | None:
+def _read_executor(executor: object, filename: str) -> set[str] | _SysfsNotApplicable | None:
     """Read ``filename`` through ``executor``.
 
     Returns ``None`` when the command failed and the result must not be cached.
@@ -113,12 +126,19 @@ def _read_executor(executor: object, filename: str) -> set[str] | object | None:
     return None
 
 
-def _cached_modes(config: pytest.Config, key: tuple[str, str], read) -> set[str]:
+def _cached_modes(
+    config: pytest.Config,
+    key: tuple[str, str],
+    read: Callable[[], set[str] | _SysfsNotApplicable | None],
+) -> set[str] | _SysfsNotApplicable:
     """Return partition modes for ``key``, reading them once per session."""
-    cache = getattr(config, "_partition_mode_cache", None)
-    if cache is None:
+    cache: dict[tuple[str, str], set[str] | _SysfsNotApplicable]
+    stored = getattr(config, "_partition_mode_cache", None)
+    if stored is None:
         cache = {}
         config._partition_mode_cache = cache  # type: ignore[attr-defined]
+    else:
+        cache = stored
     if key not in cache:
         modes = read()
         if modes is None:
@@ -130,7 +150,7 @@ def _cached_modes(config: pytest.Config, key: tuple[str, str], read) -> set[str]
     return set(found)
 
 
-def _partition_modes(request: pytest.FixtureRequest, filename: str) -> set[str] | object:
+def _partition_modes(request: pytest.FixtureRequest, filename: str) -> set[str] | _SysfsNotApplicable:
     """Read ``filename`` on the assigned node, or on the controller."""
     if "target_executor" not in request.fixturenames:
         return _cached_modes(request.config, ("controller", filename), lambda: _read_local(filename))
@@ -140,11 +160,11 @@ def _partition_modes(request: pytest.FixtureRequest, filename: str) -> set[str] 
     saw_node = False
     for executor in group:
         host = getattr(executor, "host", None) or type(executor).__name__
-        found = _cached_modes(
-            request.config,
-            (str(host), filename),
-            lambda executor=executor: _read_executor(executor, filename),
-        )
+
+        def _read_this(bound=executor) -> set[str] | _SysfsNotApplicable | None:
+            return _read_executor(bound, filename)
+
+        found = _cached_modes(request.config, (str(host), filename), _read_this)
         if found is _SYSFS_NOT_APPLICABLE:
             continue
         saw_node = True
@@ -168,7 +188,12 @@ def _marked_modes(item: pytest.Item, allowed: tuple[str, ...]) -> list[str]:
 
 
 def _skip_unless(
-    item: pytest.Item, kind: str, filename: str, wanted: list[str], set_flag: str, modes: set[str] | object
+    item: pytest.Item,
+    kind: str,
+    filename: str,
+    wanted: list[str],
+    set_flag: str,
+    modes: set[str] | _SysfsNotApplicable,
 ) -> None:
     """Skip ``item`` when ``modes`` is not exactly one of ``wanted``."""
     marked = ",".join(wanted)
