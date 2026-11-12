@@ -17,6 +17,7 @@ Plugin responsibilities (registration order — markers_plugin MUST be first):
     scheduling_plugin   -- --schedule-policy/--collect-runtimes, unified collection hook + runtime collector
     executor_plugin     -- --container-mode/--container-image, cpu_executor/container_executor
     os_plugin           -- os_adapter/platform_name fixtures, os.* marker skip hook
+    partition_plugin    -- partition.* marker skip hook (compute SPX/DPX/TPX/QPX/CPX, memory NPS1/NPS2/NPS4)
     health_plugin       -- Pre/post GPU health gates (temp, ECC, VRAM, clocks)
     artifacts_plugin    -- Allure attachment of GPU state dumps on failure
     prereqs_plugin      -- Session-level prerequisite checks (driver, ROCm version)
@@ -74,6 +75,7 @@ pytest_plugins = [
     "framework.plugins.scheduling_plugin",  # --schedule-policy/--collect-runtimes, unified collection hook + runtime collector  # noqa: E501
     "framework.plugins.executor_plugin",  # --container-mode/--container-image/--container-runtime, cpu_executor/container_executor  # noqa: E501
     "framework.plugins.os_plugin",  # os_adapter/platform_name fixtures, os.* marker skip hook
+    "framework.plugins.partition_plugin",  # partition compute/memory skip hook
     "framework.plugins.health_plugin",  # health_fixture (temp/ECC/VRAM gates)
     "framework.plugins.artifacts_plugin",  # artifacts_fixture, allure_reporter fixture
     "framework.plugins.prereqs_plugin",  # prereqs_fixture (session prereq checks)
