@@ -56,7 +56,7 @@ def _executor_has_sysfs(executor: object) -> bool | None:
     ``None`` means ``uname`` failed and the caller must not cache the result.
     ``False`` means another platform, such as Windows, so ``/sys`` is not read.
     """
-    host = str(getattr(executor, "host", None) or id(executor))
+    host = str(getattr(executor, "host", None) or type(executor).__name__)
     cache: dict[str, bool] = getattr(_executor_has_sysfs, "cache", {})
     if host in cache:
         return cache[host]
@@ -159,8 +159,9 @@ def _skip_unless(
     item: pytest.Item, kind: str, filename: str, wanted: list[str], set_flag: str, modes: set[str]
 ) -> None:
     """Skip ``item`` when ``modes`` is not exactly one of ``wanted``."""
+    marked = ",".join(wanted)
     if not modes:
-        logger.info("partition.%s on %s but no %s value; not skipping", wanted[0], item.nodeid, filename)
+        logger.info("partition.%s on %s but no %s value; not skipping", marked, item.nodeid, filename)
         return
     if len(modes) > 1:
         pytest.skip(
@@ -170,8 +171,8 @@ def _skip_unless(
     node_mode = next(iter(modes))
     if node_mode not in wanted:
         pytest.skip(
-            f"partition.{wanted[0]} test skipped: node {kind} partition is {node_mode.upper()}. "
-            f"Set it with `sudo amd-smi set {set_flag} {wanted[0].upper()}` to run this test."
+            f"partition.{marked} test skipped: node {kind} partition is {node_mode.upper()}. "
+            f"Set it with `sudo amd-smi set {set_flag} {marked.upper()}` to run this test."
         )
 
 
