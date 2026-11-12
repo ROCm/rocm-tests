@@ -684,7 +684,10 @@ def _resolve_pkgs(pkg_specs: tuple, backend: _Backend) -> list[str]:
         elif isinstance(spec, dict):
             raw = spec.get(backend.key) or spec.get("*")
             if not raw:
-            _exec = _SubprocessExecutor()
+                raise RuntimeError(
+                    f"os_deps: no mapping for backend '{backend.key}' in spec {spec!r}. "
+                    f"Add a '{backend.key}' key or a '*' fallback."
+                )
             items = [raw] if isinstance(raw, str) else list(raw)
             for item in items:
                 name, ver = _parse_version(item)
