@@ -16,7 +16,7 @@ import pytest
 from tests.e2e.hpc.gromacs._workload import CTEST_TIMEOUT, RUN_TIMEOUT, GromacsBuild
 
 
-def _os_id(target_executor) -> str:
+def _run_os_id(target_executor) -> str:
     """Return the host OS id from /etc/os-release."""
     result = target_executor.run(
         "bash -lc '. /etc/os-release; printf %s \"$ID\"'",
@@ -29,7 +29,7 @@ def _os_id(target_executor) -> str:
 @pytest.mark.runtime.soak
 def test_gromacs_functional(target_executor, rock_dir: str, gromacs_build: GromacsBuild):
     """GROMACS HIP MPI tests must pass ctest. The session fixture already built."""
-    os_id = _os_id(target_executor)
+    os_id = _run_os_id(target_executor)
     if os_id not in {"ubuntu", "debian"}:
         pytest.skip(f"gromacs functional build uses apt; this host is {os_id or 'unknown'}")
     mpi_bin = shlex.quote(gromacs_build.mpi_home + "/bin")

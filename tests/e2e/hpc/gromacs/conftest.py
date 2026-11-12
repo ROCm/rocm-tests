@@ -13,6 +13,7 @@ UCX-enabled Open MPI. The GROMACS tree is taken under
 
 from __future__ import annotations
 
+import logging
 import os
 import pathlib
 import posixpath
@@ -27,6 +28,8 @@ from tests.e2e.hpc.gromacs._workload import GROMACS_REF, GROMACS_URL, GromacsBui
 # A nested conftest cannot declare pytest_plugins.
 from tests.e2e.hpc.ucx.conftest import ucx_build as ucx_build
 
+logger = logging.getLogger(__name__)
+
 _OPENMPI_VERSION = "4.1.4"
 
 # Build and install dirs are keyed by ROCm version and GPU arch, so a new ROCm
@@ -40,27 +43,34 @@ test -n "$gfx"
 printf '%s-%s' "$ver" "$gfx" | tr -c 'A-Za-z0-9._-' '_'
 """
 
-_BUILD = r"""
+_STEP_ENV = r"""
 set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
 export PATH="${MPI_HOME}/bin:${ROCK}/bin:${ROCK}/llvm/bin:${PATH}"
 export LD_LIBRARY_PATH="${ROCK}/lib:${UCX_PREFIX}/lib:${MPI_HOME}/lib:${MPI_HOME}/lib64:${LD_LIBRARY_PATH:-}"
-src="${GROMACS_SRC}"
-build="${src}/build-mpi-${BUILD_KEY}"
-sentinel="${build}/tests/CTestTestfile.cmake"
-if [ -x "${build}/bin/gmx" ] && [ -f "${sentinel}" ]; then
-  echo "reusing GROMACS build at ${build}"
-  exit 0
+"""
+
+_REUSE = r"""
+set -euo pipefail
+if [ -x "${BUILD}/bin/gmx" ] && [ -f "${BUILD}/tests/CTestTestfile.cmake" ]; then
+  printf '%s' REUSE
 fi
+"""
+
+_PREREQS = r"""
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends \
   git cmake g++ make ca-certificates python3 openssh-client
+"""
+
+_CONFIGURE = _STEP_ENV + r"""
 gfx=$("${ROCK}/bin/rocminfo" | awk '/Name:[[:space:]]+gfx/{print $2; exit}')
 gfx=${gfx%%:*}
 test -n "$gfx"
 echo "GPU arch: $gfx"
-mkdir -p "${build}" "${GROMACS_INSTALL}"
-cmake -S "${src}" -B "${build}" \
+mkdir -p "${BUILD}" "${GROMACS_INSTALL}"
+cmake -S "${GROMACS_SRC}" -B "${BUILD}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DGMX_BUILD_OWN_FFTW=ON \
   -DCMAKE_C_COMPILER=gcc \
@@ -74,13 +84,22 @@ cmake -S "${src}" -B "${build}" \
   -DREGRESSIONTEST_DOWNLOAD=OFF \
   -DCMAKE_INSTALL_PREFIX="${GROMACS_INSTALL}" \
   -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-cmake --build "${build}" -j"$(nproc)"
-cmake --install "${build}"
-cmake --build "${build}" --target tests -j"$(nproc)"
+"""
+
+_COMPILE = _STEP_ENV + r"""
+cmake --build "${BUILD}" -j"$(nproc)"
+"""
+
+_INSTALL = _STEP_ENV + r"""
+cmake --install "${BUILD}"
+"""
+
+_BUILD_TESTS = _STEP_ENV + r"""
+cmake --build "${BUILD}" --target tests -j"$(nproc)"
 """
 
 
-def _bash(cmake_executor, script: str, env: dict[str, str], timeout: float):
+def _bash(cmake_executor, script: str, env: dict[str, str], timeout: float, *, label: str = "command"):
     """Run a bash script on the build node through the framework executors.
 
     Remote runs use the session ``cmake_executor``. Local runs use a ``CpuExecutor``,
@@ -95,11 +114,11 @@ def _bash(cmake_executor, script: str, env: dict[str, str], timeout: float):
         result = local.run(f"bash -lc {shlex.quote(script)}", timeout=timeout)
     if not result.ok:
         text = (result.stdout or "") + "\n" + (result.stderr or "")
-        raise RuntimeError(f"command failed (exit={result.exit_code}):\n{text[-4000:]}")
+        raise RuntimeError(f"GROMACS {label} failed (exit={result.exit_code}):\n{text[-4000:]}")
     return result
 
 
-def _os_id(cmake_executor) -> str:
+def _build_os_id(cmake_executor) -> str:
     """Return the build node's OS id from /etc/os-release."""
     result = _bash(cmake_executor, '. /etc/os-release; printf %s "$ID"', {}, 60)
     return (result.stdout or "").strip()
@@ -134,7 +153,7 @@ def gromacs_build(
     """
     if not rock_dir:
         pytest.skip("GROMACS build requires a ROCm install; pass --rock-dir / set ROCK_DIR")
-    os_id = _os_id(cmake_executor)
+    os_id = _build_os_id(cmake_executor)
     if os_id not in {"ubuntu", "debian"}:
         pytest.skip(f"gromacs functional build uses apt; this host is {os_id or 'unknown'}")
 
@@ -151,18 +170,26 @@ def gromacs_build(
         source = str(source_dir).replace("\\", "/")
         build_dir = posixpath.join(source, f"build-mpi-{build_key}")
         install_dir = posixpath.join(posixpath.dirname(source), f"install-{build_key}")
-        _bash(
-            cmake_executor,
-            _BUILD,
-            {
-                "ROCK": rock_dir,
-                "MPI_HOME": str(mpi_home),
-                "UCX_PREFIX": ucx_prefix,
-                "GROMACS_SRC": source,
-                "GROMACS_INSTALL": install_dir,
-                "BUILD_KEY": build_key,
-            },
-            build_timeout,
-        )
+        step_env = {
+            "ROCK": rock_dir,
+            "MPI_HOME": str(mpi_home),
+            "UCX_PREFIX": ucx_prefix,
+            "GROMACS_SRC": source,
+            "GROMACS_INSTALL": install_dir,
+            "BUILD": build_dir,
+        }
+        reused = _bash(cmake_executor, _REUSE, step_env, 60, label="reuse check")
+        if "REUSE" in (reused.stdout or ""):
+            logger.info("GROMACS: existing build tree at %s — skipping configure/build/install", build_dir)
+        else:
+            for label, script in (
+                ("prerequisites", _PREREQS),
+                ("cmake configure", _CONFIGURE),
+                ("cmake build", _COMPILE),
+                ("cmake install", _INSTALL),
+                ("cmake tests", _BUILD_TESTS),
+            ):
+                logger.info("GROMACS %s", label)
+                _bash(cmake_executor, script, step_env, build_timeout, label=label)
 
     return GromacsBuild(build_dir=build_dir, mpi_home=str(mpi_home), ucx_prefix=ucx_prefix)
