@@ -16,9 +16,10 @@ import os
 import pathlib
 import re
 import shutil
-import subprocess  # nosec B404
 
 import pytest
+
+from framework.plugins.os_deps_plugin import OS_DEPS
 
 logger = logging.getLogger(__name__)
 
@@ -41,86 +42,25 @@ _UNROLL_PERF_MATRIX_SRC = "tests/e2e/rccl/src/rccl_unroll_test/rccl_unroll_perf_
 # First-party MIT RCCL concurrent-collectives stress harness (concurrent_collectives).
 _CONCURRENT_COLLECTIVES_SRC = "tests/e2e/rccl/src/concurrent_collectives/concurrent_collectives.cpp"
 
-
-def _openssh_client_install_cmd() -> str:
-    """Return a distro-aware OpenSSH client install command for remote executors."""
-    return (
-        "bash -lc '"
-        "set -e; "
-        "if command -v ssh >/dev/null 2>&1; then exit 0; fi; "
-        "if command -v apt-get >/dev/null 2>&1; then "
-        "  apt-get update && apt-get install -y openssh-client; "
-        "elif command -v dnf >/dev/null 2>&1; then "
-        "  dnf install -y openssh-clients; "
-        "elif command -v yum >/dev/null 2>&1; then "
-        "  yum install -y openssh-clients; "
-        "elif command -v zypper >/dev/null 2>&1; then "
-        "  zypper --non-interactive install openssh; "
-        "else "
-        '  echo "no supported package manager found to install OpenSSH client" >&2; exit 1; '
-        "fi; "
-        "command -v ssh >/dev/null 2>&1'"
-    )
-
-
-def _local_openssh_client_install_cmds() -> list[list[str]] | None:
-    """Return ordered local OpenSSH client install commands, if supported."""
-    package_managers = (
-        ("apt-get", [["apt-get", "update"], ["apt-get", "install", "-y", "openssh-client"]]),
-        ("dnf", [["dnf", "install", "-y", "openssh-clients"]]),
-        ("yum", [["yum", "install", "-y", "openssh-clients"]]),
-        ("zypper", [["zypper", "--non-interactive", "install", "openssh"]]),
-    )
-    for binary, commands in package_managers:
-        if shutil.which(binary):
-            return commands
-    return None
-
-
-def _run_local_install_cmd(command: list[str], timeout: float) -> tuple[bool, str, str]:
-    """Run a local package-manager install command without shell expansion."""
-    # command is selected from a hard-coded package-manager allowlist.
-    result = subprocess.run(  # nosec B603
-        command,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
-    return result.returncode == 0, result.stdout, result.stderr
-
-
 def _ensure_openssh_client(cmake_executor) -> None:
-    """Ensure OpenMPI's default rsh launcher can find ``ssh`` on the execution host."""
+    """Ensure OpenMPI default rsh launcher can find ssh on the execution host."""
     if cmake_executor is not None:
         probe = cmake_executor.run("command -v ssh", timeout=15.0)
         if probe.ok and probe.stdout.strip():
             return
-        logger.info("Installing OpenSSH client for RCCL MPI")
-        result = cmake_executor.run(_openssh_client_install_cmd(), timeout=300.0)
-        ok, stdout, stderr = result.ok, result.stdout, result.stderr
-    else:
-        if shutil.which("ssh"):
-            return
-        install_cmds = _local_openssh_client_install_cmds()
-        if install_cmds is None:
-            pytest.fail("RCCL MPI needs ssh; no supported package manager found to install OpenSSH client.")
-        logger.info("Installing OpenSSH client for RCCL MPI")
-        for install_cmd in install_cmds:
-            ok, stdout, stderr = _run_local_install_cmd(install_cmd, 300.0)
-            if not ok:
-                break
-
-    if not ok:
-        pytest.fail(
-            "RCCL MPI needs ssh; OpenSSH client install failed.\n" f"stdout: {stdout[-1000:]}\nstderr: {stderr[-1000:]}"
-        )
-
+    OS_DEPS({
+        "apt": "openssh-client",
+        "dnf": "openssh-clients",
+        "yum": "openssh-clients",
+        "zypper": "openssh",
+        "*": "openssh-client",
+    }).install(executor=cmake_executor)
+    if cmake_executor is None and not shutil.which("ssh"):
+        pytest.fail("RCCL MPI needs ssh; install failed — no supported package manager found.")
 
 def _safe_ref_name(ref: str) -> str:
     """Return a filesystem-safe label for a git ref."""
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", ref).strip("_") or "default"
-
 
 def _build_rccl_tests(
     *,
@@ -207,7 +147,6 @@ def _build_rccl_tests(
     logger.info("rccl-tests built %d perf binaries in %s", len(perf_binaries), build_dir)
     return str(build_dir.resolve())
 
-
 def _skip_known_rccl_tests_incompatibility(exc: RuntimeError) -> None:
     """Skip when the selected rccl-tests source is newer than installed headers."""
     detail = str(exc)
@@ -220,7 +159,6 @@ def _skip_known_rccl_tests_incompatibility(exc: RuntimeError) -> None:
         )
     raise exc
 
-
 @pytest.fixture(scope="session")
 def rccl_tests_build(rock_dir: str, compiler_build_dir: str, framework_config, external_build, cmake_executor) -> str:
     """Build non-MPI ``rccl-tests`` clients for single-process ``-g N`` tests."""
@@ -232,7 +170,6 @@ def rccl_tests_build(rock_dir: str, compiler_build_dir: str, framework_config, e
         cmake_executor=cmake_executor,
         mpi_enabled=False,
     )
-
 
 @pytest.fixture(scope="session")
 def rccl_tests_mpi_build(
@@ -254,7 +191,6 @@ def rccl_tests_mpi_build(
         mpi_runtime=mpi_runtime,
     )
 
-
 @pytest.fixture(scope="session")
 def rccl_perf_binaries(rccl_tests_build: str, cmake_executor) -> list[str]:
     """Return sorted ``*_perf`` binaries from local or remote rccl-tests builds."""
@@ -262,7 +198,6 @@ def rccl_perf_binaries(rccl_tests_build: str, cmake_executor) -> list[str]:
         ls_result = cmake_executor.run(f"ls {rccl_tests_build}/*_perf", timeout=15.0)
         return sorted(line.strip() for line in ls_result.stdout.splitlines() if line.strip())
     return sorted(glob.glob(os.path.join(rccl_tests_build, "*_perf")))
-
 
 @pytest.fixture(scope="session")
 def rccl_error_handling_binary(compile_binary, rock_dir: str) -> str:
@@ -285,7 +220,6 @@ def rccl_error_handling_binary(compile_binary, rock_dir: str) -> str:
         subdir="rccl",
     )
 
-
 @pytest.fixture(scope="session")
 def rccl_dual_kernel_build_binary(compile_binary, rock_dir: str) -> str:
     """Compile the dual-kernel validation stub; it uses dlopen, so link ``-ldl``."""
@@ -307,7 +241,6 @@ def rccl_dual_kernel_build_binary(compile_binary, rock_dir: str) -> str:
         subdir="rccl",
     )
 
-
 @pytest.fixture(scope="session")
 def rccl_unroll_perf_matrix_binary(compile_binary, rock_dir: str) -> str:
     """Compile the unroll-factor matrix stub; HIP runtime only, no RCCL link."""
@@ -327,7 +260,6 @@ def rccl_unroll_perf_matrix_binary(compile_binary, rock_dir: str) -> str:
         ],
         subdir="rccl",
     )
-
 
 @pytest.fixture(scope="session")
 def concurrent_collectives_binary(compile_binary, rock_dir: str) -> str:
@@ -352,7 +284,6 @@ def concurrent_collectives_binary(compile_binary, rock_dir: str) -> str:
         subdir="rccl",
     )
 
-
 @pytest.fixture
 def require_rccl(rock_dir: str, cmake_executor):
     """Skip when ``librccl`` is absent from the ROCm install."""
@@ -372,7 +303,6 @@ def require_rccl(rock_dir: str, cmake_executor):
         if not glob.glob(os.path.join(rock_dir, "lib", "librccl*.so*")):
             pytest.skip(f"librccl not found under {rock_dir}/lib — RCCL not installed")
 
-
 @pytest.fixture(scope="session")
 def mpi_runtime(external_build, cmake_executor):
     """Return MPI launcher/env metadata, provisioning local OpenMPI if needed."""
@@ -385,11 +315,9 @@ def mpi_runtime(external_build, cmake_executor):
     logger.info("MPI runtime not found; provisioning OpenMPI %s for RCCL tests", version)
     return external_build.provision_openmpi_runtime(version=version)
 
-
 @pytest.fixture(scope="session")
 def require_mpirun(mpi_runtime):
     """Backward-compatible prerequisite fixture for MPI-mode tests."""
     return mpi_runtime
-
 
 # requested_gpu_count is provided by the shared suite-level conftest (tests/conftest.py).

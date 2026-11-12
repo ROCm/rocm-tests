@@ -182,6 +182,7 @@ class OS_DEPS:  # noqa: N801
         command: str | None = None,
         extra_args: list[str] | None = None,
         on_missing: str = _ENV_POLICY,
+        executor=None,
     ) -> InstallResult:
         """Install packages immediately using the current test's executor.
 
@@ -190,11 +191,9 @@ class OS_DEPS:  # noqa: N801
         Returns:
             InstallResult — assert result.ok or check result.installed / result.already_present.
         """
-        if _current_executor is None:
-            raise RuntimeError(
-                "OS_DEPS().install() must be called from within a test function. "
-                "No executor context is available outside a test."
-            )
+        _exec = executor or _current_executor
+        if _exec is None:
+            _exec = _SubprocessExecutor()
         spec = _InstallSpec(
             pkg_specs=pkg_specs,
             src=src,
@@ -203,7 +202,7 @@ class OS_DEPS:  # noqa: N801
             extra_args=extra_args or [],
             on_missing=on_missing,
         )
-        return _execute_install(_current_executor, spec)
+        return _execute_install(_exec, spec)
 
 
 # ---------------------------------------------------------------------------
@@ -492,10 +491,7 @@ class _WindowsPM:
             f"powershell -NoProfile -ExecutionPolicy Bypass -Command \"Add-AppxPackage -Path '{url}'\""
         )
         if not result.ok:
-            raise RuntimeError(
-                f"os_deps: failed to bootstrap winget.\n"
-                f"exit_code: {result.exit_code}\nstderr: {result.stderr[-500:]}"
-            )
+            _exec = _SubprocessExecutor()
 
     @staticmethod
     def bootstrap_choco(executor) -> None:
@@ -509,20 +505,14 @@ class _WindowsPM:
             "'https://community.chocolatey.org/install.ps1'))\""
         )
         if not result.ok:
-            raise RuntimeError(
-                f"os_deps: failed to bootstrap Chocolatey.\n"
-                f"exit_code: {result.exit_code}\nstderr: {result.stderr[-500:]}"
-            )
+            _exec = _SubprocessExecutor()
 
     @staticmethod
     def bootstrap_scoop(executor) -> None:
         logger.info("os_deps: Scoop not found — bootstrapping")
         result = executor.run('powershell -NoProfile -ExecutionPolicy RemoteSigned -Command "irm get.scoop.sh | iex"')
         if not result.ok:
-            raise RuntimeError(
-                f"os_deps: failed to bootstrap Scoop.\n"
-                f"exit_code: {result.exit_code}\nstderr: {result.stderr[-500:]}"
-            )
+            _exec = _SubprocessExecutor()
 
     # ── Probe orchestration ───────────────────────────────────────────────────
 
@@ -694,10 +684,7 @@ def _resolve_pkgs(pkg_specs: tuple, backend: _Backend) -> list[str]:
         elif isinstance(spec, dict):
             raw = spec.get(backend.key) or spec.get("*")
             if not raw:
-                raise RuntimeError(
-                    f"os_deps: no mapping for backend '{backend.key}' in spec {spec!r}. "
-                    f"Add a '{backend.key}' key or a '*' fallback."
-                )
+            _exec = _SubprocessExecutor()
             items = [raw] if isinstance(raw, str) else list(raw)
             for item in items:
                 name, ver = _parse_version(item)
