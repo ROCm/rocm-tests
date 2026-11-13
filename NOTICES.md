@@ -70,3 +70,16 @@ checked in here.
 The Kokkos performance-portability library sources are fetched during test execution,
 built with HIP RDC enabled, and run on AMD GPU hardware. No Kokkos source is
 redistributed as part of this repository; only the pytest harness is checked in here.
+
+## QMCPACK
+
+- Used by: `tests/e2e/hpc/qmcpack/test_qmcpack_functional.py` (cloned at runtime; see the
+  `qmcpack_functional_build` fixture in `tests/e2e/hpc/qmcpack/conftest.py`).
+- Upstream: https://github.com/QMCPACK/qmcpack
+- License: University of Illinois/NCSA Open Source License (see the `LICENSE` file in the upstream repository).
+- Copyright (c) 2003, University of Illinois Board of Trustees.
+
+The QMCPACK quantum Monte Carlo application sources are fetched during test execution,
+built with HIP offload, and the deterministic ctest selection is run on AMD GPU hardware.
+No QMCPACK source is redistributed as part of this repository; only the pytest harness
+is checked in here.
