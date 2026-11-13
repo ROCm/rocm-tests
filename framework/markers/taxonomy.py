@@ -29,6 +29,9 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     "os": {"linux"},
     # Scenario type (optional)
     "e2e": {"stack", "multinode"},
+    # Compute partition (spx/dpx/tpx/qpx/cpx) and memory partition (nps1/nps2/nps4).
+    # Optional. A test runs only when the host mode matches.
+    "partition": {"spx", "dpx", "tpx", "qpx", "cpx", "nps1", "nps2", "nps4"},
 }
 
 REQUIRED_DIMENSIONS: set[str] = {"hw", "ci", "layer"}
@@ -75,6 +78,7 @@ ALLURE_DIMENSION_MAP: dict[str, str] = {
     "e2e": "epic",  # allure.dynamic.epic(...)
     "os": "tag",  # allure.dynamic.tag(...)
     "runtime": "tag",
+    "partition": "tag",
 }
 
 # Allure severity level for each hw.* value.
