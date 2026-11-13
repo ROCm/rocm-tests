@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 import hashlib
 import logging
 import os
+import pathlib
 import re
 import shlex
 from typing import TYPE_CHECKING
@@ -204,6 +205,52 @@ class OS_DEPS:  # noqa: N801
         )
         return _execute_install(_exec, spec)
 
+    def uninstall(self, *pkg_names: str, executor=None) -> dict[str, bool]:
+        """Uninstall packages from the target node.
+
+        Only removes packages that are actually installed (probe first).
+        Supports version-pinned specs — only removes if that version is installed::
+
+            OS_DEPS().uninstall("jq")           # remove any installed version
+            OS_DEPS().uninstall("jq==1.6")      # remove only if 1.6 is installed
+
+        Returns {pkg_spec: removed} — True if removed, False if skipped.
+        """
+        _exec = executor or _current_executor
+        if _exec is None:
+            _exec = _SubprocessExecutor()
+        return _execute_uninstall(_exec, list(pkg_names))
+
+    def specs(self, *pkg_names: str, executor=None) -> dict[str, dict]:
+        """Return structured info about packages on the target node.
+
+        Returns {pkg_name: {"installed": bool, "version": str | None}}::
+
+            info = OS_DEPS().specs("jq", "pv")
+            # {"jq": {"installed": True, "version": "1.6"}, "pv": {"installed": False, "version": None}}
+        """
+        _exec = executor or _current_executor
+        if _exec is None:
+            _exec = _SubprocessExecutor()
+        return _execute_specs(_exec, list(pkg_names))
+
+    def upgrade(self, *pkg_specs: PkgSpec, executor=None) -> InstallResult:
+        """Upgrade packages to latest or a specific version.
+
+        Supports the same pkg_spec forms as install()::
+
+            OS_DEPS().upgrade("cmake")          # upgrade to latest available
+            OS_DEPS().upgrade("cmake==3.28")    # install specific version
+            OS_DEPS().upgrade("cmake", executor=cmake_executor)
+
+        Returns InstallResult with .installed and .versions (new versions).
+        Raises RuntimeError if the upgrade command fails.
+        """
+        _exec = executor or _current_executor
+        if _exec is None:
+            _exec = _SubprocessExecutor()
+        return _execute_upgrade(_exec, list(pkg_specs))
+
 
 # ---------------------------------------------------------------------------
 # Backend descriptor
@@ -281,12 +328,19 @@ class _LinuxPM:
                     f"{sudo}dpkg -i {deb_tmp} && {sudo}apt-get install -f -y 2>&1'"
                 )
             repo_hash = hashlib.md5(src.encode(), usedforsecurity=False).hexdigest()[:8]
-            repo_file = f"/etc/apt/sources.list.d/os_deps_{repo_hash}.list"
+            # Write to /tmp (no sudo, no permanent /etc/ change).
+            # Pass explicitly to apt-get update; remove after install.
+            src_sq = src.replace("'", "'\"'\"'")
+            repo_file = f"/tmp/os_deps_{repo_hash}.list"
             return (
-                f"bash -c 'grep -qF {shlex.quote(src)} {repo_file} 2>/dev/null || "
-                f"echo {shlex.quote(src)} | {sudo}tee {repo_file} >/dev/null; "
-                f"{sudo}apt-get update -q -y && "
-                f"{sudo}apt-get install -y --no-install-recommends {pkg_str}{extra} 2>&1'"
+                f"bash -c '"
+                f"echo '{src_sq}' > {repo_file} && "
+                f"{sudo}apt-get update -q -y "
+                f"-o Dir::Etc::sourcelist={repo_file} "
+                f"-o Dir::Etc::sourceparts=- "
+                f"-o APT::Get::List-Cleanup=0 && "
+                f"{sudo}apt-get install -y --no-install-recommends {pkg_str}{extra}; "
+                f"rm -f {repo_file} 2>&1'"
             )
         return f"bash -c '{sudo}apt-get install -y --no-install-recommends {pkg_str}{extra} 2>&1'"
 
@@ -927,6 +981,125 @@ def _execute_install(executor, spec: _InstallSpec) -> InstallResult:  # noqa: C9
     return InstallResult(already_present=[p for p in resolved_pkgs if p not in missing])
 
 
+def _execute_upgrade(executor, pkg_specs: list) -> InstallResult:  # noqa: C901
+    """Upgrade packages to latest or a specific version via the OS package manager."""
+    if not pkg_specs:
+        return InstallResult()
+    backend = _detect_backend(executor)
+    sudo = _resolve_sudo_prefix(executor, backend)
+    resolved: list[str] = []
+    for spec in pkg_specs:
+        if isinstance(spec, str):
+            name, ver = _parse_version(spec)
+            resolved.append(_versioned(name, ver, backend.key))
+        elif isinstance(spec, dict):
+            raw = spec.get(backend.key) or spec.get("*")
+            if raw:
+                items = [raw] if isinstance(raw, str) else list(raw)
+                for item in items:
+                    name, ver = _parse_version(item)
+                    resolved.append(_versioned(name, ver, backend.key))
+    if not resolved:
+        return InstallResult()
+    pkg_str = " ".join(resolved)
+    if backend.platform == "windows":
+        cmd = f"winget upgrade --silent {pkg_str} 2>&1"
+    elif backend.key == "apt":
+        has_version = any("=" in p for p in resolved)
+        flag = "" if has_version else "--only-upgrade "
+        cmd = f"bash -c '{sudo}apt-get install -y {flag}{pkg_str} 2>&1'"
+    elif backend.key in ("dnf", "yum"):
+        has_version = any("-" in p.split(":")[-1] for p in resolved)
+        action = "install" if has_version else "upgrade"
+        cmd = f"bash -c '{sudo}{backend.key} {action} -y {pkg_str} 2>&1'"
+    elif backend.key == "zypper":
+        has_version = any("=" in p for p in resolved)
+        action = "install" if has_version else "update"
+        cmd = f"bash -c '{sudo}zypper --non-interactive {action} {pkg_str} 2>&1'"
+    elif backend.key == "apk":
+        cmd = f"bash -c '{sudo}apk upgrade {pkg_str} 2>&1'"
+    else:
+        cmd = f"bash -c '{sudo}{backend.key} upgrade {pkg_str} 2>&1'"
+    r = executor.run(cmd)
+    if not r.ok:
+        raise RuntimeError(f"os_deps upgrade failed (exit={r.exit_code}):\n{r.stderr[:500]}")
+    plain_names = [
+        _parse_version(s)[0] if isinstance(s, str)
+        else next(iter(s.get(backend.key) or s.get("*") or [""]), "").split("=")[0]
+        for s in pkg_specs
+    ]
+    versions = _get_installed_versions(executor, backend, plain_names)
+    logger.info("os_deps: upgraded via %s — %s", backend.key, versions)
+    return InstallResult(installed=plain_names, versions=versions)
+
+
+def _execute_uninstall(executor, pkg_specs: list[str]) -> dict[str, bool]:
+    """Probe installed state then remove packages that match the spec.
+
+    Supports plain names and version-pinned specs — only removes if that version installed.
+    Returns {pkg_spec: removed} — True if removed, False if skipped.
+    """
+    if not pkg_specs:
+        return {}
+    backend = _detect_backend(executor)
+    sudo = _resolve_sudo_prefix(executor, backend)
+    result = {}
+    to_remove: list[str] = []
+    for spec in pkg_specs:
+        name, version = _parse_version(spec)
+        missing = _probe_missing(executor, backend, [name])
+        if missing:
+            logger.debug("os_deps uninstall: %s not installed — skipping", name)
+            result[spec] = False
+            continue
+        if version:
+            installed_versions = _get_installed_versions(executor, backend, [name])
+            installed_ver = installed_versions.get(name, "")
+            if version not in installed_ver:
+                logger.info("os_deps uninstall: %s==%s not installed (have %s) — skipping", name, version, installed_ver)
+                result[spec] = False
+                continue
+        to_remove.append(name)
+        result[spec] = False
+    if not to_remove:
+        return result
+    pkg_str = " ".join(to_remove)
+    if backend.platform == "windows":
+        cmd = f"winget uninstall --silent {pkg_str} 2>&1"
+    elif backend.key == "apt":
+        cmd = f"bash -c '{sudo}apt-get remove -y {pkg_str} 2>&1'"
+    elif backend.key in ("dnf", "yum"):
+        cmd = f"bash -c '{sudo}{backend.key} remove -y {pkg_str} 2>&1'"
+    elif backend.key == "zypper":
+        cmd = f"bash -c '{sudo}zypper --non-interactive remove {pkg_str} 2>&1'"
+    else:
+        cmd = f"bash -c '{sudo}{backend.key} remove {pkg_str} 2>&1'"
+    r = executor.run(cmd)
+    if r.ok:
+        logger.info("os_deps: uninstalled %s", to_remove)
+        for spec in pkg_specs:
+            name, _ = _parse_version(spec)
+            if name in to_remove:
+                result[spec] = True
+    else:
+        logger.warning("os_deps: uninstall non-zero (exit=%s): %s", r.exit_code, r.stderr[:300])
+    return result
+
+
+def _execute_specs(executor, pkg_names: list[str]) -> dict[str, dict]:
+    """Return {pkg: {"installed": bool, "version": str|None}} for each package."""
+    if not pkg_names:
+        return {}
+    backend = _detect_backend(executor)
+    missing = set(_probe_missing(executor, backend, pkg_names))
+    installed_names = [p for p in pkg_names if p not in missing]
+    versions = _get_installed_versions(executor, backend, installed_names) if installed_names else {}
+    return {
+        p: {"installed": p not in missing, "version": versions.get(p)}
+        for p in pkg_names
+    }
+
+
 def _dry_run_label(spec: _InstallSpec) -> str:
     parts = [repr(s) if isinstance(s, dict) else s for s in spec.pkg_specs]
     note = ""
@@ -1065,10 +1238,9 @@ def _os_deps_autouse(request: pytest.FixtureRequest) -> None:
     # Serialise installs per remote node: each fleet node gets its own lock
     # file so workers targeting different hosts never block each other.
     _node_key = re.sub(r"[^\w\-]", "_", getattr(_current_executor, "hostname", None) or "local")
-    _lock_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        f".os_deps_install_{_node_key}.lock",
-    )
+    _lock_dir = pathlib.Path("output") / ".locks"
+    _lock_dir.mkdir(parents=True, exist_ok=True)
+    _lock_path = str(_lock_dir / f".os_deps_install_{_node_key}.lock")
     _lock = filelock.FileLock(_lock_path, timeout=300)
 
     spec = _resolve_os_deps(request)
