@@ -541,7 +541,7 @@ class NoOpBackgroundProcess(AbstractBackgroundProcess):
 # ---------------------------------------------------------------------------
 
 
-def _blocking_stream_run(
+def _blocking_stream_run(  # noqa: C901
     command: str,
     env: dict,
     cwd: str | None,
@@ -584,8 +584,10 @@ def _blocking_stream_run(
         stderr=subprocess.PIPE,
         close_fds=True,
     )
-    os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
-    os.set_blocking(process.stderr.fileno(), False)  # type: ignore[union-attr]
+    _set_nonblocking = getattr(os, "set_blocking", None)
+    if _set_nonblocking:
+        _set_nonblocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
+        _set_nonblocking(process.stderr.fileno(), False)  # type: ignore[union-attr]
 
     stdout_buf, stderr_buf = b"", b""
     t0 = time.monotonic()
@@ -692,8 +694,10 @@ def _make_background_process(
         stderr=subprocess.PIPE,
         close_fds=True,
     )
-    os.set_blocking(proc.stdout.fileno(), False)  # type: ignore[union-attr]
-    os.set_blocking(proc.stderr.fileno(), False)  # type: ignore[union-attr]
+    _set_nonblocking = getattr(os, "set_blocking", None)
+    if _set_nonblocking:
+        _set_nonblocking(proc.stdout.fileno(), False)  # type: ignore[union-attr]
+        _set_nonblocking(proc.stderr.fileno(), False)  # type: ignore[union-attr]
 
     stop_evt = threading.Event()
     stdout_chunks: _BoundedChunks[bytes] = _BoundedChunks()
