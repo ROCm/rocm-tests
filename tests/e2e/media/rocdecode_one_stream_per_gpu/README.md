@@ -90,6 +90,8 @@ This produces:
 
 ## Run
 
+`pytest tests/e2e/media/rocdecode_one_stream_per_gpu` runs the three modes in order. It sets SPX and runs the SPX cases, sets DPX and runs the DPX cases, then sets CPX and runs the CPX cases. When the folder finishes, including on a failure, it sets the compute partition back to the mode it found at the start. Memory partition is not changed. The switch uses `amd-smi set` on the assigned node and needs root or passwordless sudo. Other tests are not switched; they see the restored mode.
+
 Match the program to the host mode.
 
 ```
