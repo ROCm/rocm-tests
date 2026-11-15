@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: MIT
 
 """
-partition_plugin.py -- skip tests whose partition marker does not match the node.
+partition_plugin.py -- partition markers, and an opt-in compute-mode switch.
 
+Skip hook
+---------
 Compute markers (``partition.spx``, ``dpx``, ``tpx``, ``qpx``, ``cpx``) are compared
 with ``current_compute_partition``. Memory markers (``partition.nps1``, ``nps2``,
 ``nps4``) are compared with ``current_memory_partition``. A test may carry one of
@@ -13,22 +15,49 @@ Other tests are unchanged.
 A test that uses ``target_executor`` is checked on the node that fixture acquired.
 The sysfs read goes through that executor, so ``--remote-node`` reads the GPU host
 rather than the controller running pytest. A partition-marked test with no
-``target_executor`` is checked on the controller. The marker does not change the
-partition. Set it before pytest, for example ``sudo amd-smi set -C CPX`` or
-``sudo amd-smi set -M NPS1``.
+``target_executor`` is checked on the controller.
 
 The ``/sys`` probe runs only on Linux. On any other platform, including Windows,
 the probe is not attempted and the test is not skipped. On Linux, a missing or
 unreadable partition file skips the marked test: the partition state is
 unavailable, so the marker cannot be enforced.
+
+Compute switch
+--------------
+The skip hook does not change the partition. Suites that need more than one
+compute mode in one pytest session request the ``compute_partition`` fixture and
+call ``set("dpx")`` (or ``spx``, ``tpx``, ``qpx``, ``cpx``). The fixture records
+the mode it found, and writes that mode back when the module ends, including
+after a failure. Memory partition is not changed.
+
+Call ``set`` from a class-scoped autouse fixture so it runs before this plugin's
+function-scoped skip hook. Keep switching tests in their own module, and reserve
+the whole node with ``gpu_count("all")``: the mode is per node, not per GPU.
+
+``set`` needs root or passwordless sudo on the GPU host. It treats sysfs as the
+result, not the ``amd-smi`` exit code. A DPX-to-CPX change can exit 2 after the
+cards have already switched.
+
+Example::
+
+    class TestSomethingCpx:
+        pytestmark = [pytest.mark.partition.cpx, pytest.mark.gpu_count("all")]
+
+        @pytest.fixture(scope="class", autouse=True)
+        def _use_cpx(self, compute_partition):
+            compute_partition.set("cpx")
+
+        def test_one_case(self, target_executor):
+            ...
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 import enum
 import logging
 import pathlib
+import time
 
 import pytest
 
@@ -39,6 +68,9 @@ _MEMORY_MODES = ("nps1", "nps2", "nps4")
 _COMPUTE_FILE = "current_compute_partition"
 _MEMORY_FILE = "current_memory_partition"
 _PROBE_TIMEOUT_SECS = 30.0
+_SWITCH_TIMEOUT_SECS = 180.0
+_SWITCH_AFTER_ERROR_SECS = 30.0
+_POLL_SECS = 2.0
 
 
 class _SysfsNotApplicable(enum.Enum):
@@ -53,6 +85,11 @@ class _SysfsNotApplicable(enum.Enum):
 
 
 _SYSFS_NOT_APPLICABLE = _SysfsNotApplicable.VALUE
+
+
+# ---------------------------------------------------------------------------
+# Sysfs reads used by the skip hook and by compute_partition.set
+# ---------------------------------------------------------------------------
 
 
 def _modes_from_text(text: str) -> set[str]:
@@ -150,6 +187,16 @@ def _cached_modes(
     return set(found)
 
 
+def _clear_partition_cache(config: pytest.Config) -> None:
+    """Drop the session cache so the next skip check re-reads sysfs.
+
+    After ``compute_partition.set``, a cached SPX value would skip every DPX test.
+    """
+    cache = getattr(config, "_partition_mode_cache", None)
+    if isinstance(cache, dict):
+        cache.clear()
+
+
 def _partition_modes(request: pytest.FixtureRequest, filename: str) -> set[str] | _SysfsNotApplicable:
     """Read ``filename`` on the assigned node, or on the controller."""
     if "target_executor" not in request.fixturenames:
@@ -172,6 +219,11 @@ def _partition_modes(request: pytest.FixtureRequest, filename: str) -> set[str] 
     if not saw_node:
         return _SYSFS_NOT_APPLICABLE
     return modes
+
+
+# ---------------------------------------------------------------------------
+# Skip tests whose partition.* marker does not match sysfs
+# ---------------------------------------------------------------------------
 
 
 def _marked_modes(item: pytest.Item, allowed: tuple[str, ...]) -> list[str]:
@@ -233,3 +285,186 @@ def _partition_on_execution_node(request: pytest.FixtureRequest) -> None:
         _skip_unless(item, "compute", _COMPUTE_FILE, compute, "-C", _partition_modes(request, _COMPUTE_FILE))
     if memory:
         _skip_unless(item, "memory", _MEMORY_FILE, memory, "-M", _partition_modes(request, _MEMORY_FILE))
+
+
+# ---------------------------------------------------------------------------
+# Opt-in compute partition switch: request compute_partition and call set()
+# ---------------------------------------------------------------------------
+
+
+def _target_label(executor: object | None) -> str:
+    """Stable name for logs and for the per-node restore map."""
+    if executor is None:
+        return "localhost"
+    return str(getattr(executor, "host", None) or getattr(executor, "label", None) or type(executor).__name__)
+
+
+def _switch_targets(node_pool: object | None) -> list[object | None]:
+    """Every remote SSH session in the pool, or ``[None]`` for the local host.
+
+    ``compute_partition`` is module-scoped, so it cannot use ``target_executor``.
+    The session pool is the node list that this pytest run can acquire. Local
+    runs have a pool with no SSH sessions, so the switch is a local command.
+    """
+    if node_pool is None:
+        return [None]
+    sessions = getattr(node_pool, "_ssh_sessions", {}) or {}
+    specs = getattr(node_pool, "node_specs", []) or []
+    targets: list[object | None] = []
+    for spec in specs:
+        ssh = sessions.get(getattr(spec, "label", None))
+        if ssh is not None:
+            targets.append(ssh)
+    return targets or [None]
+
+
+def _run_on_target(executor: object | None, command: str, timeout: float):
+    """Run ``command`` on ``executor``, or locally when ``executor`` is ``None``."""
+    if executor is not None:
+        return executor.run(command, timeout=timeout)  # type: ignore[attr-defined]
+    from framework.common.helpers import ExecutionResult  # pylint: disable=import-outside-toplevel
+    from framework.executors.local_executor import (  # pylint: disable=import-outside-toplevel
+        run_cmd_get_stdout_stderr,
+    )
+
+    code, out, err = run_cmd_get_stdout_stderr("bash", "-lc", command, timeout=timeout)
+    return ExecutionResult(exit_code=code, stdout=out, stderr=err)
+
+
+def _read_compute_modes_on(executor: object | None) -> set[str]:
+    """Live sysfs compute modes. Not cached: a switch must see the new value."""
+    if executor is None:
+        found = _read_local(_COMPUTE_FILE)
+        if found is _SYSFS_NOT_APPLICABLE:
+            return set()
+        return found
+    remote = _read_executor(executor, _COMPUTE_FILE)
+    if remote is None or remote is _SYSFS_NOT_APPLICABLE:
+        return set()
+    return remote
+
+
+def _apply_compute_mode_on(executor: object | None, mode: str) -> None:
+    """Set every GPU on ``executor`` to ``mode`` and wait until sysfs agrees."""
+    if mode not in _COMPUTE_MODES:
+        pytest.fail(f"refusing to set unknown compute partition {mode!r}")
+    label = _target_label(executor)
+    current = _read_compute_modes_on(executor)
+    if current == {mode}:
+        logger.info("compute partition on %s is already %s; not calling amd-smi", label, mode)
+        return
+    amd_smi = '"${ROCM_PATH:-/opt/rocm}/bin/amd-smi"'
+    command = (
+        f'if [ "$(id -u)" -eq 0 ]; then {amd_smi} set -C {mode.upper()}; '
+        f"else sudo -n {amd_smi} set -C {mode.upper()}; fi"
+    )
+    result = _run_on_target(executor, command, timeout=_SWITCH_TIMEOUT_SECS)
+    amd_smi_text = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
+    if not result.ok and "sudo:" in amd_smi_text:
+        pytest.fail(
+            f"could not set compute partition to {mode.upper()} on {label}: amd-smi set needs "
+            f"root or passwordless sudo.\n{amd_smi_text[-1500:]}"
+        )
+    # amd-smi exits non-zero when it cannot repartition a non-primary slice,
+    # for example DPX to CPX reports NOT_SUPPORTED on each card's second half
+    # although the card itself switched. sysfs is the verdict, not the exit code.
+    wait_secs = _SWITCH_TIMEOUT_SECS if result.ok else _SWITCH_AFTER_ERROR_SECS
+    deadline = time.monotonic() + wait_secs
+    last: set[str] = set()
+    while True:
+        last = _read_compute_modes_on(executor)
+        if last == {mode}:
+            logger.info("compute partition on %s is %s (amd-smi exit %s)", label, mode, result.exit_code)
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(_POLL_SECS)
+    pytest.fail(
+        f"compute partition on {label} did not become {mode.upper()} (amd-smi exit {result.exit_code}); "
+        f"sysfs reported {sorted(last) or 'nothing'}.\n{amd_smi_text[-1500:]}"
+    )
+
+
+class ComputePartition:
+    """Set the compute partition, then put the original mode back.
+
+    One instance is created per test module that requests ``compute_partition``.
+    :meth:`set` may be called more than once (SPX, then DPX, then CPX). Teardown
+    restores the mode recorded at fixture setup, not the last mode ``set`` used.
+    """
+
+    def __init__(self, config: pytest.Config, targets: list[object | None], enabled: bool, saved: dict[str, str]):
+        self._config = config
+        self._targets = targets
+        self._enabled = enabled
+        self._saved = saved
+
+    def set(self, mode: str) -> None:
+        """Switch every GPU node in this session to ``mode``.
+
+        ``mode`` is one of ``spx``, ``dpx``, ``tpx``, ``qpx``, ``cpx``. Unknown
+        names fail. ``--no-gpu`` and a node with no sysfs file are no-ops.
+        """
+        if not self._enabled:
+            logger.info("compute_partition.set(%s) skipped: switch is not enabled on this node", mode)
+            return
+        mode = mode.lower()
+        logger.info("compute_partition: switching to %s", mode)
+        for executor in self._targets:
+            _apply_compute_mode_on(executor, mode)
+        _clear_partition_cache(self._config)
+
+    def _restore(self) -> None:
+        """Write each node's recorded mode back. Always clear the skip-hook cache."""
+        if not self._enabled or not self._saved:
+            return
+        try:
+            for executor in self._targets:
+                saved = self._saved.get(_target_label(executor))
+                if saved is None:
+                    continue
+                logger.info("compute_partition: restoring %s on %s", saved, _target_label(executor))
+                _apply_compute_mode_on(executor, saved)
+        finally:
+            _clear_partition_cache(self._config)
+
+
+def _snapshot_compute_modes(targets: list[object | None]) -> dict[str, str]:
+    """Record one compute mode per node. Fail when a node already has mixed modes."""
+    saved: dict[str, str] = {}
+    for executor in targets:
+        label = _target_label(executor)
+        modes = _read_compute_modes_on(executor)
+        if not modes:
+            logger.info("no compute-partition sysfs on %s; not switching", label)
+            continue
+        if len(modes) != 1:
+            pytest.fail(
+                f"GPUs on {label} report mixed compute partitions {sorted(modes)}. "
+                "Set one mode on every GPU before running this suite."
+            )
+        saved[label] = next(iter(modes))
+        logger.info("compute_partition: saving %s on %s for restore", saved[label], label)
+    return saved
+
+
+@pytest.fixture(scope="module")
+def compute_partition(request: pytest.FixtureRequest, node_pool) -> Iterator[ComputePartition]:
+    """Switch compute partition for this module, then restore the original mode.
+
+    Opt-in: tests that only skip on a mismatch do not request this fixture.
+    Setup records the current mode. Teardown restores it after the last test
+    in the module, before pytest enters another folder.
+    """
+    config = request.config
+    if config.getoption("--no-gpu", default=False):
+        handle = ComputePartition(config, [], enabled=False, saved={})
+        yield handle
+        return
+    targets = _switch_targets(node_pool)
+    saved = _snapshot_compute_modes(targets)
+    handle = ComputePartition(config, targets, enabled=bool(saved), saved=saved)
+    try:
+        yield handle
+    finally:
+        handle._restore()
