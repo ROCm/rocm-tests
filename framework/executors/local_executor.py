@@ -307,8 +307,10 @@ def run_cmd_get_stdout_stderr(
             data = stdin if isinstance(stdin, bytes) else stdin.encode()
             process.stdin.write(data)  # type: ignore[union-attr]
 
-    os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
-    os.set_blocking(process.stderr.fileno(), False)  # type: ignore[union-attr]
+    _set_nonblocking = getattr(os, "set_blocking", None)
+    if _set_nonblocking:
+        _set_nonblocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
+        _set_nonblocking(process.stderr.fileno(), False)  # type: ignore[union-attr]
 
     def _read_stream(fd) -> bytes:
         chunk = fd.read()
