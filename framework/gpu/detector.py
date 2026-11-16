@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 # "Processing accelerators" — AMD Instinct compute GPUs (MI200/MI300 family).
 _GPU_PCI_CLASSES = ("Display controller", "VGA compatible controller", "Processing accelerators")
 
+_KFD_NODES = pathlib.Path("/sys/class/kfd/kfd/topology/nodes")
+# Key the remote KFD probe prints the node's gpu_id file under, after properties.
+_GPU_ID_FILE = "gpu_id_file"
+
 
 @dataclass(frozen=True)
 class GpuInfo:
@@ -93,6 +97,21 @@ def _kfd_gfx_version(raw: str) -> str:
         return f"gfx{major}{minor:x}{step:x}"
     except ValueError:
         return raw
+
+
+def _kfd_properties(text: str) -> dict[str, str]:
+    """The ``key value`` lines of a KFD node file; a key with no value is skipped."""
+    pairs = (line.split(None, 1) for line in text.splitlines())
+    return {pair[0]: pair[1].strip() for pair in pairs if len(pair) == 2}
+
+
+def _kfd_gpu_id(props: dict[str, str], gpu_id_file: str | None) -> str:
+    """The node's gpu_id; ``"0"`` (a CPU node) when it has none.
+
+    KFD keeps gpu_id in ``topology/nodes/N/gpu_id``, not in ``properties``. A
+    ``gpu_id`` line in ``properties`` is still read when that file is absent.
+    """
+    return (gpu_id_file or "").strip() or props.get("gpu_id", "").strip() or "0"
 
 
 class GpuDetector(AbstractGpuDetector):
@@ -511,7 +530,7 @@ class GpuDetector(AbstractGpuDetector):
         Runs only on the local node (no SSH). Output helps engineers distinguish between
         "KFD sysfs not mounted in container", "all nodes are CPU-only", and "GPU not passed through".
         """
-        kfd_path = pathlib.Path("/sys/class/kfd/kfd/topology/nodes")
+        kfd_path = _KFD_NODES
         if kfd_path.exists():
             try:
                 nodes = sorted(kfd_path.iterdir())
@@ -522,10 +541,12 @@ class GpuDetector(AbstractGpuDetector):
                 for node_dir in nodes[:8]:  # cap to avoid flooding the console
                     prop_file = node_dir / "properties"
                     if prop_file.exists():
-                        props = dict(line.split(None, 1) for line in prop_file.read_text().splitlines() if " " in line)
+                        props = _kfd_properties(prop_file.read_text())
+                        gpu_id_file = node_dir / "gpu_id"
+                        gpu_id = _kfd_gpu_id(props, gpu_id_file.read_text() if gpu_id_file.exists() else None)
                         print(
                             f"  node {node_dir.name}: "
-                            f"gpu_id={props.get('gpu_id', '?').strip()}, "
+                            f"gpu_id={gpu_id}, "
                             f"gfx_target_version={props.get('gfx_target_version', '?').strip()}, "
                             f"name={props.get('name', '?').strip()}"
                         )
@@ -579,7 +600,7 @@ class GpuDetector(AbstractGpuDetector):
         if self._ssh is not None:
             return self._detect_via_kfd_remote()
 
-        kfd_base = pathlib.Path("/sys/class/kfd/kfd/topology/nodes")
+        kfd_base = _KFD_NODES
         if not kfd_base.exists():
             raise OSError("KFD sysfs path not found")
 
@@ -588,9 +609,13 @@ class GpuDetector(AbstractGpuDetector):
             prop_file = node_dir / "properties"
             if not prop_file.exists():
                 continue
-            props = dict(line.split(None, 1) for line in prop_file.read_text().splitlines() if " " in line)
+            props = _kfd_properties(prop_file.read_text())
+            try:
+                gpu_id_file: str | None = (node_dir / "gpu_id").read_text()
+            except OSError:
+                gpu_id_file = None
             # Skip CPU-only nodes (gpu_id == 0)
-            if props.get("gpu_id", "0").strip() == "0":
+            if _kfd_gpu_id(props, gpu_id_file) == "0":
                 continue
             gpus.append(
                 GpuInfo(
@@ -604,7 +629,7 @@ class GpuDetector(AbstractGpuDetector):
 
     def _detect_via_kfd_remote(self) -> list[GpuInfo]:
         """Detect GPUs on a remote host via KFD sysfs over SSH."""
-        kfd_base = "/sys/class/kfd/kfd/topology/nodes"
+        kfd_base = str(_KFD_NODES)
 
         # List node directories
         try:
@@ -615,15 +640,19 @@ class GpuDetector(AbstractGpuDetector):
         node_dirs = sorted(d.strip() for d in dirs_out.splitlines() if d.strip())
         gpus: list[GpuInfo] = []
         for node_name in node_dirs:
-            prop_path = f"{kfd_base}/{node_name}/properties"
+            node_path = f"{kfd_base}/{node_name}"
+            # One round trip: properties, then the gpu_id file KFD keeps beside it.
             try:
-                content = self._run_command(f"cat {prop_path} 2>/dev/null")
+                content = self._run_command(
+                    f"cat {node_path}/properties 2>/dev/null"
+                    f' && echo "{_GPU_ID_FILE} $(cat {node_path}/gpu_id 2>/dev/null)"'
+                )
             except RuntimeError:
                 continue
             if not content:
                 continue
-            props = dict(line.split(None, 1) for line in content.splitlines() if " " in line)
-            if props.get("gpu_id", "0").strip() == "0":
+            props = _kfd_properties(content)
+            if _kfd_gpu_id(props, props.pop(_GPU_ID_FILE, None)) == "0":
                 continue
             gpus.append(
                 GpuInfo(
