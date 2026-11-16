@@ -59,6 +59,18 @@ def _is_multinode(item) -> bool:
     return any(m.name == "e2e.multinode" for m in item.iter_markers())
 
 
+def _compute_partition_module(item) -> str | None:
+    """Return the test file path when *item* requests ``compute_partition``.
+
+    Compute mode is per node. Tests in that module must share one xdist worker
+    so two ``gpu_count("all")`` classes do not each try to hold every GPU.
+    """
+    names = getattr(item, "fixturenames", ()) or ()
+    if "compute_partition" not in names:
+        return None
+    return str(item.nodeid).split("::", 1)[0]
+
+
 def _multi_gpu_count(item) -> int:
     """Return the gpu_count for a multi-GPU test, or 0 for single-GPU tests.
 
@@ -225,7 +237,11 @@ class DynamicScheduler:
         different multi-GPU tests in parallel.  Single-GPU tests receive no group
         and distribute via xdist worksteal.
 
+        Tests that request ``compute_partition`` are an exception: every item in
+        that module shares one group so two workers cannot each hold the node.
+
         Group naming:
+            - compute_partition module → ``"compute_partition_{path}"`` (one group per file).
             - multinode tests  → ``"multinode_N"`` (N = per-test counter).
             - multi_gpu tests  → ``"multi_gpu_{count}_{N}"`` (N = per-test counter).
             - single_gpu tests → no group assigned.
@@ -238,6 +254,13 @@ class DynamicScheduler:
         multi_node_idx = 0
 
         for item in items:
+            partition_module = _compute_partition_module(item)
+            if partition_module is not None:
+                group_name = "compute_partition_" + partition_module.replace("/", "_").replace("\\", "_")
+                item.add_marker(pytest.mark.xdist_group(group_name))
+                logger.debug("xdist_group assigned (compute_partition): %s → %s", item.nodeid, group_name)
+                continue
+
             # gpu_indices path: must be checked before multinode/multi_gpu so that
             # tests using gpu_indices get their own deterministic group and are not
             # accidentally treated as plain multi-GPU tests.

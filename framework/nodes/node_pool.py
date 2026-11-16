@@ -198,6 +198,43 @@ class MultiGpuSlots:
         ssh_multi.test_logger = tl
         return ssh_multi
 
+    def make_unmasked_executor(
+        self,
+        test_id: str = "",
+        log_path: str | None = None,
+        session_log_path: str | None = None,
+    ):
+        """Return an executor on this node with no ``ROCR_VISIBLE_DEVICES`` mask.
+
+        After ``compute_partition.set`` the driver may expose more logical GPUs
+        than the session-start slot list (SPX cards vs CPX slices). Tests that
+        must see every partition use this instead of ``make_executor``.
+        """
+        from framework.logging.test_logger import TestLogger  # pylint: disable=import-outside-toplevel
+
+        effective_log = log_path or getattr(self, "_log_path", None)
+        effective_session_log = session_log_path or getattr(self, "_session_log_path", None)
+        tl = TestLogger(
+            test_id=test_id,
+            node_label=self.node_spec.label,
+            gpu_label="unmasked",
+            log_path=effective_log,
+            session_log_path=effective_session_log,
+        )
+        if self.node_spec.is_local:
+            from framework.executors.cpu_executor import CpuExecutor  # pylint: disable=import-outside-toplevel
+
+            return CpuExecutor(stream_stdout=True, stream_stderr=False, log_path=None, test_logger=tl)
+
+        from framework.executors.ssh_executor import (  # pylint: disable=import-outside-toplevel
+            SshExecutor as _SshUnmasked,
+        )
+
+        ssh_unmasked: _SshUnmasked = self.slots[0]._ssh  # type: ignore[assignment]
+        ssh_unmasked.gpu_indices = []
+        ssh_unmasked.test_logger = tl
+        return ssh_unmasked
+
 
 # ---------------------------------------------------------------------------
 # NodePool — fleet manager
@@ -266,6 +303,7 @@ class NodePool:
         # can wake immediately instead of sleeping the full 0.5 s poll interval.
         self._slot_released = threading.Event()
         self._rock_dir = rock_dir
+        self._node_hold: MultiGpuSlots | None = None
         self._headroom_gb = headroom_gb
         self._detector_override = detector_override
         if artifact_dir is None:
@@ -1039,6 +1077,101 @@ class NodePool:
             multi: ``MultiGpuSlots`` previously returned by ``acquire_slots()``.
         """
         self.release(multi.slots)
+
+    @property
+    def rock_dir(self) -> str | None:
+        """TheRock/ROCm install path used for GPU detection and ``amd-smi``."""
+        return self._rock_dir
+
+    @property
+    def node_hold(self) -> MultiGpuSlots | None:
+        """Slots held by ``hold_node``, or ``None`` when no partition switch is active."""
+        return self._node_hold
+
+    def ssh_for(self, spec: NodeSpec):
+        """Return the SSH session for *spec*, opening one if the pool has none.
+
+        Local specs return ``None``. xdist workers built from a prefilled GPU
+        list have an empty session map until this is called — that is not the
+        GPU host.
+        """
+        if spec.is_local:
+            return None
+        ssh = self._ssh_sessions.get(spec.label)
+        if ssh is not None:
+            return ssh
+        from framework.executors.ssh_executor import SshExecutor  # pylint: disable=import-outside-toplevel
+
+        ssh = SshExecutor(
+            host=spec.hostname,
+            user=spec.username,
+            key_path=spec.ssh_key,
+            password=spec.password,
+        )
+        self._ssh_sessions[spec.label] = ssh
+        logger.info("NodePool: opened SSH session to %s (%s)", spec.label, spec.hostname)
+        return ssh
+
+    def attach_ssh(self, multi: MultiGpuSlots) -> None:
+        """Attach ``ssh_for(multi.node_spec)`` to every slot that has no session."""
+        ssh = self.ssh_for(multi.node_spec)
+        if ssh is None:
+            return
+        for slot in multi.slots:
+            if slot._ssh is None:
+                slot._ssh = ssh
+
+    def hold_node(self, *, test_id: str = "", wait_timeout_secs: float = 180.0) -> MultiGpuSlots:
+        """Acquire every GPU on one node until ``release_hold``.
+
+        Used by ``compute_partition`` so ``amd-smi set -C`` cannot run while
+        another test owns a GPU on that node. ``target_executor`` reuses
+        ``node_hold`` and must not release it.
+        """
+        if self._node_hold is not None:
+            return self._node_hold
+        count = self.max_gpus_per_node()
+        if count < 1:
+            raise RuntimeError("NodePool.hold_node: no GPUs detected")
+        multi = self.acquire_slots(count=count, wait_timeout_secs=wait_timeout_secs, test_id=test_id)
+        self.attach_ssh(multi)
+        self._node_hold = multi
+        logger.info("NodePool: holding %s GPU(s) on %s", multi.count, multi.node_spec.label)
+        return multi
+
+    def release_hold(self) -> None:
+        """Release the slots acquired by ``hold_node``. Safe if nothing is held."""
+        multi = self._node_hold
+        self._node_hold = None
+        if multi is not None:
+            self.release_multi(multi)
+            logger.info("NodePool: released hold on %s", multi.node_spec.label)
+
+    def switch_executor(self, multi: MultiGpuSlots | None = None):
+        """Unmasked executor on the GPU host that will run the tests.
+
+        Local node: ``CpuExecutor`` (no ``ROCR_VISIBLE_DEVICES``). Remote: the
+        slot SSH session, opened via ``ssh_for`` when the pool has none.
+        """
+        held = multi if multi is not None else self._node_hold
+        if held is None:
+            raise RuntimeError(
+                "NodePool.switch_executor: no held node. An empty _ssh_sessions map is not the GPU host."
+            )
+        spec = held.node_spec
+        if spec.is_local:
+            from framework.executors.cpu_executor import CpuExecutor  # pylint: disable=import-outside-toplevel
+
+            logger.info("compute_partition: local switch on %s via CpuExecutor", spec.hostname)
+            return CpuExecutor(stream_stdout=True, stream_stderr=False)
+        self.attach_ssh(held)
+        ssh = held.slots[0]._ssh if held.slots else None
+        if ssh is None:
+            raise RuntimeError(
+                f"NodePool.switch_executor: node {spec.label} ({spec.hostname}) is not this pytest "
+                "host and has no SSH session. An empty _ssh_sessions map is not the GPU host."
+            )
+        return ssh
 
     # ------------------------------------------------------------------
     # Session cleanup

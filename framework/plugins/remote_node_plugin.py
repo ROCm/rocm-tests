@@ -809,18 +809,16 @@ def _resolve_test_context(request, framework_config, config):
     }
 
 
-def _compute_partition_hold_multi(config: pytest.Config) -> MultiGpuSlots | None:
-    """Return the node-wide GPU hold from ``compute_partition``, if any.
+def _compute_partition_hold_multi(node_pool: NodePool | None) -> MultiGpuSlots | None:
+    """Return the node-wide GPU hold from ``NodePool.hold_node``, if any.
 
-    ``partition_plugin`` stores the hold on ``config._compute_partition_hold``
-    so this fixture can reuse those slots instead of acquiring again (which
-    would wait until the module restore and then time out).
+    ``compute_partition`` holds every GPU on the node until restore.
+    ``target_executor`` reuses ``node_pool.node_hold`` instead of acquiring
+    again (which would wait until restore and then time out).
     """
-    hold = getattr(config, "_compute_partition_hold", None)
-    if not isinstance(hold, dict):
+    if node_pool is None:
         return None
-    multi = hold.get("multi")
-    return multi if isinstance(multi, MultiGpuSlots) else None
+    return node_pool.node_hold
 
 
 def _multi_from_hold(
@@ -843,9 +841,9 @@ def _multi_from_hold(
     return MultiGpuSlots(slots=list(held.slots[:n]), node_spec=held.node_spec)
 
 
-def _held_multi_for_test(config: pytest.Config, ctx: dict, request) -> MultiGpuSlots | None:
+def _held_multi_for_test(node_pool: NodePool | None, ctx: dict, request) -> MultiGpuSlots | None:
     """Reuse ``compute_partition`` slots for this test, or ``None`` when no hold."""
-    held = _compute_partition_hold_multi(config)
+    held = _compute_partition_hold_multi(node_pool)
     if held is None:
         return None
     if ctx["is_multi_node"]:
@@ -1073,6 +1071,7 @@ def _acquire_and_yield(
     is_multi_node: bool,
     container_opts: dict | None = None,
     release_on_exit: bool = True,
+    unmask_gpus: bool = False,
 ):
     """Shared generator: set up monitoring, yield NodeExecutorGroup, tear down.
 
@@ -1093,6 +1092,8 @@ def _acquire_and_yield(
             ``False`` for single-node multi-GPU shapes.
         release_on_exit: When False, leave the slots held (``compute_partition``
             owns them until it restores the original mode).
+        unmask_gpus: When True, yield an executor with no ``ROCR_VISIBLE_DEVICES``
+            so tests see the live topology after ``compute_partition.set``.
     """
     import time as _time  # pylint: disable=import-outside-toplevel
 
@@ -1121,15 +1122,22 @@ def _acquire_and_yield(
         health_monitors, pre_health_maps, bg_monitors = _setup_monitoring(
             ctx, framework_config, multi_list, is_multi_node_shape=is_multi_node
         )
-        executors = [
-            m.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log) for m in multi_list
-        ]
+        if unmask_gpus:
+            executors = [
+                m.make_unmasked_executor(test_id=test_name, log_path=log_path, session_log_path=session_log)
+                for m in multi_list
+            ]
+        else:
+            executors = [
+                m.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log) for m in multi_list
+            ]
         # @pytest.mark.container (single-node only): run every command inside a persistent
         # container on the acquired node, with the acquired GPU indices injected.
         if container_opts and not is_multi_node:
+            index_lists = [[] for _ in multi_list] if unmask_gpus else [m.gpu_indices for m in multi_list]
             container_wrappers = _start_container_wrappers(
                 executors,
-                [m.gpu_indices for m in multi_list],
+                index_lists,
                 container_opts,
                 pull_timeout=float(framework_config.therock.build_timeout_secs),
             )
@@ -1226,7 +1234,7 @@ class _ManualGpuAllocator:
             group = NodeExecutorGroup([DryRunExecutor()])
             return group
 
-        if _compute_partition_hold_multi(self._config) is not None:
+        if _compute_partition_hold_multi(self._pool) is not None:
             pytest.fail("manual_gpu_allocator cannot acquire a GPU while compute_partition holds every GPU on the node")
 
         effective_id = test_id or self._request.node.name
@@ -1507,7 +1515,7 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
 
     # compute_partition already holds every GPU on the node. Reuse those slots so
     # this test does not wait on a lock the module fixture will only drop at restore.
-    held_multi = _held_multi_for_test(config, ctx, request)
+    held_multi = _held_multi_for_test(node_pool, ctx, request)
     if held_multi is not None:
         yield from _acquire_and_yield(
             multi_list=[held_multi],
@@ -1518,6 +1526,7 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
             is_multi_node=False,
             container_opts=container_opts,
             release_on_exit=False,
+            unmask_gpus=True,
         )
         return
 
@@ -1730,7 +1739,7 @@ def multi_gpu_fixture(request, framework_config, node_pool):
         default=2,
     )
 
-    held = _compute_partition_hold_multi(config)
+    held = _compute_partition_hold_multi(node_pool)
     multi = _multi_from_hold(held, count=count) if held is not None else _acquire_multi_gpu(node_pool, ctx, count)
     yield from _acquire_and_yield(
         multi_list=[multi],
@@ -1741,6 +1750,7 @@ def multi_gpu_fixture(request, framework_config, node_pool):
         is_multi_node=False,
         container_opts=_container_marker_opts(request, config),
         release_on_exit=held is None,
+        unmask_gpus=held is not None,
     )
 
 
@@ -1794,7 +1804,7 @@ def multi_node_fixture(request, framework_config, node_pool):
         )
         return
 
-    if _compute_partition_hold_multi(config) is not None:
+    if _compute_partition_hold_multi(node_pool) is not None:
         pytest.fail(
             "compute_partition holds every GPU on one node until restore; "
             "multi_node_fixture cannot run in the same module"

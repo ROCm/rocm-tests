@@ -20,8 +20,9 @@ from framework.scheduling.dynamic_scheduler import DynamicScheduler, SchedulePol
 class _MockItem:
     """Minimal pytest Item stand-in for scheduler unit tests."""
 
-    def __init__(self, nodeid: str, markers: list):
+    def __init__(self, nodeid: str, markers: list, fixturenames: list | None = None):
         self.nodeid = nodeid
+        self.fixturenames = list(fixturenames or [])
         self._markers: dict = {}
         self._added: list = []
         for m in markers:
@@ -168,3 +169,54 @@ def test_gpu_indices_with_multi_gpu_fails():
     scheduler = DynamicScheduler(pool=None, policy=SchedulePolicy.RESOURCE_MOST)
     with pytest.raises(pytest.fail.Exception, match="mutually exclusive"):
         scheduler._assign_xdist_groups([item])
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_compute_partition_module_shares_xdist_group():
+    """Two gpu_count(all) tests that request compute_partition share one xdist_group."""
+    marks = [_FakeMarker("hw.multi_gpu"), _FakeMarker("gpu_count", "all")]
+    item_a = _MockItem(
+        "tests/e2e/media/foo.py::TestSpx::test_one",
+        marks,
+        fixturenames=["compute_partition", "target_executor"],
+    )
+    item_b = _MockItem(
+        "tests/e2e/media/foo.py::TestCpx::test_one",
+        marks,
+        fixturenames=["compute_partition", "target_executor"],
+    )
+    scheduler = DynamicScheduler(pool=None, policy=SchedulePolicy.RESOURCE_MOST)
+    scheduler._assign_xdist_groups([item_a, item_b])
+
+    assert len(item_a._added) == 1
+    assert len(item_b._added) == 1
+    name_a = str(item_a._added[0])
+    name_b = str(item_b._added[0])
+    assert "compute_partition_tests_e2e_media_foo.py" in name_a
+    assert name_a == name_b
+    assert "multi_gpu_" not in name_a
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_compute_partition_modules_get_separate_groups():
+    """Switching suites in different files do not share an xdist_group."""
+    marks = [_FakeMarker("hw.multi_gpu"), _FakeMarker("gpu_count", "all")]
+    item_a = _MockItem(
+        "tests/e2e/media/foo.py::test_one",
+        marks,
+        fixturenames=["compute_partition"],
+    )
+    item_b = _MockItem(
+        "tests/e2e/media/bar.py::test_one",
+        marks,
+        fixturenames=["compute_partition"],
+    )
+    scheduler = DynamicScheduler(pool=None, policy=SchedulePolicy.RESOURCE_MOST)
+    scheduler._assign_xdist_groups([item_a, item_b])
+    assert str(item_a._added[0]) != str(item_b._added[0])
