@@ -31,8 +31,14 @@ the mode it found, and writes that mode back when the module ends, including
 after a failure. Memory partition is not changed.
 
 Call ``set`` from a class-scoped autouse fixture so it runs before this plugin's
-function-scoped skip hook. Keep switching tests in their own module, and reserve
-the whole node with ``gpu_count("all")``: the mode is per node, not per GPU.
+function-scoped skip hook. Keep switching tests in their own module. Compute
+mode is per node, not per GPU: the fixture acquires every GPU on the node that
+will run the tests, keeps those slots until the original mode is restored, and
+releases them after restore. Tests in the module reuse the held slots through
+``target_executor``. An empty ``NodePool._ssh_sessions`` map is not the GPU
+host — xdist workers and ``--remote-node`` with a prefilled topology open SSH
+from the ``NodeSpec`` and run ``amd-smi`` on that executor, the same host the
+skip hook reads.
 
 ``set`` needs root or passwordless sudo on the GPU host. It treats sysfs as the
 result, not the ``amd-smi`` exit code. A DPX-to-CPX change can exit 2 after the
@@ -292,59 +298,148 @@ def _partition_on_execution_node(request: pytest.FixtureRequest) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _target_label(executor: object | None) -> str:
+def _target_label(executor: object) -> str:
     """Stable name for logs and for the per-node restore map."""
-    if executor is None:
-        return "localhost"
     return str(getattr(executor, "host", None) or getattr(executor, "label", None) or type(executor).__name__)
 
 
-def _switch_targets(node_pool: object | None) -> list[object | None]:
-    """Every remote SSH session in the pool, or ``[None]`` for the local host.
+def _attach_remote_ssh(node_pool: object, multi: object) -> None:
+    """Put an SSH session on every held slot when the node is not this pytest host.
 
-    ``compute_partition`` is module-scoped, so it cannot use ``target_executor``.
-    The session pool is the node list that this pytest run can acquire. Local
-    runs have a pool with no SSH sessions, so the switch is a local command.
+    ``NodePool._init_from_prefilled`` (xdist workers) never fills ``_ssh_sessions``.
+    ``--remote-node`` has the same hole for a worker that only received the GPU
+    list. Empty sessions mean "SSH was not opened yet", not "this machine is the
+    GPU host".
     """
-    if node_pool is None:
-        return [None]
-    sessions = getattr(node_pool, "_ssh_sessions", {}) or {}
-    specs = getattr(node_pool, "node_specs", []) or []
-    targets: list[object | None] = []
-    for spec in specs:
-        ssh = sessions.get(getattr(spec, "label", None))
-        if ssh is not None:
-            targets.append(ssh)
-    return targets or [None]
+    spec = getattr(multi, "node_spec", None)
+    if spec is None or getattr(spec, "is_local", False):
+        return
+    sessions = getattr(node_pool, "_ssh_sessions", None)
+    if not isinstance(sessions, dict):
+        pytest.fail("compute_partition: NodePool has no _ssh_sessions map")
+    ssh = sessions.get(getattr(spec, "label", None))
+    slots = list(getattr(multi, "slots", []) or [])
+    if ssh is None and slots:
+        ssh = slots[0]._ssh  # NodeSlot SSH handle; pool may not have filled _ssh_sessions
+    if ssh is None:
+        from framework.executors.ssh_executor import SshExecutor  # pylint: disable=import-outside-toplevel
+
+        ssh = SshExecutor(
+            host=spec.hostname,
+            user=spec.username,
+            key_path=spec.ssh_key,
+            password=spec.password,
+        )
+        sessions[spec.label] = ssh
+        logger.info(
+            "compute_partition: opened SSH to %s (%s); pool had no session",
+            spec.label,
+            spec.hostname,
+        )
+    for slot in slots:
+        if getattr(slot, "_ssh", None) is None:
+            slot._ssh = ssh  # attach the node session so make_executor can use it
 
 
-def _run_on_target(executor: object | None, command: str, timeout: float):
-    """Run ``command`` on ``executor``, or locally when ``executor`` is ``None``."""
-    if executor is not None:
-        return executor.run(command, timeout=timeout)  # type: ignore[attr-defined]
-    from framework.common.helpers import ExecutionResult  # pylint: disable=import-outside-toplevel
-    from framework.executors.local_executor import (  # pylint: disable=import-outside-toplevel
-        run_cmd_get_stdout_stderr,
+def _switch_executor(multi: object) -> object:
+    """Executor on the GPU host that will run the tests and the skip-hook read.
+
+    Local ``NodeSpec``: ``CpuExecutor`` so ``amd-smi`` is not masked by
+    ``ROCR_VISIBLE_DEVICES``. Remote: the slot SSH session. Never fall through
+    to this pytest process because ``_ssh_sessions`` is empty.
+    """
+    spec = getattr(multi, "node_spec", None)
+    if spec is not None and getattr(spec, "is_local", False):
+        from framework.executors.cpu_executor import CpuExecutor  # pylint: disable=import-outside-toplevel
+
+        logger.info("compute_partition: local switch on %s via CpuExecutor", spec.hostname)
+        return CpuExecutor(stream_stdout=True, stream_stderr=False)
+    slots = list(getattr(multi, "slots", []) or [])
+    ssh = slots[0]._ssh if slots else None  # NodeSlot SSH handle; None on xdist until attached
+    if ssh is None:
+        label = getattr(spec, "label", "?")
+        hostname = getattr(spec, "hostname", "?")
+        pytest.fail(
+            f"compute_partition: node {label} ({hostname}) is not this pytest host "
+            "and has no SSH session. An empty _ssh_sessions map is not the GPU host."
+        )
+    return ssh
+
+
+def _hold_node_gpus(request: pytest.FixtureRequest, node_pool: object) -> object:
+    """Acquire every GPU on one node and keep the hold on ``pytest.Config``.
+
+    ``target_executor`` reuses these slots for the rest of the module so a test
+    cannot own a GPU on the node while ``amd-smi set -C`` repartitions it.
+    """
+    count = int(node_pool.max_gpus_per_node())  # type: ignore[attr-defined]
+    if count < 1:
+        pytest.fail("compute_partition: no GPUs detected; cannot hold the node for a partition switch")
+    timeout = float(request.config.getoption("--gpu-acquire-timeout", default=180.0))
+    module = getattr(getattr(request, "module", None), "__name__", "unknown")
+    test_id = f"compute_partition:{module}"
+    try:
+        multi = node_pool.acquire_slots(count=count, wait_timeout_secs=timeout, test_id=test_id)  # type: ignore[attr-defined]
+    except RuntimeError as exc:
+        pytest.fail(f"compute_partition: could not acquire every GPU on the node before amd-smi set -C: {exc}")
+    request.config._compute_partition_hold = {"multi": multi, "pool": node_pool}  # type: ignore[attr-defined]
+    _attach_remote_ssh(node_pool, multi)
+    logger.info(
+        "compute_partition: holding %s GPU(s) on %s until restore",
+        getattr(multi, "count", count),
+        getattr(getattr(multi, "node_spec", None), "label", "?"),
+    )
+    return multi
+
+
+def _release_node_gpus(config: pytest.Config) -> None:
+    """Drop the module hold and release every GPU acquired for the switch."""
+    hold = getattr(config, "_compute_partition_hold", None)
+    config._compute_partition_hold = None  # type: ignore[attr-defined]
+    if not isinstance(hold, dict):
+        return
+    pool = hold.get("pool")
+    multi = hold.get("multi")
+    if pool is None or multi is None:
+        return
+    pool.release_multi(multi)
+    logger.info(
+        "compute_partition: released %s GPU(s) on %s after restore",
+        getattr(multi, "count", "?"),
+        getattr(getattr(multi, "node_spec", None), "label", "?"),
     )
 
-    code, out, err = run_cmd_get_stdout_stderr("bash", "-lc", command, timeout=timeout)
-    return ExecutionResult(exit_code=code, stdout=out, stderr=err)
+
+def _run_on_target(executor: object, command: str, timeout: float):
+    """Run ``command`` on ``executor``.
+
+    ``amd-smi set -C`` is node-wide. Drop the executor's GPU mask and test logger
+    for this call so the tool sees every device on that host, then put them back.
+    """
+    saved_logger = getattr(executor, "test_logger", None)
+    saved_indices = getattr(executor, "gpu_indices", None)
+    if hasattr(executor, "test_logger"):
+        executor.test_logger = None
+    if saved_indices:
+        executor.gpu_indices = []  # type: ignore[attr-defined]
+    try:
+        return executor.run(command, timeout=timeout)  # type: ignore[attr-defined]
+    finally:
+        if hasattr(executor, "test_logger"):
+            executor.test_logger = saved_logger
+        if saved_indices is not None:
+            executor.gpu_indices = saved_indices  # type: ignore[attr-defined]
 
 
-def _read_compute_modes_on(executor: object | None) -> set[str]:
+def _read_compute_modes_on(executor: object) -> set[str]:
     """Live sysfs compute modes. Not cached: a switch must see the new value."""
-    if executor is None:
-        found = _read_local(_COMPUTE_FILE)
-        if found is _SYSFS_NOT_APPLICABLE:
-            return set()
-        return found
-    remote = _read_executor(executor, _COMPUTE_FILE)
-    if remote is None or remote is _SYSFS_NOT_APPLICABLE:
+    found = _read_executor(executor, _COMPUTE_FILE)
+    if found is None or found is _SYSFS_NOT_APPLICABLE:
         return set()
-    return remote
+    return found
 
 
-def _apply_compute_mode_on(executor: object | None, mode: str) -> None:
+def _apply_compute_mode_on(executor: object, mode: str) -> None:
     """Set every GPU on ``executor`` to ``mode`` and wait until sysfs agrees."""
     if mode not in _COMPUTE_MODES:
         pytest.fail(f"refusing to set unknown compute partition {mode!r}")
@@ -393,14 +488,14 @@ class ComputePartition:
     restores the mode recorded at fixture setup, not the last mode ``set`` used.
     """
 
-    def __init__(self, config: pytest.Config, targets: list[object | None], enabled: bool, saved: dict[str, str]):
+    def __init__(self, config: pytest.Config, targets: list[object], enabled: bool, saved: dict[str, str]):
         self._config = config
         self._targets = targets
         self._enabled = enabled
         self._saved = saved
 
     def set(self, mode: str) -> None:
-        """Switch every GPU node in this session to ``mode``.
+        """Switch the held GPU node to ``mode``.
 
         ``mode`` is one of ``spx``, ``dpx``, ``tpx``, ``qpx``, ``cpx``. Unknown
         names fail. ``--no-gpu`` and a node with no sysfs file are no-ops.
@@ -429,7 +524,7 @@ class ComputePartition:
             _clear_partition_cache(self._config)
 
 
-def _snapshot_compute_modes(targets: list[object | None]) -> dict[str, str]:
+def _snapshot_compute_modes(targets: list[object]) -> dict[str, str]:
     """Record one compute mode per node. Fail when a node already has mixed modes."""
     saved: dict[str, str] = {}
     for executor in targets:
@@ -453,18 +548,29 @@ def compute_partition(request: pytest.FixtureRequest, node_pool) -> Iterator[Com
     """Switch compute partition for this module, then restore the original mode.
 
     Opt-in: tests that only skip on a mismatch do not request this fixture.
-    Setup records the current mode. Teardown restores it after the last test
-    in the module, before pytest enters another folder.
+    Setup acquires every GPU on the target node, records the current mode, and
+    leaves the slots held. Teardown restores that mode, then releases the GPUs,
+    before pytest enters another folder.
     """
     config = request.config
     if config.getoption("--no-gpu", default=False):
-        handle = ComputePartition(config, [], enabled=False, saved={})
-        yield handle
+        yield ComputePartition(config, [], enabled=False, saved={})
         return
-    targets = _switch_targets(node_pool)
-    saved = _snapshot_compute_modes(targets)
-    handle = ComputePartition(config, targets, enabled=bool(saved), saved=saved)
+    if node_pool is None:
+        pytest.fail(
+            "compute_partition: NodePool is not available. The switch must run on the GPU "
+            "host that will execute the test; a missing pool is not the local GPU host."
+        )
+    handle: ComputePartition | None = None
     try:
+        multi = _hold_node_gpus(request, node_pool)
+        executor = _switch_executor(multi)
+        saved = _snapshot_compute_modes([executor])
+        handle = ComputePartition(config, [executor], enabled=bool(saved), saved=saved)
         yield handle
     finally:
-        handle._restore()
+        try:
+            if handle is not None:
+                handle._restore()
+        finally:
+            _release_node_gpus(config)
