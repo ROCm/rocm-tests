@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 cmake_minimum_required(VERSION 3.21)
 
 # Framework builds pass ROCM_TEST_CMAKE_MODULE_DIR and the compiler on the

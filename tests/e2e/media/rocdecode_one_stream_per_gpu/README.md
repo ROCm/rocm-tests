@@ -18,7 +18,7 @@ Run the program that matches the host mode. Input is `data/sample_stream.h264`.
 | `rocdecode_dpx_one_stream_per_half` | DPX | 2 (P0, P1) |
 | `rocdecode_cpx_one_stream_per_slice` | CPX | 8 (P0–P7) |
 
-Exit code 0 is pass, 1 is fail, and 2 is skip. A skip is not a pass. Skip when no GPU is present, the host is in a different mode, or every card has four slices.
+Exit code 0 is pass, 1 is fail, and 2 is skip. A skip is not a pass. The binary uses exit 2 when no GPU is present, the host is in a different mode, or every card has four slices. After pytest has switched the node, a mode mismatch is a failure; pytest still skips on no GPU or four-slice cards.
 
 ### Application flow
 
@@ -90,7 +90,7 @@ This produces:
 
 ## Run
 
-`pytest tests/e2e/media/rocdecode_one_stream_per_gpu` runs the three modes in order. It sets SPX and runs the SPX cases, sets DPX and runs the DPX cases, then sets CPX and runs the CPX cases. When the folder finishes, including on a failure, it sets the compute partition back to the mode it found at the start. Memory partition is not changed. The switch uses `amd-smi set` on the assigned node and needs root or passwordless sudo. Other tests are not switched; they see the restored mode.
+`pytest tests/e2e/media/rocdecode_one_stream_per_gpu` runs the three modes in order. The suite calls `compute_partition.set` from `partition_plugin` to set SPX, then DPX, then CPX. When the folder finishes, including on a failure, that fixture sets the compute partition back to the mode it found at the start. Memory partition is not changed. The switch uses `amd-smi set` on the assigned node and needs root or passwordless sudo. Other tests are not switched; they see the restored mode. Other e2e suites reuse the same fixture instead of copying this folder's conftest. The module uses one `xdist_group` so `-n` cannot switch the node from two workers at once.
 
 Match the program to the host mode.
 

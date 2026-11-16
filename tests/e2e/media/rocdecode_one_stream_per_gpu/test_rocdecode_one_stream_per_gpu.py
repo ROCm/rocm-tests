@@ -5,8 +5,9 @@
 test_rocdecode_one_stream_per_gpu.py -- one H.264 stream per GPU partition.
 
 The module runs the SPX cases, then switches the node to DPX and runs those
-cases, then switches to CPX. The directory conftest puts the original compute
-partition back after the last case, before pytest leaves this folder.
+cases, then switches to CPX. ``compute_partition`` from ``partition_plugin``
+puts the original compute partition back after the last case, before pytest
+leaves this folder.
 
 Each case runs one mode binary. The bare command runs ``partition_layout`` and
 then the default decode. The other cases pass the ``--xcd``, ``--keep-decoder``,
@@ -14,8 +15,9 @@ then the default decode. The other cases pass the ``--xcd``, ``--keep-decoder``,
 ``--sequence`` is not included: its card addresses are specific to one machine.
 
 Each parameter carries ``partition.spx``, ``partition.dpx``, or ``partition.cpx``.
-The class fixture sets that mode before ``partition_plugin`` reads sysfs, so the
-marker confirms the switch. Exit 2 from the binary is still a skip.
+The class fixture calls ``compute_partition.set`` before the skip hook reads
+sysfs, so the marker confirms the switch. After that switch, binary exit 2 is a
+failure unless the host has no GPU or four-slice (QPX) cards.
 """
 
 from __future__ import annotations
@@ -36,6 +38,13 @@ _PARTITION = {
     "dpx": pytest.mark.partition.dpx,
     "cpx": pytest.mark.partition.cpx,
 }
+
+# The binary still uses exit 2 for these host conditions. Mode mismatch after
+# compute_partition.set is a failure, not a skip.
+_SKIPPABLE_EXIT2 = (
+    "no gpu",
+    "host mode is other",
+)
 
 
 def _case(binary: str, args: str, partition: str, case_id: str):
@@ -94,9 +103,16 @@ def _run_case(target_executor, ld_path: dict, binaries: dict[str, str], binary_n
     if args:
         command = f"{command} {args}"
     result = target_executor.run(command, timeout=_TIMEOUT_SECS)
+    text = f"{result.stdout or ''}\n{result.stderr or ''}"
     if result.exit_code == 2:
-        tail = (result.stdout or "").strip()[-1500:]
-        pytest.skip(f"{command} skipped (exit 2): host partition mode does not match.\n{tail}")
+        lowered = text.lower()
+        if any(token in lowered for token in _SKIPPABLE_EXIT2):
+            pytest.skip(f"{command} skipped (exit 2):\n{text.strip()[-1500:]}")
+        pytest.fail(
+            f"{command} failed (exit 2) after compute_partition.set; "
+            "host mode mismatch is a failure, not a skip.\n"
+            f"stdout: {(result.stdout or '')[-2000:]}\nstderr: {(result.stderr or '')[-500:]}"
+        )
     assert result.ok, (
         f"{command} failed (exit={result.exit_code}):\n"
         f"stdout: {(result.stdout or '')[-2000:]}\nstderr: {(result.stderr or '')[-500:]}"
@@ -107,6 +123,8 @@ _MARKS = [
     pytest.mark.hw.multi_gpu,  # Every partition on every card. Overrides the media profile hw.gpu.
     pytest.mark.gpu_count("all"),
     pytest.mark.runtime.fast,  # One case finishes in under 5 minutes. The mode switch is outside the case.
+    # compute_partition holds the node; keep every case on one xdist worker.
+    pytest.mark.xdist_group("rocdecode_one_stream_per_gpu"),
 ]
 
 
@@ -116,8 +134,8 @@ class TestRocdecodeSpx:
     pytestmark = _MARKS
 
     @pytest.fixture(scope="class", autouse=True)
-    def _set_spx(self, rocdecode_set_compute_partition):
-        rocdecode_set_compute_partition("spx")
+    def _set_spx(self, compute_partition):
+        compute_partition.set("spx")
 
     @pytest.mark.parametrize(("binary_name", "args"), _cases("spx"))
     def test_rocdecode_one_stream_per_partition(
@@ -133,8 +151,8 @@ class TestRocdecodeDpx:
     pytestmark = _MARKS
 
     @pytest.fixture(scope="class", autouse=True)
-    def _set_dpx(self, rocdecode_set_compute_partition):
-        rocdecode_set_compute_partition("dpx")
+    def _set_dpx(self, compute_partition):
+        compute_partition.set("dpx")
 
     @pytest.mark.parametrize(("binary_name", "args"), _cases("dpx"))
     def test_rocdecode_one_stream_per_partition(
@@ -150,8 +168,8 @@ class TestRocdecodeCpx:
     pytestmark = _MARKS
 
     @pytest.fixture(scope="class", autouse=True)
-    def _set_cpx(self, rocdecode_set_compute_partition):
-        rocdecode_set_compute_partition("cpx")
+    def _set_cpx(self, compute_partition):
+        compute_partition.set("cpx")
 
     @pytest.mark.parametrize(("binary_name", "args"), _cases("cpx"))
     def test_rocdecode_one_stream_per_partition(
