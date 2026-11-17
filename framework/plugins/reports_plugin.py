@@ -196,7 +196,14 @@ def pytest_configure(config: pytest.Config) -> None:
             break
 
 
-def pytest_runtest_setup(item: pytest.Item) -> None:
+@pytest.hookimpl(hookwrapper=True, trylast=True)
+def pytest_runtest_setup(item: pytest.Item):
+    """Apply labels inside the Allure context before setup hooks can skip."""
+    _apply_allure_labels(item)
+    yield
+
+
+def _apply_allure_labels(item: pytest.Item) -> None:
     """Map taxonomy markers to Allure dynamic labels at test setup."""
     try:
         import allure
