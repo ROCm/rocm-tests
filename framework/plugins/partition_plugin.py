@@ -39,8 +39,11 @@ node, keeps those slots until the original mode is restored, and
 The session-start GPU list is not rediscovered after ``set``: SPX card indices
 stay locked, and the unmasked executor lets the test see CPX slices the driver
 adds. The scheduler puts every test in that module in one ``xdist_group``.
-``--dist=load`` (worksteal) is rejected so two workers cannot each try to hold
-the node. An empty ``NodePool`` SSH map is not the GPU host —
+On a one-node pool every ``compute_partition`` module shares that group, so a
+second switching file cannot start ``hold_node`` until the first restores.
+With two or more nodes, each module keeps its own group. ``--dist=load``
+(worksteal) is rejected so two workers cannot each try to hold the node.
+An empty ``NodePool`` SSH map is not the GPU host —
 ``NodePool.ssh_for`` opens SSH from the ``NodeSpec``.
 
 ``set`` needs root or passwordless sudo on the GPU host. It runs the
