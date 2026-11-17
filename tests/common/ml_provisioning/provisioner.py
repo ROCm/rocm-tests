@@ -41,6 +41,8 @@ _METADATA_NAME = "rocm-tests-framework.json"
 _INVALID_KERNEL_IMAGE_MARKERS = (
     "device kernel image is invalid",
     "hipErrorInvalidImage",
+    "hipErrorInvalidKernelFile",
+    "invalid kernel file",
 )
 _RUNTIME_INCOMPATIBLE_PREFIX = "Framework ROCm runtime incompatible"
 _VALIDATION_FAILED_PREFIX = "Framework validation failed"

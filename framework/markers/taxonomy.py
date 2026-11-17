@@ -29,6 +29,9 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     "os": {"linux", "windows"},
     # Scenario type (optional)
     "e2e": {"stack", "multinode"},
+    # Compute partition (spx/dpx/tpx/qpx/cpx) and memory partition (nps1/nps2/nps4).
+    # Optional. A test runs only when the host mode matches.
+    "partition": {"spx", "dpx", "tpx", "qpx", "cpx", "nps1", "nps2", "nps4"},
 }
 
 REQUIRED_DIMENSIONS: set[str] = {"hw", "ci", "layer"}
@@ -41,6 +44,17 @@ PARAMETRIC_MARKERS: dict[str, str] = {
     "container_image": "Override container image (@pytest.mark.container_image('rocm/pytorch:6.3'))",
     "gpu_indices": "Exact GPU indices to acquire, bypassing NUMA selection (@pytest.mark.gpu_indices([0, 2]))",
     "container": "Per-test container options (@pytest.mark.container(ipc='host', extra_run_flags='...'))",
+    "os_deps": (
+        "OS packages to install before this test runs via the native package manager. "
+        "Prefer @OS_DEPS decorator or class __OS_DEPS__ = OS_DEPS(...) over this marker. "
+        "Linux: apt/dnf/yum/zypper/apk/pacman (auto-detected). "
+        "Windows: winget/choco/scoop (auto-detected; bootstrapped if missing). "
+        "pkg_specs: str or dict({'mgr': 'name', '*': 'fallback'}). "
+        "src=: one URL for all managers; sources={'mgr': 'url'}: per-manager URLs. "
+        "Decorator: @OS_DEPS('cmake', 'libdrm-dev') or class __OS_DEPS__ = OS_DEPS('cmake'). "
+        "Marker (compat): @pytest.mark.os_deps('cmake', src='https://my-repo/'). "
+        "Callable mid-test: os_deps('libnuma-dev', src='https://...')"
+    ),
 }
 
 # Duration guidance (informational — not enforced programmatically)
@@ -64,6 +78,7 @@ ALLURE_DIMENSION_MAP: dict[str, str] = {
     "e2e": "epic",  # allure.dynamic.epic(...)
     "os": "tag",  # allure.dynamic.tag(...)
     "runtime": "tag",
+    "partition": "tag",
 }
 
 # Allure severity level for each hw.* value.
@@ -153,6 +168,33 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "hw.multi_gpu",
         "layer.math_lib",
         "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # Kokkos HIP RDC (Relocatable Device Code, -fgpu-rdc) validation: third-party
+    # CMake configure/build of the Kokkos HPC library with
+    # Kokkos_ENABLE_HIP_RELOCATABLE_DEVICE_CODE=ON, then the Kokkos ctest suite.
+    # layer.runtime (not math_lib): the feature under test is the HIP compiler's
+    # -fgpu-rdc codegen path (a runtime/toolchain capability); Kokkos is only the
+    # vehicle that drives RDC compilation, not the compute-under-test (contrast
+    # QUDA/UCX, where the library's own numerics are the thing validated).
+    # ci.weekly: VERBOSE build (~6 min) + full ctest suite (~50 min) exceeds the
+    # 30 min nightly threshold — runtime.soak pairs with ci.weekly per taxonomy.
+    "tests/e2e/hpc/kokkos": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # RAJA HIP unit suite (raja_ut): third-party CMake build of LLNL/RAJA with
+    # ENABLE_HIP, then ctest. layer.math_lib: the library's own HIP kernels are
+    # the thing validated. ci.weekly: clone + full ctest exceeds the 30 min
+    # nightly threshold — runtime.soak pairs with ci.weekly per taxonomy.
+    "tests/e2e/hpc/raja": [
+        "hw.gpu",
+        "layer.math_lib",
+        "ci.weekly",
         "e2e.stack",
         "os.linux",
     ],
