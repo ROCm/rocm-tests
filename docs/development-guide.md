@@ -60,11 +60,14 @@ in `conftest.py`. IDE linters may flag it — this is expected.
 test that changes persistent GPU settings or host driver state, such as clocks,
 power limits, writable GPU sysfs attributes, resets, or driver reloads. Ordinary
 GPU computation and read-only telemetry do not require it. The default
-`--gpu-execution-mode=shared` skips marked tests before fixture setup, including
+`--gpu-state-mutations=skip` skips marked tests before fixture setup, including
 when selected directly by node ID, `-k`, or CI marker. Use
-`--gpu-execution-mode=exclusive` only on a host reserved from all other GPU
+`--gpu-state-mutations=allow` only on a host reserved from all other GPU
 workloads. This option does not reserve hardware or grant permissions, and
-mutations must not occur during collection or session initialization.
+the plugin rejects `allow` when pytest-xdist workers are enabled. Run mutation
+tests without `-n` (or with `-n 0`) so they execute sequentially. This does not
+prevent other workflows or external workloads from sharing the host; mutations
+must not occur during collection or session initialization.
 
 ### GPU runner prerequisites
 

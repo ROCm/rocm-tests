@@ -74,7 +74,7 @@ pytest_plugins = [
     "framework.plugins.markers_plugin",  # FIRST: category-profile marker injection (CATEGORY_PROFILES in taxonomy.py)
     "framework.plugins.session_plugin",  # framework_config, run_ctx, _attach_test_log
     "framework.plugins.gpu_plugin",  # --no-gpu/--gpu-arch/--mock-gpu, gpu_arch/dry_run_executor
-    "framework.plugins.gpu_safety",  # --gpu-execution-mode, shared-suite mutation guard
+    "framework.plugins.gpu_safety",  # --gpu-state-mutations, shared-suite mutation guard
     "framework.plugins.remote_node_plugin",  # --remote-node/--gpu-acquire-timeout, node_pool/target_executor
     "framework.plugins.scheduling_plugin",  # --schedule-policy/--collect-runtimes, unified collection hook + runtime collector  # noqa: E501
     "framework.plugins.executor_plugin",  # --container-mode/--container-image/--container-runtime, cpu_executor/container_executor  # noqa: E501

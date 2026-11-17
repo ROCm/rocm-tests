@@ -1,7 +1,7 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Skip GPU/driver state-changing tests during shared execution."""
+"""Skip GPU/driver state-changing tests unless mutations are explicitly allowed."""
 
 from __future__ import annotations
 
@@ -9,25 +9,38 @@ import pytest
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register explicit opt-in for an externally reserved host."""
+    """Register explicit opt-in for GPU state mutations."""
     group = parser.getgroup("rocm-gpu-safety")
     group.addoption(
-        "--gpu-execution-mode",
-        choices=("shared", "exclusive"),
-        default="shared",
+        "--gpu-state-mutations",
+        choices=("skip", "allow"),
+        default="skip",
         help=(
-            "shared (default) skips gpu_state.mutating tests. "
-            "exclusive permits them on an externally reserved host; "
-            "this option does not reserve hardware or grant permissions."
+            "skip (default) skips gpu_state.mutating tests. "
+            "allow permits them; use only on an exclusively reserved host. "
+            "This option does not reserve hardware or grant permissions."
         ),
     )
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Reject mutation opt-in when xdist workers could run tests concurrently."""
+    if config.getoption("--gpu-state-mutations") != "allow":
+        return
+
+    numprocesses = getattr(config.option, "numprocesses", None)
+    if numprocesses not in (None, 0, "0", "no", ""):
+        raise pytest.UsageError(
+            "--gpu-state-mutations=allow cannot be used with pytest-xdist workers. "
+            "Run mutation tests without -n (or with -n 0) on an exclusively reserved host."
+        )
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item: pytest.Item) -> None:
-    """Skip marked tests before fixture setup in shared execution."""
-    if item.config.getoption("--gpu-execution-mode") == "shared" and any(item.iter_markers(name="gpu_state.mutating")):
+    """Skip marked tests before fixture setup when GPU state mutations are disabled."""
+    if item.config.getoption("--gpu-state-mutations") == "skip" and any(item.iter_markers(name="gpu_state.mutating")):
         pytest.skip(
-            "gpu_state.mutating: GPU/driver state changes are disabled in shared suites. "
-            "Use --gpu-execution-mode=exclusive only on an exclusively reserved host."
+            "gpu_state.mutating: GPU/driver state mutations are disabled. "
+            "Use --gpu-state-mutations=allow only on an exclusively reserved host."
         )
