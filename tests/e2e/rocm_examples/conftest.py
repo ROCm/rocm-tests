@@ -13,7 +13,6 @@ import pytest
 
 from framework.plugins.os_deps_plugin import OS_DEPS
 
-
 logger = logging.getLogger(__name__)
 
 _ROCM_EXAMPLES_URL = "https://github.com/ROCm/rocm-examples.git"
@@ -94,6 +93,8 @@ def _install_system_deps(cmake_executor) -> None:
     result = OS_DEPS(_SYSTEM_DEPS_SPEC).install(executor=cmake_executor)
     if not result.ok:
         pytest.fail("rocm_examples system-deps install failed via OS_DEPS")
+
+
 def _install_runtime_python_deps(cmake_executor, rock_dir: str) -> None:
     """Best-effort pip install of rocprofiler-compute requirements (needed by tools samples).
 

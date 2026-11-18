@@ -23,6 +23,7 @@ import os
 
 import pytest
 
+from framework.plugins.os_deps_plugin import OS_DEPS
 from tests.common.factories import fake_execution_result, fake_gpu_info
 from tests.common.ml_provisioning.fixtures import ensure_pytorch_env, torch_python as _torch_python
 
@@ -168,22 +169,45 @@ def workload_scale() -> str:
 # Node environment prerequisites (previously installed via CI workflow apt-get)
 # ---------------------------------------------------------------------------
 
-from framework.plugins.os_deps_plugin import OS_DEPS
 
 # Packages needed on the test node for build tools, GPU detection, and NUMA.
 # Previously installed via apt-get in .github/workflows/e2e-tests.yml.
 _NODE_BUILD_DEPS = {
     "apt": [
-        "make", "pciutils", "autoconf", "automake", "libtool",
-        "pkg-config", "g++", "flex", "libdrm-dev", "libnuma-dev",
+        "make",
+        "pciutils",
+        "autoconf",
+        "automake",
+        "libtool",
+        "pkg-config",
+        "g++",
+        "flex",
+        "libdrm-dev",
+        "libnuma-dev",
     ],
     "dnf": [
-        "make", "pciutils", "autoconf", "automake", "libtool",
-        "pkgconfig", "gcc-c++", "flex", "libdrm-devel", "numactl-devel",
+        "make",
+        "pciutils",
+        "autoconf",
+        "automake",
+        "libtool",
+        "pkgconfig",
+        "gcc-c++",
+        "flex",
+        "libdrm-devel",
+        "numactl-devel",
     ],
     "zypper": [
-        "make", "pciutils", "autoconf", "automake", "libtool",
-        "pkg-config", "gcc-c++", "flex", "libdrm-devel", "libnuma-devel",
+        "make",
+        "pciutils",
+        "autoconf",
+        "automake",
+        "libtool",
+        "pkg-config",
+        "gcc-c++",
+        "flex",
+        "libdrm-devel",
+        "libnuma-devel",
     ],
 }
 

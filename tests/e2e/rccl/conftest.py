@@ -42,25 +42,30 @@ _UNROLL_PERF_MATRIX_SRC = "tests/e2e/rccl/src/rccl_unroll_test/rccl_unroll_perf_
 # First-party MIT RCCL concurrent-collectives stress harness (concurrent_collectives).
 _CONCURRENT_COLLECTIVES_SRC = "tests/e2e/rccl/src/concurrent_collectives/concurrent_collectives.cpp"
 
+
 def _ensure_openssh_client(cmake_executor) -> None:
     """Ensure OpenMPI default rsh launcher can find ssh on the execution host."""
     if cmake_executor is not None:
         probe = cmake_executor.run("command -v ssh", timeout=15.0)
         if probe.ok and probe.stdout.strip():
             return
-    OS_DEPS({
-        "apt": "openssh-client",
-        "dnf": "openssh-clients",
-        "yum": "openssh-clients",
-        "zypper": "openssh",
-        "*": "openssh-client",
-    }).install(executor=cmake_executor)
+    OS_DEPS(
+        {
+            "apt": "openssh-client",
+            "dnf": "openssh-clients",
+            "yum": "openssh-clients",
+            "zypper": "openssh",
+            "*": "openssh-client",
+        }
+    ).install(executor=cmake_executor)
     if cmake_executor is None and not shutil.which("ssh"):
         pytest.fail("RCCL MPI needs ssh; install failed — no supported package manager found.")
+
 
 def _safe_ref_name(ref: str) -> str:
     """Return a filesystem-safe label for a git ref."""
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", ref).strip("_") or "default"
+
 
 def _build_rccl_tests(
     *,
@@ -147,6 +152,7 @@ def _build_rccl_tests(
     logger.info("rccl-tests built %d perf binaries in %s", len(perf_binaries), build_dir)
     return str(build_dir.resolve())
 
+
 def _skip_known_rccl_tests_incompatibility(exc: RuntimeError) -> None:
     """Skip when the selected rccl-tests source is newer than installed headers."""
     detail = str(exc)
@@ -159,6 +165,7 @@ def _skip_known_rccl_tests_incompatibility(exc: RuntimeError) -> None:
         )
     raise exc
 
+
 @pytest.fixture(scope="session")
 def rccl_tests_build(rock_dir: str, compiler_build_dir: str, framework_config, external_build, cmake_executor) -> str:
     """Build non-MPI ``rccl-tests`` clients for single-process ``-g N`` tests."""
@@ -170,6 +177,7 @@ def rccl_tests_build(rock_dir: str, compiler_build_dir: str, framework_config, e
         cmake_executor=cmake_executor,
         mpi_enabled=False,
     )
+
 
 @pytest.fixture(scope="session")
 def rccl_tests_mpi_build(
@@ -191,6 +199,7 @@ def rccl_tests_mpi_build(
         mpi_runtime=mpi_runtime,
     )
 
+
 @pytest.fixture(scope="session")
 def rccl_perf_binaries(rccl_tests_build: str, cmake_executor) -> list[str]:
     """Return sorted ``*_perf`` binaries from local or remote rccl-tests builds."""
@@ -198,6 +207,7 @@ def rccl_perf_binaries(rccl_tests_build: str, cmake_executor) -> list[str]:
         ls_result = cmake_executor.run(f"ls {rccl_tests_build}/*_perf", timeout=15.0)
         return sorted(line.strip() for line in ls_result.stdout.splitlines() if line.strip())
     return sorted(glob.glob(os.path.join(rccl_tests_build, "*_perf")))
+
 
 @pytest.fixture(scope="session")
 def rccl_error_handling_binary(compile_binary, rock_dir: str) -> str:
@@ -220,6 +230,7 @@ def rccl_error_handling_binary(compile_binary, rock_dir: str) -> str:
         subdir="rccl",
     )
 
+
 @pytest.fixture(scope="session")
 def rccl_dual_kernel_build_binary(compile_binary, rock_dir: str) -> str:
     """Compile the dual-kernel validation stub; it uses dlopen, so link ``-ldl``."""
@@ -241,6 +252,7 @@ def rccl_dual_kernel_build_binary(compile_binary, rock_dir: str) -> str:
         subdir="rccl",
     )
 
+
 @pytest.fixture(scope="session")
 def rccl_unroll_perf_matrix_binary(compile_binary, rock_dir: str) -> str:
     """Compile the unroll-factor matrix stub; HIP runtime only, no RCCL link."""
@@ -260,6 +272,7 @@ def rccl_unroll_perf_matrix_binary(compile_binary, rock_dir: str) -> str:
         ],
         subdir="rccl",
     )
+
 
 @pytest.fixture(scope="session")
 def concurrent_collectives_binary(compile_binary, rock_dir: str) -> str:
@@ -284,6 +297,7 @@ def concurrent_collectives_binary(compile_binary, rock_dir: str) -> str:
         subdir="rccl",
     )
 
+
 @pytest.fixture
 def require_rccl(rock_dir: str, cmake_executor):
     """Skip when ``librccl`` is absent from the ROCm install."""
@@ -303,6 +317,7 @@ def require_rccl(rock_dir: str, cmake_executor):
         if not glob.glob(os.path.join(rock_dir, "lib", "librccl*.so*")):
             pytest.skip(f"librccl not found under {rock_dir}/lib — RCCL not installed")
 
+
 @pytest.fixture(scope="session")
 def mpi_runtime(external_build, cmake_executor):
     """Return MPI launcher/env metadata, provisioning local OpenMPI if needed."""
@@ -315,9 +330,11 @@ def mpi_runtime(external_build, cmake_executor):
     logger.info("MPI runtime not found; provisioning OpenMPI %s for RCCL tests", version)
     return external_build.provision_openmpi_runtime(version=version)
 
+
 @pytest.fixture(scope="session")
 def require_mpirun(mpi_runtime):
     """Backward-compatible prerequisite fixture for MPI-mode tests."""
     return mpi_runtime
+
 
 # requested_gpu_count is provided by the shared suite-level conftest (tests/conftest.py).
