@@ -26,9 +26,12 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     # Expected duration (optional but strongly recommended)
     "runtime": {"fast", "medium", "soak"},
     # Target platform (optional)
-    "os": {"linux"},
+    "os": {"linux", "windows"},
     # Scenario type (optional)
     "e2e": {"stack", "multinode"},
+    # Compute partition (spx/dpx/tpx/qpx/cpx) and memory partition (nps1/nps2/nps4).
+    # Optional. A test runs only when the host mode matches.
+    "partition": {"spx", "dpx", "tpx", "qpx", "cpx", "nps1", "nps2", "nps4"},
 }
 
 REQUIRED_DIMENSIONS: set[str] = {"hw", "ci", "layer"}
@@ -75,6 +78,7 @@ ALLURE_DIMENSION_MAP: dict[str, str] = {
     "e2e": "epic",  # allure.dynamic.epic(...)
     "os": "tag",  # allure.dynamic.tag(...)
     "runtime": "tag",
+    "partition": "tag",
 }
 
 # Allure severity level for each hw.* value.
@@ -179,6 +183,17 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
     "tests/e2e/hpc/kokkos": [
         "hw.gpu",
         "layer.runtime",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
+    # RAJA HIP unit suite (raja_ut): third-party CMake build of LLNL/RAJA with
+    # ENABLE_HIP, then ctest. layer.math_lib: the library's own HIP kernels are
+    # the thing validated. ci.weekly: clone + full ctest exceeds the 30 min
+    # nightly threshold — runtime.soak pairs with ci.weekly per taxonomy.
+    "tests/e2e/hpc/raja": [
+        "hw.gpu",
+        "layer.math_lib",
         "ci.weekly",
         "e2e.stack",
         "os.linux",
