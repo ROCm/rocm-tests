@@ -121,7 +121,8 @@ class TransferBench(Test):
             print(f"  [transferbench] FAIL: watchdog timeout — rsweep did not complete within {limit}")
             return RunResult(exit_code=1, reproduce_cmd=reproduce)
         if rc == 0:
-            print("  [transferbench] Completed rsweep successfully (rc=0)")
+            # The validator reads console.log; under pytest live logging print() never reaches it.
+            ctx.append_console("  [transferbench] Completed rsweep successfully (rc=0)")
         return RunResult(exit_code=rc, reproduce_cmd=reproduce)
 
     @classmethod
