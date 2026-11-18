@@ -335,38 +335,48 @@ CodeQL (`security-extended` query suite) runs automatically on every PR to `main
 
 ---
 
-## OS Package Auto-Install (`@OS_DEPS`)
+## OS Package Auto-Install (`OS_DEPS`)
 
 `os_deps_plugin` provides a declarative way to ensure OS packages are present before
-a test runs. Packages are installed once per test session per node; subsequent tests
-that need the same package find it already present and skip the install.
+a test runs. Packages are installed with probe-before-install idempotency — already-present
+packages are skipped, making repeated calls instant.
+
+Platform support: **apt, dnf, yum, zypper, apk, pacman** (Linux); **winget, choco, scoop** (Windows).
+
+---
+
+### Quick reference
+
+| Situation | API |
+|---|---|
+| Test function or function-scoped fixture | `OS_DEPS("pkg").install()` |
+| Session-scoped fixture (has `cmake_executor`) | `OS_DEPS("pkg").install(executor=cmake_executor)` |
+| Decorator on test function or class | `@OS_DEPS("pkg")` |
+| Cross-distro package names | `OS_DEPS({"apt": "libssl-dev", "dnf": "openssl-devel", "*": "libssl-dev"})` |
+
+---
 
 ### Decorator usage
 
 ```python
 from framework.plugins.os_deps_plugin import OS_DEPS
 
-@OS_DEPS("cmake", "git")                          # simple package names
-@OS_DEPS({"apt": "libssl-dev", "dnf": "openssl-devel"})  # per-PM names
-def test_something(target_executor, ld_path):
+@OS_DEPS("cmake", "git")                                    # simple names
+@OS_DEPS({"apt": "libssl-dev", "dnf": "openssl-devel"})    # per-distro names
+def test_something(target_executor):
     ...
-```
 
-### Class / module level
-
-```python
 class TestMyFeature:
-    __OS_DEPS__ = OS_DEPS("curl", "wget")         # applied to every method in the class
+    __OS_DEPS__ = OS_DEPS("curl", "wget")   # applied to every method in the class
 
-__OS_DEPS__ = OS_DEPS("cmake")                    # applied to every test in the module
+__OS_DEPS__ = OS_DEPS("cmake")              # applied to every test in the module
 ```
 
-### `conftest.py` fixture pattern (recommended for shared deps)
+---
 
-When multiple tests in an area share the same OS dependency, declare it once as an
-autouse fixture in `conftest.py` rather than repeating `@OS_DEPS` on every test
-function. Use function scope (not session scope) so `target_executor` is available;
-the probe step makes subsequent calls instant once packages are already present:
+### `conftest.py` fixture pattern — function-scoped (recommended)
+
+Use when multiple tests in an area share the same OS dependency.
 
 ```python
 # tests/e2e/my_area/conftest.py
@@ -375,19 +385,64 @@ from framework.plugins.os_deps_plugin import OS_DEPS
 
 @pytest.fixture(autouse=True)
 def _ensure_my_deps(target_executor):
-    """Install shared OS deps before each test; probe skips re-install if already present."""
+    """Install shared OS deps; probe skips re-install if already present."""
     OS_DEPS("cmake", "git").install()
 ```
 
-Tests in the directory receive the packages without any per-test decoration.
-The install is idempotent — the probe step skips packages already present on the node.
+---
 
-> **Note**: Do not use `scope="session"` for this fixture. Session-scoped fixtures
-> run before any test executor is wired, so `OS_DEPS().install()` raises `RuntimeError`
-> because `_current_executor` is not set at that point.
+### Session-scoped fixtures (`cmake_executor`)
+
+Session-scoped fixtures run before `target_executor` is wired, so pass the executor
+explicitly via `executor=`. This is the right pattern when packages must be installed
+before a build step (e.g. cmake configure) rather than just before a test body.
+
+```python
+# tests/e2e/my_area/conftest.py
+import pytest
+from framework.plugins.os_deps_plugin import OS_DEPS
+
+@pytest.fixture(scope="session")
+def my_build(cmake_executor, rock_dir):
+    # Install build deps before cmake runs — cmake_executor=None falls back to local subprocess
+    OS_DEPS({"apt": "libssl-dev", "dnf": "openssl-devel", "*": "libssl-dev"}).install(executor=cmake_executor)
+    ...
+```
+
+Pass whatever executor is available — `cmake_executor` for session scope, nothing for
+function scope. When `executor=None` the plugin falls back to the current test executor
+(`_current_executor`), then to a local subprocess if neither is set.
+
+---
+
+### Cross-distro package specs
+
+```python
+# Plain string — same name on all distros
+OS_DEPS("cmake").install()
+
+# Dict — different name per package manager
+OS_DEPS({
+    "apt":    "openssh-client",
+    "dnf":    "openssh-clients",
+    "yum":    "openssh-clients",
+    "zypper": "openssh",
+    "*":      "openssh-client",   # fallback for any other PM
+}).install()
+
+# Multiple packages in one call
+OS_DEPS("cmake", "git", "make").install()
+
+# Version pin
+OS_DEPS("cmake==3.26").install()
+
+# Custom installer (pip, snap, conda…)
+OS_DEPS("onnxruntime-rocm", command="pip", extra_args=["--index-url", "https://..."]).install()
+```
+
+---
 
 ### Failure behaviour
 
-A missing package that cannot be installed causes the test to be marked **ERROR**
-(via `pytest.fail`), not silently skipped, so CI surfaces the broken environment
-immediately rather than producing a misleading pass.
+A package that cannot be installed causes the test to be marked **ERROR** (via
+`pytest.fail`), not silently skipped, so CI surfaces broken environments immediately.
