@@ -19,7 +19,7 @@ The class fixture calls ``compute_partition.set`` before the skip hook reads
 sysfs, so the marker confirms the switch. After that switch, ``no GPU`` is a
 failure. Exit 2 is a skip only when a line is the program's
 ``host mode is other`` text (four-slice / QPX). CPX width is the live slice
-count (4, 6, or 8), not a hardcoded 0–7 list.
+count (4, 6, or 8), not a hardcoded 0-7 list.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def _case(binary: str, args: str, partition: str, case_id: str):
 
 
 # DPX has two slices, so its --xcd values stay in 0 and 1. CPX lists that
-# assume XCD 0–3 stay here (valid on 4-, 6-, and 8-XCD SKUs). Per-XCD 0..N-1
+# assume XCD 0-3 stay here (valid on 4-, 6-, and 8-XCD SKUs). Per-XCD 0..N-1
 # and reverse use the live slice count after the CPX switch.
 _CASES = [
     _case(_SPX, "", "spx", "spx-default"),
