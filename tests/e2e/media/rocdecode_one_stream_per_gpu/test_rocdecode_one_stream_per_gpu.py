@@ -88,8 +88,7 @@ def _cpx_slices_per_card(target_executor, ld_path: dict, binaries: dict[str, str
     text = result.stdout or ""
     if not result.ok:
         pytest.fail(
-            "could not count CPX slices per card:\n"
-            f"stdout: {text[-1000:]}\nstderr: {(result.stderr or '')[-500:]}"
+            "could not count CPX slices per card:\n" f"stdout: {text[-1000:]}\nstderr: {(result.stderr or '')[-500:]}"
         )
     try:
         payload = json.loads(text[text.find("{") :])
