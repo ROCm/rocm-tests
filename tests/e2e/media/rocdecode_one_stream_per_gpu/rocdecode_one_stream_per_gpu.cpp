@@ -9,6 +9,7 @@
 #include "rocdecode/rocparser.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -69,6 +70,33 @@ constexpr const char* kDecodeName = "cpx_one_stream_per_slice";
 #error "Build rocdecode_spx_one_stream_per_card, rocdecode_dpx_one_stream_per_half, or rocdecode_cpx_one_stream_per_slice"
 #endif
 
+unsigned g_host_slices = 0;
+bool g_xcd_reverse = false;
+
+std::string to_lower_copy(std::string text) {
+    for (char& ch : text) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return text;
+}
+
+Layout layout_from_sysfs(const std::string& mode) {
+    const std::string lower = to_lower_copy(mode);
+    if (lower == "spx") {
+        return Layout::Spx;
+    }
+    if (lower == "dpx") {
+        return Layout::Dpx;
+    }
+    if (lower == "cpx") {
+        return Layout::Cpx;
+    }
+    if (lower == "tpx" || lower == "qpx") {
+        return Layout::Other;
+    }
+    return Layout::None;
+}
+
 unsigned slices_for(Layout layout) {
     if (layout == Layout::Spx) {
         return 1;
@@ -77,7 +105,7 @@ unsigned slices_for(Layout layout) {
         return 2;
     }
     if (layout == Layout::Cpx) {
-        return 8;
+        return g_host_slices != 0 ? g_host_slices : 8;
     }
     return 0;
 }
@@ -1046,6 +1074,10 @@ Layout detect_layout(const std::vector<Card>& cards) {
     if (cards.empty()) {
         return Layout::None;
     }
+    const Layout from_sysfs = layout_from_sysfs(cards.front().compute_partition);
+    if (from_sysfs != Layout::None) {
+        return from_sysfs;
+    }
     int lowest = static_cast<int>(cards.front().slices.size());
     int highest = lowest;
     for (const Card& card : cards) {
@@ -1059,7 +1091,7 @@ Layout detect_layout(const std::vector<Card>& cards) {
     if (highest == 2) {
         return Layout::Dpx;
     }
-    if (highest >= 5 || (lowest != highest && highest > 2)) {
+    if (highest >= 4) {
         return Layout::Cpx;
     }
     return Layout::Other;
@@ -1256,6 +1288,7 @@ std::vector<PlayStep> g_sequence;
 void remember_host(const std::vector<Card>& cards) {
     g_cards = static_cast<int>(cards.size());
     g_visible_gpus = 0;
+    g_host_slices = cards.empty() ? 0 : static_cast<unsigned>(cards.front().slices.size());
     g_detected = detect_layout(cards);
     for (const Card& card : cards) {
         g_visible_gpus += static_cast<int>(card.slices.size());
@@ -1369,13 +1402,8 @@ int discover_or_note(std::vector<Card>& cards, std::string& skip, int& code) {
         remember_host(cards);
         return 0;
     }
-    if (error == "no GPU") {
-        code = 2;
-        skip = "no GPU";
-    } else {
-        code = 1;
-        skip = error;
-    }
+    code = 1;
+    skip = error;
     return code;
 }
 
@@ -1574,9 +1602,10 @@ void fill_decode(const std::vector<Card>& cards, const std::map<int, uint64_t>& 
         g_decode.rule = "play order " + xcd_selection_text() +
                         "; each selected XCD is scored on its own row";
     } else if (required == Layout::Cpx) {
-        g_decode.rule =
-            "decoder N engine time on its own pair's render node, only from that pair; all 4 decoders active on every "
-            "card; at least 1 frame per GPU";
+        const unsigned groups = g_host_slices == 0 ? 4 : (g_host_slices + 1) / 2;
+        g_decode.rule = "decoder N engine time on its own pair's render node, only from that pair; all " +
+                        std::to_string(groups) +
+                        " decoder groups active on every card; at least 1 frame per GPU";
     } else if (required == Layout::Dpx) {
         g_decode.rule = "each half's engine time only on that half's render node; both halves active; at least 1 frame per GPU";
     } else {
@@ -1727,10 +1756,10 @@ void fill_decode(const std::vector<Card>& cards, const std::map<int, uint64_t>& 
             if (required == Layout::Cpx && g_xcd_order.empty()) {
                 const unsigned left = static_cast<unsigned>(entry.first * 2);
                 const unsigned right = left + 1;
-                if (std::find(present.begin(), present.end(), left) == present.end()) {
+                if (left < g_host_slices && std::find(present.begin(), present.end(), left) == present.end()) {
                     missing.push_back(left);
                 }
-                if (std::find(present.begin(), present.end(), right) == present.end()) {
+                if (right < g_host_slices && std::find(present.begin(), present.end(), right) == present.end()) {
                     missing.push_back(right);
                 }
             }
@@ -1944,7 +1973,9 @@ void fill_decode(const std::vector<Card>& cards, const std::map<int, uint64_t>& 
     if (!g_sequence.empty()) {
         g_decode.decoders_expected = static_cast<int>(g_sequence.size());
     } else {
-        const int groups = g_xcd_order.empty() ? (required == Layout::Cpx ? 4 : (required == Layout::Dpx ? 2 : 1))
+        const int cpx_pairs = static_cast<int>((g_host_slices + 1) / 2);
+        const int groups = g_xcd_order.empty() ? (required == Layout::Cpx ? std::max(cpx_pairs, 1)
+                                                                          : (required == Layout::Dpx ? 2 : 1))
                                                : static_cast<int>(g_xcd_order.size());
         g_decode.decoders_expected = static_cast<int>(cards.size()) * groups;
     }
@@ -1960,9 +1991,9 @@ int run_partition_layout() {
         return g_layout.code;
     }
     if (g_detected != kRequiredLayout) {
-        g_layout.code = 2;
+        g_layout.code = g_detected == Layout::Other ? 2 : 1;
         g_layout.skip = mode_skip_text(g_detected);
-        return 2;
+        return g_layout.code;
     }
     fill_layout(cards);
     return g_layout.code;
@@ -2160,6 +2191,26 @@ std::string missing_partition_note() {
     return out.str();
 }
 
+bool resolve_xcd_order(const std::vector<Card>& cards, std::string& error) {
+    const int n = static_cast<int>(g_host_slices);
+    if (g_xcd_reverse) {
+        g_xcd_order.clear();
+        for (int xcd = n - 1; xcd >= 0; --xcd) {
+            g_xcd_order.push_back(xcd);
+        }
+        g_xcd_reverse = false;
+    }
+    for (int xcd : g_xcd_order) {
+        if (xcd < 0 || xcd >= n) {
+            error = "requested XCD " + std::to_string(xcd) + " is not present (" + std::to_string(n) +
+                    " slices per card)";
+            return false;
+        }
+    }
+    (void)cards;
+    return true;
+}
+
 int run_placement(Layout required) {
     g_decode.ran = true;
     std::vector<Card> cards;
@@ -2168,11 +2219,17 @@ int run_placement(Layout required) {
         return g_decode.code;
     }
     if (g_detected != required) {
-        g_decode.code = 2;
+        g_decode.code = g_detected == Layout::Other ? 2 : 1;
         if (!g_allow_partial) {
             g_decode.skip = mode_skip_text(g_detected);
-            return 2;
+            return g_decode.code;
         }
+    }
+    std::string xcd_error;
+    if (!resolve_xcd_order(cards, xcd_error)) {
+        g_decode.code = 1;
+        g_decode.skip = xcd_error;
+        return 1;
     }
     std::string error;
     std::vector<uint8_t> stream;
@@ -2663,7 +2720,7 @@ std::vector<int> parse_gfx_busy(const std::string& json, int& gfx_activity) {
         end = json.size();
     }
     size_t scan = busy;
-    while (slots.size() < 8) {
+    while (slots.size() < 16) {
         const size_t value = json.find("\"value\"", scan);
         if (value == std::string::npos || value >= end) {
             break;
@@ -2703,9 +2760,15 @@ int run_smi_one_xcd() {
         return g_smi.code;
     }
     if (g_detected != Layout::Cpx || kRequiredLayout != Layout::Cpx) {
-        g_smi.code = 2;
+        g_smi.code = g_detected == Layout::Other ? 2 : 1;
         g_smi.skip = "smi_one_xcd checks CPX partitions; host is " + host_mode_text();
-        return 2;
+        return g_smi.code;
+    }
+    std::string xcd_error;
+    if (!resolve_xcd_order(cards, xcd_error)) {
+        g_smi.code = 1;
+        g_smi.skip = xcd_error;
+        return 1;
     }
     g_smi.xcd = g_xcd_order.empty() ? 0 : g_xcd_order.front();
     const std::string binary = burn_binary_path();
@@ -2774,8 +2837,9 @@ int run_smi_one_xcd() {
         row.card = target.card;
         row.gpu = target.primary;
         row.busy = parse_gfx_busy(json, row.gfx_activity);
-        if (row.busy.size() != 8) {
-            row.reason = "amd-smi did not return 8 gfx_busy_inst values on P0";
+        const unsigned expected_xcds = g_host_slices != 0 ? g_host_slices : 8;
+        if (row.busy.size() < expected_xcds) {
+            row.reason = "amd-smi did not return gfx_busy_inst for every XCD on P0";
         } else if (g_smi.xcd < 0 || g_smi.xcd >= static_cast<int>(row.busy.size())) {
             row.reason = "XCD index is outside gfx_busy_inst";
         } else if (row.busy[static_cast<size_t>(g_smi.xcd)] <= 0) {
@@ -2822,6 +2886,54 @@ const Subtest kOptionalSubtests[] = {
     {"smi_one_xcd", run_smi_one_xcd},
 };
 
+bool parse_nonneg_int(const std::string& text, int& value) {
+    if (text.empty()) {
+        return false;
+    }
+    size_t index = 0;
+    try {
+        value = std::stoi(text, &index, 10);
+    } catch (...) {
+        return false;
+    }
+    return index == text.size() && value >= 0;
+}
+
+bool parse_xcd_spec(const std::string& value, std::string& error) {
+    g_xcd_order.clear();
+    g_xcd_reverse = false;
+    if (value == "all") {
+        return true;
+    }
+    if (value == "one") {
+        g_xcd_order.push_back(0);
+        return true;
+    }
+    if (value == "reverse") {
+        g_xcd_reverse = true;
+        return true;
+    }
+    std::stringstream items(value);
+    std::string item;
+    bool any = false;
+    while (std::getline(items, item, ',')) {
+        int xcd = 0;
+        if (!parse_nonneg_int(item, xcd)) {
+            error = "xcd must be all, one, reverse, or a comma-separated list of indexes";
+            g_xcd_order.clear();
+            g_xcd_reverse = false;
+            return false;
+        }
+        g_xcd_order.push_back(xcd);
+        any = true;
+    }
+    if (!any) {
+        error = "xcd must be all, one, reverse, or a comma-separated list of indexes";
+        return false;
+    }
+    return true;
+}
+
 #if defined(TEST_MODE_CPX)
 struct XcdCase {
     const char* suffix;
@@ -2835,15 +2947,11 @@ const XcdCase kXcdCases[] = {
     {"xcd_1", "1"},
     {"xcd_2", "2"},
     {"xcd_3", "3"},
-    {"xcd_4", "4"},
-    {"xcd_5", "5"},
-    {"xcd_6", "6"},
-    {"xcd_7", "7"},
     {"xcd_0_1", "0,1"},
     {"xcd_0_2", "0,2"},
     {"xcd_0_3", "0,3"},
     {"xcd_3_0", "3,0"},
-    {"xcd_7_6_5_4_3_2_1_0", "7,6,5,4,3,2,1,0"},
+    {"xcd_reverse", "reverse"},
 };
 
 int g_xcd_case = -1;
@@ -2851,18 +2959,10 @@ int g_xcd_case = -1;
 std::string xcd_subtest_name(const XcdCase& item) { return std::string(kProgramName) + "_" + item.suffix; }
 
 void apply_xcd_order(const std::string& order) {
-    g_xcd_order.clear();
-    if (order == "all") {
-        return;
-    }
-    if (order == "one") {
-        g_xcd_order.push_back(0);
-        return;
-    }
-    std::stringstream items(order);
-    std::string item;
-    while (std::getline(items, item, ',')) {
-        g_xcd_order.push_back(item[0] - '0');
+    std::string error;
+    if (!parse_xcd_spec(order, error)) {
+        g_xcd_order.clear();
+        g_xcd_reverse = false;
     }
 }
 
@@ -2884,7 +2984,7 @@ void print_smi_text() {
     }
     std::cout << "workload: HIP loop on XCD " << g_smi.xcd
               << " of every card. amd-smi metric -u gfx_busy_inst is read from that card's P0.\n";
-    std::cout << "expected: only XCD " << g_smi.xcd << " is non-zero. The other seven XCDs stay at 0.\n";
+    std::cout << "expected: only XCD " << g_smi.xcd << " is non-zero. The other XCDs stay at 0.\n";
     for (const SmiRow& row : g_smi.rows) {
         std::cout << "card " << row.card << "  P0 GPU " << row.gpu << "  gfx_activity " << row.gfx_activity << "%  busy "
                   << busy_list(row.busy) << "  " << verdict_word(row.pass ? 0 : 1);
@@ -2909,12 +3009,13 @@ void print_smi_text() {
 
 void print_usage() {
     std::cout << "usage: " << kProgramName
-              << " [--xcd all|one|<list>] [--touch-all] [--keep-decoder] [--parallel]\n"
+              << " [--xcd all|one|reverse|<list>] [--touch-all] [--keep-decoder] [--parallel]\n"
               << "       [--sequence a,b] [--allow-partial] [--verbose] [--json | --csv]\n"
               << "       [partition_layout | " << kDecodeName << " | smi_one_xcd]\n";
-    std::cout << "  --xcd all       decode on every XCD, P0 through P7 (default)\n";
+    std::cout << "  --xcd all       decode on every XCD on the card (default)\n";
     std::cout << "  --xcd one       decode only XCD 0 on every card\n";
-    std::cout << "  --xcd <list>    comma-separated play order, for example 7,6,5,4,3,2,1,0 or 3,0\n";
+    std::cout << "  --xcd reverse   decode every XCD, highest index first\n";
+    std::cout << "  --xcd <list>    comma-separated play order, for example 3,0\n";
     std::cout << "  --touch-all     open every partition with HIP before the selected sessions\n";
     std::cout << "  --keep-decoder  leave each decoder open until every selected session has been created\n";
     std::cout << "  --parallel      create the selected sessions on one card at the same time\n";
@@ -2965,27 +3066,9 @@ int main(int argc, char** argv) {
             } else {
                 value = arg.substr(6);
             }
-            g_xcd_order.clear();
-            if (value == "all") {
-                continue;
-            }
-            if (value == "one") {
-                g_xcd_order.push_back(0);
-                continue;
-            }
-            std::stringstream items(value);
-            std::string item;
-            bool parsed = !value.empty();
-            while (parsed && std::getline(items, item, ',')) {
-                if (item.size() != 1 || item[0] < '0' || item[0] > '7') {
-                    parsed = false;
-                    break;
-                }
-                g_xcd_order.push_back(item[0] - '0');
-            }
-            if (!parsed || g_xcd_order.empty()) {
-                g_xcd_order.clear();
-                std::cout << "xcd must be all, one, an index 0-7, or a comma-separated order\n";
+            std::string xcd_error;
+            if (!parse_xcd_spec(value, xcd_error)) {
+                std::cout << xcd_error << "\n";
                 print_usage();
                 return 1;
             }
@@ -3018,14 +3101,15 @@ int main(int argc, char** argv) {
             bool parsed = true;
             while (parsed && std::getline(items, item, ',')) {
                 const size_t colon = item.rfind(':');
-                if (colon == std::string::npos || colon + 1 >= item.size() || item[colon + 1] < '0' || item[colon + 1] > '7' ||
-                    item.size() != colon + 2) {
+                int function = 0;
+                if (colon == std::string::npos || colon == 0 || colon + 1 >= item.size() ||
+                    !parse_nonneg_int(item.substr(colon + 1), function)) {
                     parsed = false;
                     break;
                 }
                 PlayStep step;
                 step.card = item.substr(0, colon);
-                step.function = item[colon + 1] - '0';
+                step.function = function;
                 if (step.card.empty()) {
                     parsed = false;
                     break;

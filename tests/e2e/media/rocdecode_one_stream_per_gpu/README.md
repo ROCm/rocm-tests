@@ -8,7 +8,7 @@ Type : Functional
 
 - **SPX:** one GPU per card.
 - **DPX:** two halves per card (P0, P1).
-- **CPX:** eight slices per card (P0–P7). P0/P1, P2/P3, P4/P5, and P6/P7 share an engine.
+- **CPX:** one slice per XCD. Width follows the GPU: 4 (MI350P), 6 (MI300A), or 8 (MI300X / MI325X / MI350X / MI355X / MI455X). Neighboring even/odd pairs share an engine.
 
 Run the program that matches the host mode. Input is `data/sample_stream.h264`.
 
@@ -16,9 +16,9 @@ Run the program that matches the host mode. Input is `data/sample_stream.h264`.
 |---|---|---|
 | `rocdecode_spx_one_stream_per_card` | SPX | 1 (P0) |
 | `rocdecode_dpx_one_stream_per_half` | DPX | 2 (P0, P1) |
-| `rocdecode_cpx_one_stream_per_slice` | CPX | 8 (P0–P7) |
+| `rocdecode_cpx_one_stream_per_slice` | CPX | live XCD count (P0–P{N-1}) |
 
-Exit code 0 is pass, 1 is fail, and 2 is skip. A skip is not a pass. The binary uses exit 2 when no GPU is present, the host is in a different mode, or every card has four slices. After pytest has switched the node, a mode mismatch is a failure; pytest still skips on no GPU or four-slice cards.
+Exit code 0 is pass, 1 is fail, and 2 is skip. A skip is not a pass. After pytest has switched the node, `no GPU` and a mismatch among SPX, DPX, and CPX are failures. Exit 2 is only the program's `host mode is other` line (four-slice / QPX).
 
 ### Application flow
 
@@ -107,25 +107,26 @@ Each command runs `partition_layout`, then the decode check. To run one check:
 ./build/rocdecode_cpx_one_stream_per_slice cpx_one_stream_per_slice
 ```
 
-On CPX, a named subtest runs only that decode. The name is `rocdecode_cpx_one_stream_per_slice_` plus the XCD command, with commas written as underscores.
+On CPX, a named subtest runs only that decode. The name is `rocdecode_cpx_one_stream_per_slice_` plus the XCD command, with commas written as underscores. pytest does not hardcode XCD 4–7; it plays `--xcd reverse` and then `--xcd 0` through `--xcd N-1` from the live slice count.
 
 | Subtest | Same as |
 |---|---|
 | `rocdecode_cpx_one_stream_per_slice_xcd_all` | `--xcd all` |
 | `rocdecode_cpx_one_stream_per_slice_xcd_one` | `--xcd one` |
-| `rocdecode_cpx_one_stream_per_slice_xcd_0` … `_xcd_7` | `--xcd 0` … `--xcd 7` |
+| `rocdecode_cpx_one_stream_per_slice_xcd_0` … `_xcd_3` | `--xcd 0` … `--xcd 3` |
 | `rocdecode_cpx_one_stream_per_slice_xcd_0_1` | `--xcd 0,1` |
 | `rocdecode_cpx_one_stream_per_slice_xcd_0_2` | `--xcd 0,2` |
 | `rocdecode_cpx_one_stream_per_slice_xcd_0_3` | `--xcd 0,3` |
 | `rocdecode_cpx_one_stream_per_slice_xcd_3_0` | `--xcd 3,0` |
-| `rocdecode_cpx_one_stream_per_slice_xcd_7_6_5_4_3_2_1_0` | `--xcd 7,6,5,4,3,2,1,0` |
+| `rocdecode_cpx_one_stream_per_slice_xcd_reverse` | `--xcd reverse` |
 
 ```
 ./build/rocdecode_cpx_one_stream_per_slice rocdecode_cpx_one_stream_per_slice_xcd_0
 ./build/rocdecode_cpx_one_stream_per_slice rocdecode_cpx_one_stream_per_slice_xcd_0_3
+./build/rocdecode_cpx_one_stream_per_slice --xcd reverse
 ```
 
-`--xcd all` plays P0–P7 and scores neighboring pairs. `--xcd one` or `--xcd N` plays that one XCD on every card. `--xcd 3,0` plays those XCDs in that order and scores each on its own row. `--xcd` selects by PCI function.
+`--xcd all` plays every XCD on the card and scores neighboring pairs. `--xcd reverse` plays them highest index first. `--xcd one` or `--xcd N` plays that one XCD on every card. `--xcd 3,0` plays those XCDs in that order and scores each on its own row. `--xcd` selects by PCI function. A list that names an XCD the SKU does not have fails.
 
 Other flags, unchanged by the subtest name:
 
@@ -148,7 +149,7 @@ A row passes when every partition maps to a render node, every session shows at 
 | SPX | `spx_one_stream_per_card` | Stream shows frames; time only on the card's node |
 | DPX | `partition_layout` | 2 partitions per card |
 | DPX | `dpx_one_stream_per_half` | Each half shows frames; time only on its own node |
-| CPX | `partition_layout` | 8 partitions per card |
+| CPX | `partition_layout` | One partition per XCD on every card |
 | CPX | `cpx_one_stream_per_slice` | Each slice shows frames; each pair's time comes only from that pair |
 
 `smi_one_xcd` is optional and runs only when named.
