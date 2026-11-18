@@ -1024,8 +1024,11 @@ def _execute_upgrade(executor, pkg_specs: list) -> InstallResult:  # noqa: C901
     if not r.ok:
         raise RuntimeError(f"os_deps upgrade failed (exit={r.exit_code}):\n{r.stderr[:500]}")
     plain_names = [
-        _parse_version(s)[0] if isinstance(s, str)
-        else next(iter(s.get(backend.key) or s.get("*") or [""]), "").split("=")[0]
+        (
+            _parse_version(s)[0]
+            if isinstance(s, str)
+            else next(iter(s.get(backend.key) or s.get("*") or [""]), "").split("=")[0]
+        )
         for s in pkg_specs
     ]
     versions = _get_installed_versions(executor, backend, plain_names)
@@ -1033,7 +1036,7 @@ def _execute_upgrade(executor, pkg_specs: list) -> InstallResult:  # noqa: C901
     return InstallResult(installed=plain_names, versions=versions)
 
 
-def _execute_uninstall(executor, pkg_specs: list[str]) -> dict[str, bool]:
+def _execute_uninstall(executor, pkg_specs: list[str]) -> dict[str, bool]:  # noqa: C901
     """Probe installed state then remove packages that match the spec.
 
     Supports plain names and version-pinned specs — only removes if that version installed.
@@ -1056,7 +1059,9 @@ def _execute_uninstall(executor, pkg_specs: list[str]) -> dict[str, bool]:
             installed_versions = _get_installed_versions(executor, backend, [name])
             installed_ver = installed_versions.get(name, "")
             if version not in installed_ver:
-                logger.info("os_deps uninstall: %s==%s not installed (have %s) — skipping", name, version, installed_ver)
+                logger.info(
+                    "os_deps uninstall: %s==%s not installed (have %s) — skipping", name, version, installed_ver
+                )
                 result[spec] = False
                 continue
         to_remove.append(name)
@@ -1094,10 +1099,7 @@ def _execute_specs(executor, pkg_names: list[str]) -> dict[str, dict]:
     missing = set(_probe_missing(executor, backend, pkg_names))
     installed_names = [p for p in pkg_names if p not in missing]
     versions = _get_installed_versions(executor, backend, installed_names) if installed_names else {}
-    return {
-        p: {"installed": p not in missing, "version": versions.get(p)}
-        for p in pkg_names
-    }
+    return {p: {"installed": p not in missing, "version": versions.get(p)} for p in pkg_names}
 
 
 def _dry_run_label(spec: _InstallSpec) -> str:

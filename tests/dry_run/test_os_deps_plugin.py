@@ -146,7 +146,8 @@ def test_dnf_install_development_tools(target_executor):
     assert result.ok
     assert result.all_packages, "No packages accounted for"
     r = target_executor.run("find /usr/include -name 'numa.h' 2>/dev/null | head -1")
-    assert r.ok and r.stdout.strip(), "numa.h not found after install"
+    assert r.ok
+    assert r.stdout.strip(), "numa.h not found after install"
 
 
 @pytest.mark.hw.cpu_only
@@ -170,9 +171,11 @@ def test_dnf_install_openssl_devel(target_executor):
         _session_installed.extend(result.installed)
 
     print(f"\n[dnf] openssl-devel installed: {result.installed}, present: {result.already_present}")
-    assert result.ok and result.all_packages
+    assert result.ok
+    assert result.all_packages
     r = target_executor.run("find /usr/include -name 'openssl' -type d 2>/dev/null | head -1")
-    assert r.ok and r.stdout.strip(), "openssl header dir not found"
+    assert r.ok
+    assert r.stdout.strip(), "openssl header dir not found"
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +198,11 @@ def test_zypper_install_libdrm(target_executor):
         _session_installed.extend(result.installed)
 
     print(f"\n[zypper] libdrm specs: installed={result.installed}, present={result.already_present}")
-    assert result.ok and result.all_packages
+    assert result.ok
+    assert result.all_packages
     r = target_executor.run("find /usr/include -name 'drm.h' -path '*/drm/*' 2>/dev/null | head -1")
-    assert r.ok and r.stdout.strip(), "drm.h not found after install"
+    assert r.ok
+    assert r.stdout.strip(), "drm.h not found after install"
 
 
 @pytest.mark.hw.cpu_only
@@ -221,9 +226,11 @@ def test_zypper_install_libnuma(target_executor):
         _session_installed.extend(result.installed)
 
     print(f"\n[zypper] libnuma specs: installed={result.installed}, present={result.already_present}")
-    assert result.ok and result.all_packages
+    assert result.ok
+    assert result.all_packages
     r = target_executor.run("find /usr/include -name 'numa.h' 2>/dev/null | head -1")
-    assert r.ok and r.stdout.strip(), "numa.h not found after install"
+    assert r.ok
+    assert r.stdout.strip(), "numa.h not found after install"
 
 
 # ---------------------------------------------------------------------------
@@ -271,10 +278,12 @@ def test_pip_install_packaging(target_executor):
     """Install 'packaging' via pip; verify import and specs()."""
     result = OS_DEPS().install("packaging", command="pip", extra_args=["--quiet"])
 
-    assert result.ok and result.command == "pip"
+    assert result.ok
+    assert result.command == "pip"
     assert "packaging" in result.installed
     r = target_executor.run("python3 -c 'import packaging; print(packaging.__version__)'")
-    assert r.ok and r.stdout.strip(), "packaging import failed"
+    assert r.ok
+    assert r.stdout.strip(), "packaging import failed"
     print(f"\n[pip] packaging version: {r.stdout.strip()}")
 
 
@@ -286,9 +295,11 @@ def test_pip_install_with_extra_args(target_executor):
     """Install setuptools via pip with --upgrade extra_arg."""
     result = OS_DEPS().install("setuptools", command="pip", extra_args=["--quiet", "--upgrade"])
 
-    assert result.ok and result.command == "pip"
+    assert result.ok
+    assert result.command == "pip"
     r = target_executor.run("python3 -c 'import setuptools; print(setuptools.__version__)'")
-    assert r.ok and r.stdout.strip()
+    assert r.ok
+    assert r.stdout.strip()
     print(f"\n[pip] setuptools version: {r.stdout.strip()}")
 
 
@@ -304,7 +315,8 @@ def test_pip_install_with_extra_args(target_executor):
 def test_winget_install_package(target_executor):
     """Install git via winget on Windows; falls back to apt/dnf on Linux."""
     result = OS_DEPS().install({"winget": "Git.Git", "*": "git"}, on_missing="skip")
-    assert result.ok and result.all_packages
+    assert result.ok
+    assert result.all_packages
     assert result.version_summary()
 
 
@@ -315,7 +327,8 @@ def test_winget_install_package(target_executor):
 def test_choco_install_package():
     """Install cmake via choco on Windows; falls back on Linux."""
     result = OS_DEPS().install({"choco": "cmake", "*": "cmake"}, on_missing="skip")
-    assert result.ok and result.all_packages
+    assert result.ok
+    assert result.all_packages
     assert result.version_summary()
 
 
@@ -326,7 +339,8 @@ def test_choco_install_package():
 def test_scoop_install_package():
     """Install curl via scoop on Windows; falls back on Linux."""
     result = OS_DEPS().install({"scoop": "curl", "*": "curl"}, on_missing="skip")
-    assert result.ok and result.all_packages
+    assert result.ok
+    assert result.all_packages
     assert result.version_summary()
 
 
@@ -466,10 +480,7 @@ def test_upgrade_to_specific_version(target_executor):
 @pytest.mark.os.linux
 def test_src_deb_url_install(target_executor):
     """Install figlet from a direct .deb URL; verify via specs()."""
-    _figlet_deb_url = (
-        "http://archive.ubuntu.com/ubuntu/pool/universe/f/figlet/"
-        "figlet_2.2.5-3_amd64.deb"
-    )
+    _figlet_deb_url = "http://archive.ubuntu.com/ubuntu/pool/universe/f/figlet/" "figlet_2.2.5-3_amd64.deb"
     result = OS_DEPS().install({"apt": "figlet", "*": "figlet"}, src=_figlet_deb_url)
     if result.installed:
         _session_installed.extend(result.installed)
