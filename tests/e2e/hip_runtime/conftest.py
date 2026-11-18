@@ -12,6 +12,8 @@ only the required target rather than compiling unrelated HIP runtime binaries:
   (HIP kernel code; requires ``--gpu-arch`` so ``-DGPU_ARCH`` can be forwarded).
 - ``_split_barrier_stress_build_dir`` — builds ``split_barrier_stress``
   (standalone cooperative-groups stress sample; requires ``--gpu-arch``).
+- ``_multi_stream_queue_hang_build_dir`` — builds ``multi_stream_queue_hang``
+  (host HIP memset/stream soak binary; no ``--gpu-arch`` required).
 - ``_ipc_module_load_build_dir``  — builds ``ipc_alltoall_module_load``,
   ``ipc_dup_import_module_load``, and ``noop.hsaco`` (HIP IPC regression tests;
   requires ``--gpu-arch``).
@@ -35,6 +37,7 @@ Build output layout::
     output/test-binaries/hip_runtime/host_build/hip_invalid_codeobject_load_test
     output/test-binaries/hip_runtime/stream_build/multi_stream_serialization
     output/test-binaries/hip_runtime/split_barrier_stress/split_barrier_stress
+    output/test-binaries/hip_runtime/multi_stream_queue_hang/multi_stream_queue_hang
     output/test-binaries/hip_runtime/ipc_module_load/ipc_alltoall_module_load
     output/test-binaries/hip_runtime/ipc_module_load/ipc_dup_import_module_load
     output/test-binaries/hip_runtime/ipc_module_load/noop.hsaco
@@ -58,6 +61,7 @@ import pytest
 logger = logging.getLogger(__name__)
 _SRC_DIR = "tests/e2e/hip_runtime/src"
 _SPLIT_BARRIER_SRC_DIR = "tests/e2e/hip_runtime/src/split_barrier_stress"
+_MULTI_STREAM_QUEUE_HANG_SRC_DIR = "tests/e2e/hip_runtime/src/multi_stream_queue_hang"
 _IPC_MODULE_LOAD_SRC_DIR = "tests/e2e/hip_runtime/src/ipc_module_load"
 _ROCK_MPS_SRC_DIR = "tests/e2e/hip_runtime/src/mps"
 _PARTITION_ISO_SRC_DIR = "tests/e2e/hip_runtime/src/partition_isolation"
@@ -174,6 +178,33 @@ def multi_stream_serialization_binary(_hip_stream_cmake_build_dir: str, built_bi
 def split_barrier_stress_binary(_split_barrier_stress_build_dir: str, built_binary) -> str:
     """Compiled ``split_barrier_stress`` binary path."""
     return built_binary(os.path.join(_split_barrier_stress_build_dir, "split_barrier_stress"), "split_barrier_stress")
+
+
+@pytest.fixture(scope="session")
+def _multi_stream_queue_hang_build_dir(cmake_build_dir) -> str:
+    """Build the vendored ``multi_stream_queue_hang`` host HIP soak binary.
+
+    Host driver-API only (no device kernels), so ``--gpu-arch`` is not required.
+    Self-contained CMake project under ``src/multi_stream_queue_hang``.
+    """
+    return cmake_build_dir(
+        src=_MULTI_STREAM_QUEUE_HANG_SRC_DIR,
+        subdir="hip_runtime/multi_stream_queue_hang",
+        compiler_mode="optional_auto",
+        label="hip_runtime/multi_stream_queue_hang",
+        sync_dirs=[_MULTI_STREAM_QUEUE_HANG_SRC_DIR],
+        artifact="multi_stream_queue_hang",
+        target="multi_stream_queue_hang",
+    )
+
+
+@pytest.fixture(scope="session")
+def multi_stream_queue_hang_binary(_multi_stream_queue_hang_build_dir: str, built_binary) -> str:
+    """Compiled ``multi_stream_queue_hang`` binary path."""
+    return built_binary(
+        os.path.join(_multi_stream_queue_hang_build_dir, "multi_stream_queue_hang"),
+        "multi_stream_queue_hang",
+    )
 
 
 @pytest.fixture(scope="session")
