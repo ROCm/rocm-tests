@@ -55,7 +55,7 @@ already switched.
 Example::
 
     class TestSomethingCpx:
-        pytestmark = [pytest.mark.partition.cpx, pytest.mark.gpu_count("all")]
+        pytestmark = [pytest.mark.hw.multi_gpu, pytest.mark.partition.cpx, pytest.mark.gpu_count("all")]
 
         @pytest.fixture(scope="class", autouse=True)
         def _use_cpx(self, compute_partition):
