@@ -11,8 +11,10 @@ fixture builds the three mode binaries in one CMake invocation:
     output/test-binaries/rocdecode_one_stream_per_gpu/build/rocdecode_dpx_one_stream_per_half
     output/test-binaries/rocdecode_one_stream_per_gpu/build/rocdecode_cpx_one_stream_per_slice
 
-``xcd_burn`` is built beside them. The ``cpx-smi-one-xcd`` case passes
-``smi_one_xcd`` to the CPX binary, which launches ``xcd_burn``.
+``xcd_burn`` is built beside them. CMake downloads rocDecode's
+``AMD_driving_virtual_20-H264.264`` into the build directory. The
+``cpx-smi-one-xcd`` case passes ``smi_one_xcd`` to the CPX binary, which
+launches ``xcd_burn``.
 
 The SPX, DPX, and CPX class fixtures call ``compute_partition.set`` from
 ``framework/plugins/partition_plugin.py``. That plugin restores the original

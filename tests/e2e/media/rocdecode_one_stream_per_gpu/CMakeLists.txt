@@ -30,9 +30,29 @@ enable_testing()
 find_package(hip REQUIRED)
 find_library(ROCDECODE_LIBRARY NAMES rocdecode PATHS ${ROCM_PATH}/lib REQUIRED)
 
-set(SAMPLE_STREAM ${CMAKE_CURRENT_SOURCE_DIR}/data/sample_stream.h264)
-if(NOT EXISTS ${SAMPLE_STREAM})
-    message(FATAL_ERROR "Missing H.264 elementary stream: ${SAMPLE_STREAM}")
+# The H.264 elementary stream is rocDecode's sample. It is not stored in this
+# repo. Configure downloads it into the build directory. Pass -DSAMPLE_STREAM
+# to use a local copy instead.
+set(ROCDECODE_H264_URL
+    "https://raw.githubusercontent.com/ROCm/rocm-systems/develop/projects/rocdecode/data/videos/AMD_driving_virtual_20-H264.264"
+    CACHE STRING "rocDecode H.264 elementary stream")
+set(ROCDECODE_H264_SHA1 "c89d1c82e38b962e64d7a980265fb22b252f702c" CACHE STRING "SHA1 of that stream")
+if(NOT SAMPLE_STREAM)
+    set(SAMPLE_STREAM "${CMAKE_CURRENT_BINARY_DIR}/AMD_driving_virtual_20-H264.264")
+endif()
+if(NOT EXISTS "${SAMPLE_STREAM}")
+    message(STATUS "Downloading rocDecode H.264 sample")
+    file(DOWNLOAD "${ROCDECODE_H264_URL}" "${SAMPLE_STREAM}"
+        EXPECTED_HASH SHA1=${ROCDECODE_H264_SHA1}
+        TLS_VERIFY ON
+        STATUS _rocdecode_h264_status)
+    list(GET _rocdecode_h264_status 0 _rocdecode_h264_code)
+    list(GET _rocdecode_h264_status 1 _rocdecode_h264_error)
+    if(NOT _rocdecode_h264_code EQUAL 0)
+        message(FATAL_ERROR
+            "Could not download ${ROCDECODE_H264_URL} (${_rocdecode_h264_error}). "
+            "Pass -DSAMPLE_STREAM=<path to AMD_driving_virtual_20-H264.264>.")
+    endif()
 endif()
 
 add_library(decode_placement_common STATIC common/result_table.cpp)

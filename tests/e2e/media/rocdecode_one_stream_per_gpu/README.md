@@ -10,7 +10,7 @@ Type : Functional
 - **DPX:** two halves per card (P0, P1).
 - **CPX:** one slice per XCD. Width follows the GPU: 4 (MI350P), 6 (MI300A), or 8 (MI300X / MI325X / MI350X / MI355X / MI455X). Neighboring even/odd pairs share an engine.
 
-Run the program that matches the host mode. Input is `data/sample_stream.h264`.
+Run the program that matches the host mode. Input is rocDecode's `AMD_driving_virtual_20-H264.264`. CMake downloads it into the build directory. It is not stored in this repo. Pass `-DSAMPLE_STREAM=<path>` to use a local copy.
 
 | Program | Host mode | Partitions per card |
 |---|---|---|
@@ -31,7 +31,7 @@ flowchart LR
   E --> F[Inference or processing<br/>on the same GPU]
 ```
 
-The test replaces the MP4 demux step with a raw H.264 file, `data/sample_stream.h264`. The check covers steps C and D, so the frames and engine time it reports come from the partition that was selected.
+The test replaces the MP4 demux step with that raw H.264 file. The check covers steps C and D, so the frames and engine time it reports come from the partition that was selected.
 
 ## Pair time and other time
 
