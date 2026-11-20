@@ -11,6 +11,7 @@ process while the pins are held.
 """
 
 import argparse
+import contextlib
 import ctypes
 import ctypes.util
 import json
@@ -496,10 +497,8 @@ def default_ib_device():
     if names:
         return names[0]
     sysfs = []
-    try:
+    with contextlib.suppress(OSError):
         sysfs = sorted(os.listdir("/sys/class/infiniband"))
-    except OSError:
-        pass
     if sysfs:
         raise RuntimeError(
             f"RDMA devices in sysfs {sysfs} but none via libibverbs; "
@@ -779,11 +778,11 @@ def probe_only(args):
     return 0 if pointer else 2
 
 
-def main():
-    args = parse_args()
-    if args.probe_only:
-        return probe_only(args)
+def prepare_run(args):
+    """Open the GPU and report the planned working set.
 
+    Returns hip, pci address, exporter, verbs, and the byte sizes main allocates.
+    """
     hip = Hip()
     if not 0 <= args.device < hip.device_count():
         raise RuntimeError(f"GPU {args.device} does not exist")
@@ -799,7 +798,6 @@ def main():
     exporter = hip if export_api == "hip" else Hsa()
     verbs = None if args.skip_pin else Verbs(args.ib_device)
 
-    device_name = hip.device_name(args.device)
     probe_bytes = args.probe_mib * MIB
     free_bytes, total_bytes = hip.mem_get_info()
     if args.target_gib == 0:
@@ -817,7 +815,7 @@ def main():
         test_name=test_name,
         scenario=scenario,
         device=args.device,
-        device_name=device_name,
+        device_name=hip.device_name(args.device),
         target_gib=target_gib,
         target_source=target_source,
         pci_address=pci_addr,
@@ -830,93 +828,87 @@ def main():
         probe_bytes=probe_bytes,
         **gpu_memory(hip, pci_addr),
     )
+    return hip, pci_addr, exporter, verbs, probe_bytes, target_bytes, chunk_bytes
 
-    pointers = []
-    regions = []
-    probe_succeeded = False
-    pinned_kind = None
-    unpinned_kind = None
-    foreign_kind = None
-    try:
-        pointers = allocate_working_set(hip, target_bytes, chunk_bytes)
-        report("allocated", chunks=len(pointers), **gpu_memory(hip, pci_addr))
 
-        if args.skip_pin:
-            report("pin_skipped", **gpu_memory(hip, pci_addr))
-        else:
-            pin_bytes = args.pin_gib * GIB if args.pin_gib else None
-            ranges = select_ranges(pointers, args.pattern, pin_bytes)
-            pinned_bytes = sum(size for _pointer, size in ranges)
+def pin_working_window(args, hip, pci_addr, exporter, verbs, pointers, regions):
+    """Register the selected window. Returns the foreign-probe verdict, or None."""
+    pin_bytes = args.pin_gib * GIB if args.pin_gib else None
+    ranges = select_ranges(pointers, args.pattern, pin_bytes)
+    pinned_bytes = sum(size for _pointer, size in ranges)
+    report(
+        "window",
+        ranges=len(ranges),
+        pinned_bytes=pinned_bytes,
+        **gpu_memory(hip, pci_addr),
+    )
+    if not ranges:
+        report("window_empty", note="no regions selected to register")
+        return None
+
+    def pin_window():
+        register_ranges(exporter, verbs, ranges, regions)
+
+    pin_window()
+    if args.pattern == "churn":
+        for cycle in range(args.churn_cycles):
+            errors = deregister_regions(verbs, regions)
             report(
-                "window",
-                ranges=len(ranges),
-                pinned_bytes=pinned_bytes,
+                "churn_unpinned",
+                cycle=cycle,
+                deregistration_errors=errors,
                 **gpu_memory(hip, pci_addr),
             )
-            if not ranges:
-                report("window_empty", note="no regions selected to register")
-            else:
+            pin_window()
+            report(
+                "churn_pinned",
+                cycle=cycle,
+                ranges=len(regions),
+                **gpu_memory(hip, pci_addr),
+            )
 
-                def pin_window():
-                    register_ranges(exporter, verbs, ranges, regions)
+    lkey, rkey = verbs.keys(regions[0])
+    report(
+        "pinned",
+        chunks=len(regions),
+        pinned_bytes=pinned_bytes,
+        first_mr_lkey=lkey,
+        first_mr_rkey=rkey,
+        **gpu_memory(hip, pci_addr),
+    )
+    if not args.foreign_probe:
+        return None
+    foreign_kind, _foreign_ok = foreign_probe(args)
+    return foreign_kind
 
-                pin_window()
-                if args.pattern == "churn":
-                    for cycle in range(args.churn_cycles):
-                        errors = deregister_regions(verbs, regions)
-                        report(
-                            "churn_unpinned",
-                            cycle=cycle,
-                            deregistration_errors=errors,
-                            **gpu_memory(hip, pci_addr),
-                        )
-                        pin_window()
-                        report(
-                            "churn_pinned",
-                            cycle=cycle,
-                            ranges=len(regions),
-                            **gpu_memory(hip, pci_addr),
-                        )
 
-                lkey, rkey = verbs.keys(regions[0])
-                report(
-                    "pinned",
-                    chunks=len(regions),
-                    pinned_bytes=pinned_bytes,
-                    first_mr_lkey=lkey,
-                    first_mr_rkey=rkey,
-                    **gpu_memory(hip, pci_addr),
-                )
+def reprobe_after_unpin(args, hip, pci_addr, verbs, regions, probe_bytes):
+    """After a churn release, probe again and treat a stuck refusal as a pin leak."""
+    if args.pattern != "churn" or not regions:
+        return None
+    errors = deregister_regions(verbs, regions)
+    report("unpinned", deregistration_errors=errors, **gpu_memory(hip, pci_addr))
+    unpinned_ok, unpinned_snapshot = run_probe(hip, pci_addr, probe_bytes, "probe_after_unpin")
+    unpinned_kind = classify_probe(unpinned_ok, probe_bytes, unpinned_snapshot)
+    if not unpinned_ok and unpinned_kind in ("fake_oom", "refused_unverified"):
+        return "pin_leak"
+    return unpinned_kind
 
-                if args.foreign_probe:
-                    foreign_kind, _foreign_ok = foreign_probe(args)
 
-        probe_succeeded, pinned_snapshot = run_probe(hip, pci_addr, probe_bytes, "probe")
-        pinned_kind = classify_probe(probe_succeeded, probe_bytes, pinned_snapshot)
+def cleanup_allocations(hip, verbs, pointers, regions):
+    held = len(regions)
+    deregistration_errors = deregister_regions(verbs, regions) if held else []
+    for pointer, _size in pointers:
+        hip.free(pointer)
+    report(
+        "cleanup",
+        deregistered=held - len(deregistration_errors),
+        deregistration_errors=deregistration_errors,
+        freed=len(pointers),
+    )
 
-        if args.hold_seconds and regions:
-            report("holding", seconds=args.hold_seconds)
-            time.sleep(args.hold_seconds)
 
-        if args.pattern == "churn" and regions:
-            errors = deregister_regions(verbs, regions)
-            report("unpinned", deregistration_errors=errors, **gpu_memory(hip, pci_addr))
-            unpinned_ok, unpinned_snapshot = run_probe(hip, pci_addr, probe_bytes, "probe_after_unpin")
-            unpinned_kind = classify_probe(unpinned_ok, probe_bytes, unpinned_snapshot)
-            if not unpinned_ok and unpinned_kind in ("fake_oom", "refused_unverified"):
-                unpinned_kind = "pin_leak"
-    finally:
-        held = len(regions)
-        deregistration_errors = deregister_regions(verbs, regions) if held else []
-        for pointer, _size in pointers:
-            hip.free(pointer)
-        report(
-            "cleanup",
-            deregistered=held - len(deregistration_errors),
-            deregistration_errors=deregistration_errors,
-            freed=len(pointers),
-        )
-
+def verdict_exit(args, probe_succeeded, pinned_kind, unpinned_kind, foreign_kind):
     bug_kinds = {"fake_oom", "pin_leak"}
     confirmed = pinned_kind in bug_kinds or unpinned_kind in bug_kinds or foreign_kind in bug_kinds
     expect_failed = args.expect != "either" and probe_succeeded != (args.expect == "success")
@@ -933,6 +925,41 @@ def main():
         actual="success" if probe_succeeded else "failure",
     )
     return 0 if passed else 1
+
+
+def main():
+    args = parse_args()
+    if args.probe_only:
+        return probe_only(args)
+
+    hip, pci_addr, exporter, verbs, probe_bytes, target_bytes, chunk_bytes = prepare_run(args)
+
+    pointers = []
+    regions = []
+    probe_succeeded = False
+    pinned_kind = None
+    unpinned_kind = None
+    foreign_kind = None
+    try:
+        pointers = allocate_working_set(hip, target_bytes, chunk_bytes)
+        report("allocated", chunks=len(pointers), **gpu_memory(hip, pci_addr))
+        if args.skip_pin:
+            report("pin_skipped", **gpu_memory(hip, pci_addr))
+        else:
+            foreign_kind = pin_working_window(args, hip, pci_addr, exporter, verbs, pointers, regions)
+
+        probe_succeeded, pinned_snapshot = run_probe(hip, pci_addr, probe_bytes, "probe")
+        pinned_kind = classify_probe(probe_succeeded, probe_bytes, pinned_snapshot)
+
+        if args.hold_seconds and regions:
+            report("holding", seconds=args.hold_seconds)
+            time.sleep(args.hold_seconds)
+
+        unpinned_kind = reprobe_after_unpin(args, hip, pci_addr, verbs, regions, probe_bytes)
+    finally:
+        cleanup_allocations(hip, verbs, pointers, regions)
+
+    return verdict_exit(args, probe_succeeded, pinned_kind, unpinned_kind, foreign_kind)
 
 
 if __name__ == "__main__":
