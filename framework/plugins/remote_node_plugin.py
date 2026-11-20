@@ -809,6 +809,66 @@ def _resolve_test_context(request, framework_config, config):
     }
 
 
+def _compute_partition_hold_multi(node_pool: NodePool | None) -> MultiGpuSlots | None:
+    """Return the node-wide GPU hold from ``NodePool.hold_node``, if any.
+
+    ``compute_partition`` holds every GPU on the node until restore.
+    ``target_executor`` reuses ``node_pool.node_hold`` instead of acquiring
+    again (which would wait until restore and then time out).
+    """
+    if node_pool is None:
+        return None
+    return node_pool.node_hold
+
+
+def _multi_from_hold(
+    held: MultiGpuSlots, *, count: int | None = None, indices: list[int] | None = None
+) -> MultiGpuSlots:
+    """Slice the held node without releasing any GPU."""
+    if indices is not None:
+        by_idx = {slot.gpu_info.index: slot for slot in held.slots}
+        missing = [i for i in indices if i not in by_idx]
+        if missing:
+            pytest.fail(
+                f"compute_partition holds GPUs {sorted(by_idx)} on {held.node_spec.label}; "
+                f"gpu_indices {indices} includes {missing} which are not on that node"
+            )
+        chosen = [by_idx[i] for i in indices]
+        return MultiGpuSlots(slots=chosen, node_spec=held.node_spec)
+    n = 1 if count is None else count
+    if n > len(held.slots):
+        pytest.fail(f"compute_partition holds {len(held.slots)} GPU(s) on {held.node_spec.label}; test requested {n}")
+    return MultiGpuSlots(slots=list(held.slots[:n]), node_spec=held.node_spec)
+
+
+def _held_multi_for_test(node_pool: NodePool | None, ctx: dict, request) -> MultiGpuSlots | None:
+    """Reuse ``compute_partition`` slots for this test, or ``None`` when no hold."""
+    held = _compute_partition_hold_multi(node_pool)
+    if held is None:
+        return None
+    if ctx["is_multi_node"]:
+        pytest.fail(
+            "compute_partition holds every GPU on one node until restore; e2e.multinode cannot run in the same module"
+        )
+    gpu_idx_marker = request.node.get_closest_marker("gpu_indices")
+    if gpu_idx_marker and gpu_idx_marker.args:
+        raw_arg = gpu_idx_marker.args[0]
+        if isinstance(raw_arg, int):
+            pytest.fail(
+                f"gpu_indices marker takes a list, not a bare int. Use @pytest.mark.gpu_indices([{raw_arg}]).",
+                pytrace=False,
+            )
+        return _multi_from_hold(held, indices=list(raw_arg))
+    if ctx["is_multi_gpu"]:
+        count = resolve_gpu_count(
+            gpu_count_from_marker(ctx["gpu_count_marker"], default=2),
+            available=len(held.slots),
+            default=2,
+        )
+        return _multi_from_hold(held, count=count)
+    return _multi_from_hold(held, count=1)
+
+
 def _acquire_single(node_pool, ctx):
     """Acquire a single GPU slot, translating errors to pytest outcomes.
 
@@ -1010,6 +1070,8 @@ def _acquire_and_yield(
     node_pool: NodePool,
     is_multi_node: bool,
     container_opts: dict | None = None,
+    release_on_exit: bool = True,
+    unmask_gpus: bool = False,
 ):
     """Shared generator: set up monitoring, yield NodeExecutorGroup, tear down.
 
@@ -1028,6 +1090,10 @@ def _acquire_and_yield(
         node_pool: Active ``NodePool`` used to release slots in the finally block.
         is_multi_node: ``True`` for ``e2e.multinode`` shapes (one executor per node);
             ``False`` for single-node multi-GPU shapes.
+        release_on_exit: When False, leave the slots held (``compute_partition``
+            owns them until it restores the original mode).
+        unmask_gpus: When True, yield an executor with no ``ROCR_VISIBLE_DEVICES``
+            so tests see the live topology after ``compute_partition.set``.
     """
     import time as _time  # pylint: disable=import-outside-toplevel
 
@@ -1056,15 +1122,22 @@ def _acquire_and_yield(
         health_monitors, pre_health_maps, bg_monitors = _setup_monitoring(
             ctx, framework_config, multi_list, is_multi_node_shape=is_multi_node
         )
-        executors = [
-            m.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log) for m in multi_list
-        ]
+        if unmask_gpus:
+            executors = [
+                m.make_unmasked_executor(test_id=test_name, log_path=log_path, session_log_path=session_log)
+                for m in multi_list
+            ]
+        else:
+            executors = [
+                m.make_executor(test_id=test_name, log_path=log_path, session_log_path=session_log) for m in multi_list
+            ]
         # @pytest.mark.container (single-node only): run every command inside a persistent
         # container on the acquired node, with the acquired GPU indices injected.
         if container_opts and not is_multi_node:
+            index_lists = [[] for _ in multi_list] if unmask_gpus else [m.gpu_indices for m in multi_list]
             container_wrappers = _start_container_wrappers(
                 executors,
-                [m.gpu_indices for m in multi_list],
+                index_lists,
                 container_opts,
                 pull_timeout=float(framework_config.therock.build_timeout_secs),
             )
@@ -1079,13 +1152,16 @@ def _acquire_and_yield(
                 if getattr(_exec, "test_logger", None) is not None:
                     _exec.test_logger.close()
             _write_session_separator(session_log, test_name, "END", elapsed)
-            all_indices = [s.gpu_info.index for m in multi_list for s in m.slots]
-            _drain_gpu_slots(config, rock_dir, all_indices)
+            if release_on_exit:
+                all_indices = [s.gpu_info.index for m in multi_list for s in m.slots]
+                _drain_gpu_slots(config, rock_dir, all_indices)
         finally:
             # A teardown step that raises (e.g. a container stop) must not strand the slots.
-            for multi in multi_list:
-                node_pool.release_multi(multi)
-                _console_multi_released(node_pool, multi, test_name, elapsed, session_log)
+            # compute_partition holds every GPU until restore; do not release those.
+            if release_on_exit:
+                for multi in multi_list:
+                    node_pool.release_multi(multi)
+                    _console_multi_released(node_pool, multi, test_name, elapsed, session_log)
 
 
 # ---------------------------------------------------------------------------
@@ -1157,6 +1233,9 @@ class _ManualGpuAllocator:
 
             group = NodeExecutorGroup([DryRunExecutor()])
             return group
+
+        if _compute_partition_hold_multi(self._pool) is not None:
+            pytest.fail("manual_gpu_allocator cannot acquire a GPU while compute_partition holds every GPU on the node")
 
         effective_id = test_id or self._request.node.name
         timeout = self._config.getoption("--gpu-acquire-timeout", default=180.0)
@@ -1434,6 +1513,23 @@ def target_executor(request, framework_config, node_pool):  # noqa: C901
     # persistent container on the acquired node (see _start_container_wrappers).
     container_opts = _container_marker_opts(request, config)
 
+    # compute_partition already holds every GPU on the node. Reuse those slots so
+    # this test does not wait on a lock the module fixture will only drop at restore.
+    held_multi = _held_multi_for_test(node_pool, ctx, request)
+    if held_multi is not None:
+        yield from _acquire_and_yield(
+            multi_list=[held_multi],
+            ctx=ctx,
+            framework_config=framework_config,
+            config=config,
+            node_pool=node_pool,
+            is_multi_node=False,
+            container_opts=container_opts,
+            release_on_exit=False,
+            unmask_gpus=True,
+        )
+        return
+
     # -------------------------------------------------------------------------
     # gpu_indices path: acquire exactly the listed GPU indices
     # -------------------------------------------------------------------------
@@ -1643,7 +1739,8 @@ def multi_gpu_fixture(request, framework_config, node_pool):
         default=2,
     )
 
-    multi = _acquire_multi_gpu(node_pool, ctx, count)
+    held = _compute_partition_hold_multi(node_pool)
+    multi = _multi_from_hold(held, count=count) if held is not None else _acquire_multi_gpu(node_pool, ctx, count)
     yield from _acquire_and_yield(
         multi_list=[multi],
         ctx=ctx,
@@ -1652,6 +1749,8 @@ def multi_gpu_fixture(request, framework_config, node_pool):
         node_pool=node_pool,
         is_multi_node=False,
         container_opts=_container_marker_opts(request, config),
+        release_on_exit=held is None,
+        unmask_gpus=held is not None,
     )
 
 
@@ -1704,6 +1803,12 @@ def multi_node_fixture(request, framework_config, node_pool):
             " or driver fault. Check session logs."
         )
         return
+
+    if _compute_partition_hold_multi(node_pool) is not None:
+        pytest.fail(
+            "compute_partition holds every GPU on one node until restore; "
+            "multi_node_fixture cannot run in the same module"
+        )
 
     if len(node_pool.node_specs) < 2:
         pytest.skip("multi_node_fixture: requires --remote-node with 2+ nodes " "(currently only one node in the pool)")

@@ -83,7 +83,7 @@ markers = [
     "e2e.multinode: multi-node test",
     "e2e.app: third-party application integration test",
     "e2e.upgrade: ROCm upgrade path test",
-    # Compute and memory partition — skip hook is framework/plugins/partition_plugin.py
+    # Compute and memory partition — skip hook and compute_partition fixture in partition_plugin.py
     "partition.spx: run only when every GPU compute partition is SPX",
     "partition.dpx: run only when every GPU compute partition is DPX",
     "partition.tpx: run only when every GPU compute partition is TPX",
