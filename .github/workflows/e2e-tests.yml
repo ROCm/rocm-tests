@@ -19,9 +19,18 @@ on:
         required: true
         type: string
       runs_on:
-        description: 'Runner label for this platform'
+        description: 'Select a configured runner (live availability is not checked)'
         required: true
-        type: string
+        type: choice
+        # Generated from enabled testplan.ini entries; refresh with:
+        # python .github/scripts/sync_runner_choices.py
+        # BEGIN GENERATED RUNNER OPTIONS
+        options:
+          - "linux-mi355-1gpu-ossci-rocm"
+          - "linux-gfx1151-gpu-rocm"
+          - "linux-gfx1100-gpu-rocm-devops-qa"
+          - "linux-gfx1101-gpu-rocm-devops-qa"
+        # END GENERATED RUNNER OPTIONS
       artifact_group:
         description: 'TheRock artifact group (e.g. gfx94X-dcgpu)'
         required: true
