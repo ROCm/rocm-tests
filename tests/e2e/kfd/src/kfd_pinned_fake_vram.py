@@ -20,7 +20,6 @@ import subprocess
 import sys
 import time
 
-
 GIB = 1 << 30
 MIB = 1 << 20
 UNIT_BYTES = {"KiB": 1 << 10, "MiB": MIB, "GiB": GIB}
@@ -140,8 +139,7 @@ def report(stage, **fields):
             flush=True,
         )
         print(
-            f"PCI      : {fields['pci_address']}    "
-            f"IB {fields.get('ib_device') or 'none'}",
+            f"PCI      : {fields['pci_address']}    " f"IB {fields.get('ib_device') or 'none'}",
             flush=True,
         )
         print(
@@ -178,8 +176,7 @@ def report(stage, **fields):
     detail = {
         "allocated": lambda: f"{fields['chunks']} chunks    {memory_text(fields)}",
         "window": lambda: (
-            f"{fields['ranges']} ranges    pinned {gib_text(fields['pinned_bytes'])}    "
-            f"{memory_text(fields)}"
+            f"{fields['ranges']} ranges    pinned {gib_text(fields['pinned_bytes'])}    " f"{memory_text(fields)}"
         ),
         "window_empty": lambda: fields.get("note", ""),
         "pin_skipped": lambda: f"registration skipped    {memory_text(fields)}",
@@ -191,21 +188,13 @@ def report(stage, **fields):
             f"cycle {fields['cycle']} released    "
             f"errors {fields['deregistration_errors'] or 'none'}    {memory_text(fields)}"
         ),
-        "churn_pinned": lambda: (
-            f"cycle {fields['cycle']}    {fields['ranges']} regions    {memory_text(fields)}"
-        ),
+        "churn_pinned": lambda: (f"cycle {fields['cycle']}    {fields['ranges']} regions    {memory_text(fields)}"),
         "holding": lambda: f"{fields['seconds']} s",
-        "unpinned": lambda: (
-            f"errors {fields['deregistration_errors'] or 'none'}    {memory_text(fields)}"
-        ),
+        "unpinned": lambda: (f"errors {fields['deregistration_errors'] or 'none'}    {memory_text(fields)}"),
         "probe_succeeded": lambda: f"allocated {fields['address']}    {memory_text(fields)}",
         "probe_failed": lambda: f"refused    {fields['error']}    {memory_text(fields)}",
-        "probe_after_unpin_succeeded": lambda: (
-            f"allocated {fields['address']}    {memory_text(fields)}"
-        ),
-        "probe_after_unpin_failed": lambda: (
-            f"refused    {fields['error']}    {memory_text(fields)}"
-        ),
+        "probe_after_unpin_succeeded": lambda: (f"allocated {fields['address']}    {memory_text(fields)}"),
+        "probe_after_unpin_failed": lambda: (f"refused    {fields['error']}    {memory_text(fields)}"),
         "cleanup": lambda: (
             f"deregistered {fields['deregistered']}    "
             f"freed {fields['freed']}    "
@@ -284,9 +273,7 @@ class Hip:
 
     def mem_get_info(self):
         free, total = ctypes.c_size_t(), ctypes.c_size_t()
-        self.check(
-            self.lib.hipMemGetInfo(ctypes.byref(free), ctypes.byref(total)), "hipMemGetInfo"
-        )
+        self.check(self.lib.hipMemGetInfo(ctypes.byref(free), ctypes.byref(total)), "hipMemGetInfo")
         return free.value, total.value
 
     def malloc(self, size):
@@ -376,9 +363,7 @@ class Verbs:
         # use_errno so failed ibv_* calls expose the real errno to OSError.
         self.lib = ctypes.CDLL("libibverbs.so.1", use_errno=True)
         if not hasattr(self.lib, "ibv_reg_dmabuf_mr"):
-            raise RuntimeError(
-                "libibverbs lacks ibv_reg_dmabuf_mr; need a newer rdma-core (dmabuf MR support)"
-            )
+            raise RuntimeError("libibverbs lacks ibv_reg_dmabuf_mr; need a newer rdma-core (dmabuf MR support)")
         self.lib.ibv_get_device_list.restype = ctypes.POINTER(ctypes.c_void_p)
         self.lib.ibv_get_device_name.restype = ctypes.c_char_p
         self.lib.ibv_get_device_name.argtypes = [ctypes.c_void_p]
@@ -407,18 +392,14 @@ class Verbs:
                 "(check /sys/class/infiniband and provider plugins under /etc/libibverbs.d)"
             )
         try:
-            self.available = [
-                self.lib.ibv_get_device_name(devices[i]).decode() for i in range(count.value)
-            ]
+            self.available = [self.lib.ibv_get_device_name(devices[i]).decode() for i in range(count.value)]
             chosen = None
             for index, name in enumerate(self.available):
                 if name == requested_name:
                     chosen = index
                     break
             if chosen is None:
-                raise RuntimeError(
-                    f"RDMA device {requested_name!r} not found; available: {self.available}"
-                )
+                raise RuntimeError(f"RDMA device {requested_name!r} not found; available: {self.available}")
             self.name = self.available[chosen]
             self.context = self.lib.ibv_open_device(devices[chosen])
         finally:
@@ -444,8 +425,7 @@ class Verbs:
             err = ctypes.get_errno()
             raise OSError(
                 err,
-                f"ibv_reg_dmabuf_mr(len={length}, offset={offset}) failed on {self.name}: "
-                f"{os.strerror(err)}",
+                f"ibv_reg_dmabuf_mr(len={length}, offset={offset}) failed on {self.name}: " f"{os.strerror(err)}",
             )
         return mr
 
@@ -488,12 +468,7 @@ def driver_memory(pci_addr):
         counters["phys_free_gib"] = round(int(free_mib.group(1)) / 1024, 3)
     chunk = re.search(r"chunk_size:\s*(\d+)(KiB|MiB|GiB)", dump)
     chunk_bytes = int(chunk.group(1)) * UNIT_BYTES[chunk.group(2)] if chunk else 4096
-    orders = [
-        int(order)
-        for order, _blocks in re.findall(
-            r"order-\s*(\d+)\s+free:.*?free_blocks:\s*([1-9]\d*)", dump
-        )
-    ]
+    orders = [int(order) for order, _blocks in re.findall(r"order-\s*(\d+)\s+free:.*?free_blocks:\s*([1-9]\d*)", dump)]
     if orders:
         order = max(orders)
         counters["largest_free_block_gib"] = round((chunk_bytes << order) / GIB, 3)
@@ -530,15 +505,11 @@ def default_ib_device():
             f"RDMA devices in sysfs {sysfs} but none via libibverbs; "
             "install matching provider packages (e.g. libmlx5, libbnxt_re)"
         )
-    raise RuntimeError(
-        "no RDMA devices available (empty /sys/class/infiniband and libibverbs)"
-    )
+    raise RuntimeError("no RDMA devices available (empty /sys/class/infiniband and libibverbs)")
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--device", type=int, default=0, help="HIP device index")
     parser.add_argument(
         "--ib-device",
@@ -719,9 +690,7 @@ def register_ranges(exporter, verbs, ranges, regions):
             mr = verbs.register_dmabuf(fd, offset, size, pointer)
         except OSError as error:
             os.close(fd)
-            raise RuntimeError(
-                f"registration failed at range {index} ({size / GIB:.3f} GiB): {error}"
-            ) from error
+            raise RuntimeError(f"registration failed at range {index} ({size / GIB:.3f} GiB): {error}") from error
         # The importer holds its own reference, so the exported handle
         # does not need to stay open for the lifetime of the mapping.
         os.close(fd)
@@ -765,9 +734,7 @@ def foreign_probe(args):
         "--probe-mib",
         str(args.probe_mib),
     ]
-    completed = subprocess.run(
-        command, capture_output=True, text=True, timeout=180, check=False
-    )
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
     payloads = []
     for line in completed.stdout.splitlines():
         if line.startswith("{"):
@@ -807,9 +774,7 @@ def probe_only(args):
         payload["address"] = hex(pointer)
         hip.free(pointer)
     else:
-        payload["error"] = (
-            f"hipMalloc({probe_bytes}) -> {hip.lib.hipGetErrorString(status).decode()}"
-        )
+        payload["error"] = f"hipMalloc({probe_bytes}) -> {hip.lib.hipGetErrorString(status).decode()}"
     print(json.dumps(payload), flush=True)
     return 0 if pointer else 2
 
@@ -838,9 +803,7 @@ def main():
     probe_bytes = args.probe_mib * MIB
     free_bytes, total_bytes = hip.mem_get_info()
     if args.target_gib == 0:
-        target_gib, target_source = choose_target_gib(
-            free_bytes, total_bytes, probe_bytes
-        )
+        target_gib, target_source = choose_target_gib(free_bytes, total_bytes, probe_bytes)
     else:
         target_gib = args.target_gib
         target_source = "flag"
@@ -893,6 +856,7 @@ def main():
             if not ranges:
                 report("window_empty", note="no regions selected to register")
             else:
+
                 def pin_window():
                     register_ranges(exporter, verbs, ranges, regions)
 
@@ -937,9 +901,7 @@ def main():
         if args.pattern == "churn" and regions:
             errors = deregister_regions(verbs, regions)
             report("unpinned", deregistration_errors=errors, **gpu_memory(hip, pci_addr))
-            unpinned_ok, unpinned_snapshot = run_probe(
-                hip, pci_addr, probe_bytes, "probe_after_unpin"
-            )
+            unpinned_ok, unpinned_snapshot = run_probe(hip, pci_addr, probe_bytes, "probe_after_unpin")
             unpinned_kind = classify_probe(unpinned_ok, probe_bytes, unpinned_snapshot)
             if not unpinned_ok and unpinned_kind in ("fake_oom", "refused_unverified"):
                 unpinned_kind = "pin_leak"

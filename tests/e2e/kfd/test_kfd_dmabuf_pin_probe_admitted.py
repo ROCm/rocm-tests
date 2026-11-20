@@ -95,8 +95,7 @@ def _rdma_available(target_executor, ld: str) -> bool:
 
 def _assert_pass(result, label: str) -> None:
     assert result.ok, (
-        f"{label} failed (exit={result.exit_code}):\n"
-        f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
+        f"{label} failed (exit={result.exit_code}):\n" f"stdout: {result.stdout[:2000]}\nstderr: {result.stderr[:500]}"
     )
     assert "Result                 PASS" in result.stdout, f"{label}: expected Result PASS:\n{result.stdout[:2000]}"
     assert "Result                 FAIL" not in result.stdout, f"{label}: Result FAIL:\n{result.stdout[:2000]}"
@@ -112,7 +111,7 @@ def _cross_gpu_prereqs(target_executor, rock_dir: str) -> str | None:
         f"env PATH={shlex.quote(rock_dir + '/bin')}:$PATH "
         f"LD_LIBRARY_PATH={shlex.quote(rock_dir + '/lib')}:${{LD_LIBRARY_PATH:-}} "
         "python3 -c 'import ctypes; "
-        "h=ctypes.CDLL(\"libamdhip64.so\"); "
+        'h=ctypes.CDLL("libamdhip64.so"); '
         "n=ctypes.c_int(0); "
         "h.hipGetDeviceCount(ctypes.byref(n)); "
         "raise SystemExit(0 if n.value>=2 else 1)'",
@@ -128,11 +127,11 @@ def _build_cross_gpu(target_executor, fake_oom_dir: str, rock_dir: str) -> None:
     build = target_executor.run(
         f"set -e; cd {shlex.quote(fake_oom_dir)}; "
         f"KDIR=/lib/modules/$(uname -r)/build; "
-        f"test -d \"$KDIR\"; "
-        f"make -C pin_dmabuf_kmod KDIR=\"$KDIR\"; "
+        f'test -d "$KDIR"; '
+        f'make -C pin_dmabuf_kmod KDIR="$KDIR"; '
         f"HIPCC=$(command -v hipcc || true); "
         f"if [ -z \"$HIPCC\" ]; then HIPCC={shlex.quote(rock_dir + '/bin/hipcc')}; fi; "
-        f"make ROCM_PATH={shlex.quote(rock_dir)} HIPCC=\"$HIPCC\" all; "
+        f'make ROCM_PATH={shlex.quote(rock_dir)} HIPCC="$HIPCC" all; '
         f"chmod +x fake_oom_4mb replicate_count_dmabufsize",
         timeout=600,
     )
@@ -214,13 +213,11 @@ def test_kfd_dmabuf_pin_probe_admitted(
             timeout=timeout,
         )
         _assert_pass(result, subtest)
-        assert "while pinned : admitted" in result.stdout, (
-            f"{subtest}: probe was not admitted:\n{result.stdout[:2000]}"
-        )
+        assert "while pinned : admitted" in result.stdout, f"{subtest}: probe was not admitted:\n{result.stdout[:2000]}"
         if check_unpin:
-            assert "after release : admitted" in result.stdout, (
-                f"{subtest}: probe after unpin was not admitted:\n{result.stdout[:2000]}"
-            )
+            assert (
+                "after release : admitted" in result.stdout
+            ), f"{subtest}: probe after unpin was not admitted:\n{result.stdout[:2000]}"
         return
 
     cross = _resolve_cross_gpu(target_executor, rock_dir, src)
@@ -249,9 +246,9 @@ def test_kfd_dmabuf_pin_probe_admitted(
                 timeout=timeout,
             )
             _assert_pass(result, subtest)
-            assert "while pinned : admitted" in result.stdout, (
-                f"{subtest}: probe was not admitted:\n{result.stdout[:2000]}"
-            )
+            assert (
+                "while pinned : admitted" in result.stdout
+            ), f"{subtest}: probe was not admitted:\n{result.stdout[:2000]}"
             return
     finally:
         _unload_pin_module(target_executor)
