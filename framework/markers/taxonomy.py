@@ -26,7 +26,7 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     # Expected duration (optional but strongly recommended)
     "runtime": {"fast", "medium", "soak"},
     # Target platform (optional)
-    "os": {"linux"},
+    "os": {"linux", "windows"},
     # Scenario type (optional)
     "e2e": {"stack", "multinode"},
     # Compute partition (spx/dpx/tpx/qpx/cpx) and memory partition (nps1/nps2/nps4).
