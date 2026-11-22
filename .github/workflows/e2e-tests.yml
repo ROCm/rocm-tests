@@ -15,39 +15,47 @@ on:
   workflow_dispatch:
     inputs:
       name:
-        description: 'Platform name (e.g. linux-gfx94x)'
-        required: true
+        description: 'Platform name override (blank uses testplan.ini)'
+        required: false
         type: string
       runs_on:
-        description: 'Select a configured runner (live availability is not checked)'
+        description: 'Select a runner (Linux only; availability is not checked)'
         required: true
         type: choice
-        # Generated from enabled testplan.ini entries; refresh with:
-        # python .github/scripts/sync_runner_choices.py
-        # BEGIN GENERATED RUNNER OPTIONS
+        # Keep these labels in sync with testplan.ini.
         options:
+          - "linux-gfx942-1gpu-ossci-rocm"
           - "linux-mi355-1gpu-ossci-rocm"
           - "linux-gfx1151-gpu-rocm"
+          - "linux-gfx1030-gpu-rocm-devops-qa"
+          - "windows-gfx1030-gpu-rocm-devops-qa"
           - "linux-gfx1100-gpu-rocm-devops-qa"
+          - "windows-gfx1100-gpu-rocm-devops-qa"
           - "linux-gfx1101-gpu-rocm-devops-qa"
-        # END GENERATED RUNNER OPTIONS
+          - "windows-gfx1101-gpu-rocm-devops-qa"
+          - "linux-gfx1201-gpu-rocm-devops-qa"
+          - "windows-gfx1201-gpu-rocm-devops-qa"
+          - "linux-mi325-8gpu-ossci-rocm"
+          - "linux-gfx90a-gpu-rocm"
+          - "linux-gfx1150-gpu-rocm"
+          - "linux-gfx1153-gpu-rocm"
       artifact_group:
-        description: 'TheRock artifact group (e.g. gfx94X-dcgpu)'
-        required: true
+        description: 'TheRock artifact group override (blank uses testplan.ini)'
+        required: false
         type: string
       gpu_arch:
-        description: 'TheRock artifact family name for --amdgpu-targets (e.g. gfx110X-all). For single-chip targets this also serves as the compiler arch when compiler_gpu_arch is unset.'
-        required: true
+        description: 'TheRock artifact family override (blank uses testplan.ini)'
+        required: false
         type: string
         default: ''
       compiler_gpu_arch:
-        description: 'Concrete LLVM chip identifier for --gpu-arch / hipcc (e.g. gfx1100). Required when gpu_arch is a family alias that clang++ does not accept. Defaults to gpu_arch when empty.'
+        description: 'Compiler chip override (blank uses testplan.ini; set when changing gpu_arch to a different family alias)'
         required: false
         type: string
         default: ''
       tests_filters:
-        description: 'pytest -m filter expression (e.g. "ci.nightly and hw.gpu")'
-        required: true
+        description: 'pytest -m filter override (blank uses testplan.ini)'
+        required: false
         type: string
       source_repo:
         description: 'GitHub repo to pull artifacts from (ROCm/TheRock or ROCm/rockrel)'
@@ -87,7 +95,7 @@ on:
         type: string
         default: ''
       extra_docker_args:
-        description: 'Extra arguments appended to the container options (e.g. --env-file /etc/podinfo/...)'
+        description: 'Container arguments override (blank uses testplan.ini)'
         required: false
         type: string
         default: ''
@@ -157,10 +165,39 @@ on:
         default: 'nightly-artifacts'
 
 jobs:
+  # github context is inherited from the caller of a reusable workflow.
+  resolve_manual:
+    name: Resolve manual runner inputs
+    if: ${{ github.event_name == 'workflow_dispatch' && contains(github.workflow_ref, '/.github/workflows/e2e-tests.yml@') && inputs.target_available != 'false' }}
+    runs-on: ubuntu-latest
+    outputs:
+      config: ${{ steps.resolve.outputs.config }}
+    steps:
+      - name: Checkout test plan
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve inputs
+        id: resolve
+        env:
+          INPUT_RUNS_ON: ${{ inputs.runs_on }}
+          INPUT_NAME: ${{ inputs.name }}
+          INPUT_ARTIFACT_GROUP: ${{ inputs.artifact_group }}
+          INPUT_GPU_ARCH: ${{ inputs.gpu_arch }}
+          INPUT_COMPILER_GPU_ARCH: ${{ inputs.compiler_gpu_arch }}
+          INPUT_TESTS_FILTERS: ${{ inputs.tests_filters }}
+          INPUT_EXTRA_DOCKER_ARGS: ${{ inputs.extra_docker_args }}
+        run: python3 .github/scripts/resolve_manual_runner.py
+
   platform:
     name: "e2e tests"
+    needs: resolve_manual
     runs-on: ${{ inputs.runs_on }}
-    if: ${{ inputs.target_available != 'false' }}
+    if: >-
+      ${{ !cancelled() && inputs.target_available != 'false' &&
+          ((needs.resolve_manual.result == 'success' && needs.resolve_manual.outputs.config != '') ||
+           (needs.resolve_manual.result == 'skipped' &&
+            !(github.event_name == 'workflow_dispatch' && contains(github.workflow_ref, '/.github/workflows/e2e-tests.yml@')))) }}
     timeout-minutes: 230
     container:
       image: ghcr.io/rocm/no_rocm_image_ubuntu24_04@sha256:4150afe4759d14822f0e3f8930e1124f26e11f68b5c7b91ec9a02b20b1ebbb98
@@ -174,7 +211,7 @@ jobs:
         --ulimit memlock=-1:-1
         --security-opt seccomp=unconfined
         --user 0:0
-        ${{ inputs.extra_docker_args }}
+        ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).extra_docker_args }}
     defaults:
       run:
         shell: bash
@@ -205,7 +242,7 @@ jobs:
       - name: Report skipped platform
         if: ${{ steps.queue_guard.outputs.proceed == 'false' }}
         env:
-          PLATFORM_NAME: ${{ inputs.name }}
+          PLATFORM_NAME: ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).name }}
           SKIP_REASON:   ${{ steps.queue_guard.outputs.skip_reason }}
         run: |
           echo "::warning::Platform ${PLATFORM_NAME} skipped — ${SKIP_REASON}"
@@ -216,7 +253,7 @@ jobs:
       - name: Resolve platform
         if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
-          PLATFORM_NAME: ${{ inputs.name }}
+          PLATFORM_NAME: ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).name }}
           TARGET_AVAILABLE: ${{ inputs.target_available }}
         run: |
           echo "Platform: ${PLATFORM_NAME}"
@@ -254,8 +291,8 @@ jobs:
       - name: Install ROCm artifacts
         if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
         env:
-          ARTIFACT_GROUP: ${{ inputs.artifact_group }}
-          GPU_ARCH: ${{ inputs.gpu_arch }}
+          ARTIFACT_GROUP: ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).artifact_group }}
+          GPU_ARCH: ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).gpu_arch }}
           SOURCE_REPO: ${{ inputs.source_repo }}
           RUN_ID: ${{ inputs.run_id }}
           ARTIFACT_SOURCE: ${{ inputs.artifact_source }}
@@ -341,8 +378,8 @@ jobs:
           LD_LIBRARY_PATH: "${{ github.workspace }}/therock_build/lib:${LD_LIBRARY_PATH}"
           # compiler_gpu_arch is the concrete LLVM chip string for hipcc/clang++ (e.g. gfx1100).
           # Falls back to gpu_arch for targets where both fields are identical (e.g. gfx942, gfx1151).
-          COMPILER_GPU_ARCH: ${{ inputs.compiler_gpu_arch || inputs.gpu_arch }}
-          TESTS_FILTERS: ${{ inputs.tests_filters }}
+          COMPILER_GPU_ARCH: ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).compiler_gpu_arch || fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).gpu_arch }}
+          TESTS_FILTERS: ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).tests_filters }}
           KEYWORD_FILTER: ${{ inputs.keyword_filter }}
           TEST_PATHS_OVERRIDE: ${{ inputs.test_paths_override }}
         run: |
@@ -381,7 +418,7 @@ jobs:
       - name: Extract test counts
         if: always()
         env:
-          PLATFORM_NAME: ${{ inputs.name }}
+          PLATFORM_NAME: ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).name }}
           QUEUE_GUARD_PROCEED: ${{ steps.queue_guard.outputs.proceed }}
           QUEUE_GUARD_SKIP_REASON: ${{ steps.queue_guard.outputs.skip_reason }}
         shell: python
@@ -468,13 +505,13 @@ jobs:
         uses: ./.github/actions/upload-test-artifacts
         with:
           artifact_prefix: ${{ inputs.artifact_prefix }}
-          platform_name:   ${{ inputs.name }}
+          platform_name:   ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).name }}
           run_id:          ${{ github.run_id }}
 
       - name: Write per-platform step summary
         if: always()
         env:
           MODE: platform
-          PLATFORM_NAME: ${{ inputs.name }}
+          PLATFORM_NAME: ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).name }}
           ARTIFACT_URL:  ${{ steps.upload.outputs.artifact_url }}
         run: python3 .github/scripts/write_step_summary.py
