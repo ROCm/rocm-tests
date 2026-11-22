@@ -97,6 +97,8 @@ def test_quda_ctest_suite(
         f"env MPI_HOME={mpi_home} ROCM_PATH={rock_dir} "
         f"PATH={mpi_bin}:{rock_dir}/bin:$PATH "
         f"LD_LIBRARY_PATH={mpi_lib}:{ld}:$LD_LIBRARY_PATH "
+        f"OMPI_ALLOW_RUN_AS_ROOT=1 "
+        f"OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 "
         f"QUDA_RESOURCE_PATH={tunecache} "
         f"QUDA_ENABLE_TUNING=0 QUDA_TEST_NUM_PROCS={NUM_PROCS} QUDA_ENABLE_P2P=0 "
         f"QUDA_TEST_GRID_SIZE='{GRID}' "
