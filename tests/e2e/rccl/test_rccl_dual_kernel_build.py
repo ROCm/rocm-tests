@@ -13,7 +13,8 @@ import os
 
 import pytest
 
-from tests.e2e.rccl._workload import RESULTS_PASS_RE, all_reduce_perf_env
+from tests.common.rccl.runner import assert_rccl_results_pass
+from tests.e2e.rccl._workload import all_reduce_perf_env
 
 
 @pytest.mark.hw.gpu
@@ -39,7 +40,4 @@ def test_rccl_dual_kernel_build(
         f"rccl_dual_kernel_build_test failed (exit={result.exit_code}):\n"
         f"stdout: {result.stdout[:3000]}\nstderr: {result.stderr[:1000]}"
     )
-    assert RESULTS_PASS_RE.search(result.stdout), (
-        "rccl_dual_kernel_build_test did not report '0 failed':\n"
-        f"stdout: {result.stdout[:3000]}\nstderr: {result.stderr[:1000]}"
-    )
+    assert_rccl_results_pass(result.stdout, label="rccl_dual_kernel_build_test")

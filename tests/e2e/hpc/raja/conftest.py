@@ -23,13 +23,12 @@ from dataclasses import dataclass
 import logging
 import os
 import pathlib
-import re
 import shlex
 
 import pytest
 
 from framework.builder.binary_builder import find_rocm_clangpp, resolve_parallel_jobs
-from framework.executors.background_process import _blocking_stream_run
+from tests.common.hpc.build import path_exists, run_build_step, safe_ref_name
 from tests.e2e.hpc.raja._workload import RAJA_REF, RAJA_URL
 
 logger = logging.getLogger(__name__)
@@ -118,18 +117,6 @@ class RajaBuild:
     mpi_lib: str
 
 
-def _safe_ref_name(ref: str) -> str:
-    """Return a filesystem-safe label for a git ref."""
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", ref).strip("_") or "default"
-
-
-def _path_exists(path: str, cmake_executor) -> bool:
-    """Return True when *path* is a file, locally or on the build node."""
-    if cmake_executor is not None:
-        return bool(cmake_executor.run(f"test -f {shlex.quote(path)}", timeout=30.0).ok)
-    return os.path.isfile(path)
-
-
 def _resolve_compilers(rock_dir: str, cmake_executor) -> tuple[str, str]:
     """Return ``(cc, cxx)`` from the same candidates as ``find_rocm_clangpp``.
 
@@ -182,29 +169,7 @@ def _raja_mpi(external_build):
 
 def _run_build(cmd: str, *, cmake_executor, timeout: float, log_path: str) -> None:
     """Run the RAJA configure/build script, streaming output."""
-    logger.info("RAJA build -> %s", log_path)
-    if cmake_executor is not None:
-        result = cmake_executor.run(cmd, timeout=timeout, stream=True)
-        if not result.ok:
-            raise RuntimeError(
-                f"RAJA build failed on remote (exit={result.exit_code}):\n"
-                f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-2000:]}"
-            )
-        return
-    result = _blocking_stream_run(
-        command=cmd,
-        env=os.environ.copy(),
-        cwd=None,
-        timeout=timeout,
-        stream_stdout=True,
-        stream_stderr=True,
-        log_path=log_path,
-    )
-    if not result.ok:
-        raise RuntimeError(
-            f"RAJA build failed locally (exit={result.exit_code}). Full log: {log_path}\n"
-            f"stdout tail: {result.stdout[-4000:]}\nstderr tail: {result.stderr[-2000:]}"
-        )
+    run_build_step(cmd, cmake_executor=cmake_executor, timeout=timeout, label="RAJA build", log_path=log_path)
 
 
 @pytest.fixture(scope="session")
@@ -234,7 +199,7 @@ def raja_functional_build(
     rocm_path = os.path.realpath(rock_dir) if cmake_executor is None else rock_dir
     build_timeout = float(framework_config.therock.build_timeout_secs)
 
-    ref_label = _safe_ref_name(RAJA_REF)
+    ref_label = safe_ref_name(RAJA_REF)
     dest = pathlib.Path(compiler_build_dir) / "raja" / f"raja-{ref_label}"
     raja_dir = str(external_build.clone_repo(url=RAJA_URL, dest=dest, ref=RAJA_REF, timeout=build_timeout))
     external_build.assert_license_present(raja_dir)
@@ -248,7 +213,7 @@ def raja_functional_build(
     log_dir = os.path.join(framework_config.framework.artifact_dir, "raja")
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "raja-build.log")
-    have_build = _path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor)
+    have_build = path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor)
     if not have_build:
         # Install Open MPI before discovery so apt's launcher wins over a source build.
         _run_build(

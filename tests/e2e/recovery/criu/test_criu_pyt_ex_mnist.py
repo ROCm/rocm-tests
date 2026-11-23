@@ -16,6 +16,8 @@ import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
 from tests.common.criu import steps as criu
+from tests.common.criu.steps import assert_criu_dump_ok, assert_criu_restore_ok
+from tests.common.system_tools.runner import skip_unsupported_arch
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +35,7 @@ _LAUNCH_TIMEOUT = 60.0
 
 def _skip_if_unsupported_arch(gpu_arch: str | None) -> None:
     """Skip when ``--gpu-arch`` names a GFX target outside SUPPORTED_ARCHS."""
-    if gpu_arch and gpu_arch not in SUPPORTED_ARCHS:
-        pytest.skip(f"GPU arch {gpu_arch} not supported for CRIU MNIST: {sorted(SUPPORTED_ARCHS)}")
+    skip_unsupported_arch(gpu_arch, SUPPORTED_ARCHS, label="CRIU MNIST")
 
 
 def _launch(executor, setup) -> str:
@@ -75,17 +76,16 @@ def _checkpoint(executor, criu_cmd: str, setup, pid: str, full_log: bool = False
     """Checkpoint the training process with ``criu dump`` and assert it stopped."""
     with step("Checkpoint with criu dump"):
         dump = criu.criu_dump(executor, criu_cmd, setup.workdir, pid)
-        log = criu.attach_criu_log(executor, setup.workdir, "dump.log", full=full_log)
-        assert "OK" in dump.stdout, f"criu dump did not report OK:\n{dump.stdout[-1500:]}\n{log[-1500:]}"
-        assert "PID_GONE" in dump.stdout, "training process still exists after criu dump."
+        criu.attach_criu_log(executor, setup.workdir, "dump.log", full=full_log)
+        assert_criu_dump_ok(dump, workdir=setup.workdir, label="MNIST")
 
 
 def _restore(executor, criu_cmd: str, setup, full_log: bool = False) -> None:
     """Restore the checkpoint with ``criu restore`` and assert CRIU reported success."""
     with step("Restore with criu restore"):
         restore = criu.criu_restore(executor, criu_cmd, setup.workdir)
-        log = criu.attach_criu_log(executor, setup.workdir, "restore.log", full=full_log)
-        assert "RESTORE_OK" in restore.stdout, f"criu restore did not finish successfully:\n{log[-1500:]}"
+        criu.attach_criu_log(executor, setup.workdir, "restore.log", full=full_log)
+        assert_criu_restore_ok(restore, workdir=setup.workdir, label="MNIST")
 
 
 def _wait_for_progress(executor, setup, baseline: int) -> int:

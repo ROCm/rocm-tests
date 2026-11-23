@@ -5,6 +5,8 @@
 
 import pytest
 
+from tests.common.miopen.runner import require_miopen_driver as _require_miopen_driver
+
 
 @pytest.fixture(autouse=True)
 def require_miopen_driver(rock_dir: str, target_executor) -> None:
@@ -17,10 +19,4 @@ def require_miopen_driver(rock_dir: str, target_executor) -> None:
     remote (SSH) executors — the binary lives on the execution node, which is
     not the controller host in remote-node mode.
     """
-    driver = f"{rock_dir}/bin/MIOpenDriver"
-    result = target_executor.run(f"test -x {driver}")
-    if not result.ok:
-        pytest.fail(
-            f"MIOpenDriver not found or not executable at {driver}. "
-            "Ensure MIOpen is installed and rock_dir points to the correct ROCm path."
-        )
+    _require_miopen_driver(rock_dir, target_executor)

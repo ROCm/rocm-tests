@@ -27,12 +27,11 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
-import re
 
 import pytest
 
 from framework.builder.binary_builder import find_rocm_clangpp, resolve_parallel_jobs
-from framework.executors.background_process import _blocking_stream_run
+from tests.common.hpc.build import path_exists, run_build_step, safe_ref_name
 from tests.e2e.hpc.quda._workload import CONFIG_LABEL, GRID, NUM_GPUS, NUM_PROCS
 
 logger = logging.getLogger(__name__)
@@ -46,18 +45,6 @@ _QUDA_REF = os.environ.get("QUDA_REF", _DEFAULT_QUDA_REF)
 
 # Sentinel written by a successful cmake configure — used for build idempotency.
 _BUILD_SENTINEL = "CTestTestfile.cmake"
-
-
-def _safe_ref_name(ref: str) -> str:
-    """Return a filesystem-safe label for a git ref."""
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", ref).strip("_") or "default"
-
-
-def _path_exists(path: str, cmake_executor) -> bool:
-    """Return True when *path* is a file, transparently for local/remote nodes."""
-    if cmake_executor is not None:
-        return cmake_executor.run(f"test -f {path}", timeout=30.0).ok
-    return os.path.isfile(path)
 
 
 def _resolve_compilers(rock_dir: str, cmake_executor) -> tuple[str, str]:
@@ -74,45 +61,6 @@ def _resolve_compilers(rock_dir: str, cmake_executor) -> tuple[str, str]:
     # "clang++" -> "clang" and "amdclang++" -> "amdclang" (path preserved).
     cc = cxx.replace("clang++", "clang")
     return cxx, cc
-
-
-def _run_build_step(cmd: str, *, cmake_executor, timeout: float, label: str, log_path: str) -> None:
-    """Run a single cmake build step, streaming output live and to *log_path*.
-
-    QUDA's configure/build/install each run for many minutes, so a buffered
-    ``subprocess.run(capture_output=True)`` (which shows nothing until it exits)
-    is unusable here.  Remote steps stream through the SSH executor's own
-    ``stream=True`` path; local steps use the framework's shared streaming Popen
-    runner (``_blocking_stream_run``) which forwards stdout+stderr to the console
-    in real time *and* appends them to *log_path*.
-
-    Live console output still requires ``pytest -s`` (pytest captures fd output by
-    default); the *log_path* file is written either way — ``tail -f`` it to watch
-    a run started without ``-s``.
-    """
-    logger.info("QUDA %s -> streaming to %s", label, log_path)
-    if cmake_executor is not None:
-        result = cmake_executor.run(cmd, timeout=timeout, stream=True)
-        if not result.ok:
-            raise RuntimeError(
-                f"QUDA {label} failed on remote (exit={result.exit_code}):\n"
-                f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-2000:]}"
-            )
-        return
-    result = _blocking_stream_run(
-        command=cmd,
-        env=os.environ.copy(),
-        cwd=None,
-        timeout=timeout,
-        stream_stdout=True,
-        stream_stderr=True,
-        log_path=log_path,
-    )
-    if not result.ok:
-        raise RuntimeError(
-            f"QUDA {label} failed locally (exit={result.exit_code}). Full log: {log_path}\n"
-            f"stdout tail: {result.stdout[-4000:]}\nstderr tail: {result.stderr[-2000:]}"
-        )
 
 
 @pytest.fixture(scope="session")
@@ -160,7 +108,7 @@ def quda_build(
     build_timeout = float(framework_config.therock.build_timeout_secs)
 
     # --- clone -------------------------------------------------------------
-    ref_label = _safe_ref_name(_QUDA_REF)
+    ref_label = safe_ref_name(_QUDA_REF)
     dest = pathlib.Path(compiler_build_dir) / "quda" / f"quda-{ref_label}"
     quda_dir = external_build.clone_repo(url=_QUDA_URL, dest=dest, ref=_QUDA_REF, timeout=build_timeout)
     external_build.assert_license_present(quda_dir)
@@ -203,7 +151,7 @@ def quda_build(
     )
 
     # --- idempotency: skip rebuild when a configured build tree exists -------
-    if _path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor):
+    if path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor):
         logger.info("QUDA: existing build tree at %s — skipping configure/build/install", build_dir)
         return build_dir
 
@@ -259,7 +207,7 @@ def quda_build(
     install_cmd = f"env {env_prefix} cmake --install {build_dir}"
 
     logger.info("QUDA: configuring (arch=%s, mpi_home=%s)", gpu_arch, mpi_home or "<unset>")
-    _run_build_step(
+    run_build_step(
         configure_cmd,
         cmake_executor=cmake_executor,
         timeout=build_timeout,
@@ -267,7 +215,7 @@ def quda_build(
         log_path=os.path.join(log_dir, "build-configure.log"),
     )
     logger.info("QUDA: building with %s parallel jobs", jobs)
-    _run_build_step(
+    run_build_step(
         build_cmd,
         cmake_executor=cmake_executor,
         timeout=build_timeout,
@@ -275,7 +223,7 @@ def quda_build(
         log_path=os.path.join(log_dir, "build-compile.log"),
     )
     logger.info("QUDA: installing to %s", install_dir)
-    _run_build_step(
+    run_build_step(
         install_cmd,
         cmake_executor=cmake_executor,
         timeout=build_timeout,

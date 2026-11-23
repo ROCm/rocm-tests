@@ -29,13 +29,12 @@ from dataclasses import dataclass
 import logging
 import os
 import pathlib
-import re
 import shlex
 
 import pytest
 
 from framework.builder.binary_builder import find_rocm_clangpp, resolve_parallel_jobs
-from framework.executors.background_process import _blocking_stream_run
+from tests.common.hpc.build import path_exists, run_build_step, safe_ref_name
 from tests.e2e.hpc.kokkos._workload import KOKKOS_REF, KOKKOS_URL, kokkos_arch_flag
 
 logger = logging.getLogger(__name__)
@@ -65,18 +64,6 @@ class KokkosRdcBuild:
     install_dir: str
     rdc_flag_present: bool
     build_log_path: str
-
-
-def _safe_ref_name(ref: str) -> str:
-    """Return a filesystem-safe label for a git ref."""
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", ref).strip("_") or "default"
-
-
-def _path_exists(path: str, cmake_executor) -> bool:
-    """Return True when *path* is a file, transparently for local/remote nodes."""
-    if cmake_executor is not None:
-        return bool(cmake_executor.run(f"test -f '{path}'", timeout=30.0).ok)
-    return os.path.isfile(path)
 
 
 def _read_text(path: str, cmake_executor) -> str:
@@ -113,47 +100,6 @@ def _resolve_compilers(rock_dir: str, cmake_executor) -> str:
             "Verify ROCK_DIR / --rock-dir points to a complete ROCm install."
         )
     return f"{rock_dir}/bin/hipcc"
-
-
-def _run_build_step(cmd: str, *, cmake_executor, timeout: float, label: str, log_path: str) -> str:
-    """Run a single cmake build step, streaming output live, and return it.
-
-    Kokkos' VERBOSE configure/build each run for minutes and emit very large
-    output, so a buffered ``subprocess.run(capture_output=True)`` is unusable.
-    Remote steps stream through the SSH executor's ``stream=True`` path; local
-    steps use the framework's shared streaming Popen runner
-    (``_blocking_stream_run``), which forwards stdout+stderr to the console in
-    real time *and* appends them to *log_path*. Returns the combined
-    stdout+stderr so the caller can scan it (e.g. for ``-fgpu-rdc``).
-
-    Live console output still requires ``pytest -s`` (pytest captures fd output
-    by default); *log_path* is written either way — ``tail -f`` it to watch a run
-    started without ``-s``.
-    """
-    logger.info("Kokkos %s -> streaming to %s", label, log_path)
-    if cmake_executor is not None:
-        result = cmake_executor.run(cmd, timeout=timeout, stream=True)
-        if not result.ok:
-            raise RuntimeError(
-                f"Kokkos {label} failed on remote (exit={result.exit_code}):\n"
-                f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-2000:]}"
-            )
-        return (result.stdout or "") + (result.stderr or "")
-    result = _blocking_stream_run(
-        command=cmd,
-        env=os.environ.copy(),
-        cwd=None,
-        timeout=timeout,
-        stream_stdout=True,
-        stream_stderr=True,
-        log_path=log_path,
-    )
-    if not result.ok:
-        raise RuntimeError(
-            f"Kokkos {label} failed locally (exit={result.exit_code}). Full log: {log_path}\n"
-            f"stdout tail: {result.stdout[-4000:]}\nstderr tail: {result.stderr[-2000:]}"
-        )
-    return (result.stdout or "") + (result.stderr or "")
 
 
 @pytest.fixture(scope="session")
@@ -193,7 +139,7 @@ def kokkos_rdc_build(
     build_timeout = float(framework_config.therock.build_timeout_secs)
 
     # --- clone (idempotent) + provenance guard --------------------------------
-    ref_label = _safe_ref_name(KOKKOS_REF)
+    ref_label = safe_ref_name(KOKKOS_REF)
     dest = pathlib.Path(compiler_build_dir) / "kokkos" / f"kokkos-{ref_label}"
     kokkos_dir = str(external_build.clone_repo(url=KOKKOS_URL, dest=dest, ref=KOKKOS_REF, timeout=build_timeout))
     external_build.assert_license_present(kokkos_dir)
@@ -215,7 +161,7 @@ def kokkos_rdc_build(
     rdc_flag_path = f"{build_dir}/{_RDC_FLAG_FILE}"
 
     # --- idempotency: reuse a configured build tree, re-reading the RDC verdict -
-    if _path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor):
+    if path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor):
         cached = _read_text(rdc_flag_path, cmake_executor).strip()
         logger.info("Kokkos: existing build tree at %s — skipping configure/build/install", build_dir)
         return KokkosRdcBuild(
@@ -264,7 +210,7 @@ def kokkos_rdc_build(
     install_cmd = f"env {env_prefix} cmake --install {build_dir}"
 
     logger.info("Kokkos: configuring (gpu_arch=%s, rocm=%s)", resolved_gpu_arch, rocm_path)
-    _run_build_step(
+    run_build_step(
         configure_cmd,
         cmake_executor=cmake_executor,
         timeout=build_timeout,
@@ -272,7 +218,7 @@ def kokkos_rdc_build(
         log_path=os.path.join(log_dir, "build-configure.log"),
     )
     logger.info("Kokkos: VERBOSE build with %s parallel jobs", jobs)
-    build_output = _run_build_step(
+    build_output = run_build_step(
         build_cmd,
         cmake_executor=cmake_executor,
         timeout=build_timeout,
@@ -287,7 +233,7 @@ def kokkos_rdc_build(
     logger.info("Kokkos: %s %s in VERBOSE build output", _RDC_FLAG, "found" if rdc_flag_present else "NOT found")
 
     logger.info("Kokkos: installing to %s", install_dir)
-    _run_build_step(
+    run_build_step(
         install_cmd,
         cmake_executor=cmake_executor,
         timeout=build_timeout,

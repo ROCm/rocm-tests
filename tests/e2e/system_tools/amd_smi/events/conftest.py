@@ -15,6 +15,8 @@ import re
 
 import pytest
 
+from tests.common.system_tools.amd_smi import resolve_amd_smi as _common_resolve_amd_smi
+
 logger = logging.getLogger("rocm.test")
 
 
@@ -29,14 +31,7 @@ class RandomEventsEnv:
 
 def _resolve_amd_smi(executor, rock_dir: str) -> str | None:
     """Prefer ``<rock_dir>/bin/amd-smi``; fall back to amd-smi on PATH. Returns None if absent."""
-    if rock_dir:
-        probe = executor.run(f"test -x {rock_dir}/bin/amd-smi && echo OK")
-        if (probe.stdout or "").strip() == "OK":
-            return f"{rock_dir}/bin/amd-smi"
-    which = executor.run("command -v amd-smi")
-    if which.ok and (which.stdout or "").strip():
-        return str(which.stdout).strip().splitlines()[-1].strip()
-    return None
+    return _common_resolve_amd_smi(rock_dir, executor)
 
 
 @pytest.fixture

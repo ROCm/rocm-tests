@@ -15,6 +15,8 @@ import pytest
 
 from framework.reporting.allure_reporter import step
 from tests.common.criu import steps as criu
+from tests.common.criu.steps import assert_criu_dump_ok, assert_criu_restore_ok, launch_workload
+from tests.common.system_tools.runner import skip_unsupported_arch
 
 logger = logging.getLogger(__name__)
 
@@ -30,25 +32,21 @@ _LAUNCH_TIMEOUT = 60.0
 
 def _skip_if_unsupported_arch(gpu_arch: str | None) -> None:
     """Skip when ``--gpu-arch`` names a GFX target outside SUPPORTED_ARCHS."""
-    if gpu_arch and gpu_arch not in SUPPORTED_ARCHS:
-        pytest.skip(f"GPU arch {gpu_arch} not supported for CRIU MatrixTranspose: {sorted(SUPPORTED_ARCHS)}")
+    skip_unsupported_arch(gpu_arch, SUPPORTED_ARCHS, label="CRIU MatrixTranspose")
 
 
 def _launch(executor, build, ld: str) -> str:
     """Launch ``MatrixTranspose`` in the background from the build dir; return its PID."""
     with step("Launch MatrixTranspose"):
-        # Launch from build.workdir so CRIU dumps into this CWD; capture the exact PID via $! and
-        # clear any stale dump/restore logs and images first.
-        cmd = (
-            f"cd {build.workdir} && rm -f dump.log restore.log matrixtranspose.out *.img 2>/dev/null; "
-            f"env LD_LIBRARY_PATH={ld} nohup {build.binary} > matrixtranspose.out 2>&1 & pid=$!; "
-            "disown 2>/dev/null || true; "
-            f"sleep {_LAUNCH_SLEEP_SECS}; "
-            'if ps -p "$pid" >/dev/null 2>&1; then echo PID=$pid; else echo PID=; tail -n 40 matrixtranspose.out; fi'
+        pid = launch_workload(
+            executor,
+            binary=build.binary,
+            workdir=build.workdir,
+            ld_library_path=ld,
+            launch_sleep_secs=_LAUNCH_SLEEP_SECS,
+            timeout=_LAUNCH_TIMEOUT,
+            out_file="matrixtranspose.out",
         )
-        out = executor.run(cmd, timeout=_LAUNCH_TIMEOUT).stdout or ""
-        pid = next((ln.split("=", 1)[1].strip() for ln in out.splitlines() if ln.strip().startswith("PID=")), "")
-        assert pid, f"MatrixTranspose did not start:\n{out[-1500:]}"
         logger.info("MatrixTranspose running with PID %s", pid)
         return pid
 
@@ -57,17 +55,16 @@ def _checkpoint(executor, criu_cmd: str, build, pid: str, full_log: bool = False
     """Checkpoint the running process with ``criu dump`` and assert it stopped."""
     with step("Checkpoint with criu dump"):
         dump = criu.criu_dump(executor, criu_cmd, build.workdir, pid)
-        log = criu.attach_criu_log(executor, build.workdir, "dump.log", full=full_log)
-        assert "OK" in dump.stdout, f"criu dump did not report OK:\n{dump.stdout[-1500:]}\n{log[-1500:]}"
-        assert "PID_GONE" in dump.stdout, "workload still exists after criu dump."
+        criu.attach_criu_log(executor, build.workdir, "dump.log", full=full_log)
+        assert_criu_dump_ok(dump, workdir=build.workdir, label="MatrixTranspose")
 
 
 def _restore(executor, criu_cmd: str, build, full_log: bool = False) -> None:
     """Restore the checkpoint with ``criu restore`` and assert CRIU reported success."""
     with step("Restore with criu restore"):
         restore = criu.criu_restore(executor, criu_cmd, build.workdir)
-        log = criu.attach_criu_log(executor, build.workdir, "restore.log", full=full_log)
-        assert "RESTORE_OK" in restore.stdout, f"criu restore did not finish successfully:\n{log[-1500:]}"
+        criu.attach_criu_log(executor, build.workdir, "restore.log", full=full_log)
+        assert_criu_restore_ok(restore, workdir=build.workdir, label="MatrixTranspose")
 
 
 # Serialized via this xdist_group: CRIU checkpoint/restore is a node-level (KFD) operation, so no

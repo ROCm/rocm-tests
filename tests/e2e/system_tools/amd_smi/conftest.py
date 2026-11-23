@@ -19,11 +19,11 @@ import os
 import pathlib
 import re
 import shlex
-import shutil
 import subprocess
 
 import pytest
 
+from tests.common.system_tools.amd_smi import resolve_amd_smi as _common_resolve_amd_smi
 from tests.e2e.system_tools.rvs.conftest import (  # noqa: F401
     rvs_binary as _rvs_binary,
     rvs_env,
@@ -49,11 +49,7 @@ class UbbEnv:
 
 def _resolve_amd_smi(rock_dir: str) -> str | None:
     """Prefer ``<rock_dir>/bin/amd-smi``; fall back to amd-smi on PATH. Returns None if absent."""
-    if rock_dir:
-        candidate = f"{rock_dir}/bin/amd-smi"
-        if os.access(candidate, os.X_OK):
-            return candidate
-    return shutil.which("amd-smi")
+    return _common_resolve_amd_smi(rock_dir)
 
 
 @pytest.fixture(scope="module")

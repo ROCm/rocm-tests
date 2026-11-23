@@ -20,7 +20,7 @@ product distribution should come from AMD OSS/legal review.
 | pytorch/examples (MNIST) | https://github.com/pytorch/examples | latest `main` (shallow clone) | BSD-3-Clause (permissive) |
 | RAJAPerf | https://github.com/LLNL/rajaperf | default branch (pinnable via `ROCM_TEST_RAJAPERF_REF`) | BSD-3-Clause (permissive) |
 | hip-tests | https://github.com/ROCm/hip-tests | commit `3543bc3b9140e0a506ed3dec643b4def672bd171` | MIT |
-| Kokkos | https://github.com/kokkos/kokkos | tag `4.2.01` (pinnable via `ROCM_TEST_KOKKOS_REF`) | Apache-2.0 WITH LLVM-exception (permissive) |
+| Kokkos | https://github.com/kokkos/kokkos | tag `5.1.1` (pinnable via `ROCM_TEST_KOKKOS_REF`) | Apache-2.0 WITH LLVM-exception (permissive) |
 
 ### cuda_memtest
 1. `git clone` at the pinned commit into `output/test-binaries/recovery/cuda_memtest`.
@@ -55,7 +55,7 @@ product distribution should come from AMD OSS/legal review.
 4. Run the built `MatrixTranspose` binary as a subprocess, checkpoint/restore it with CRIU.
 
 ### Kokkos
-1. `git clone` tag `4.2.01` into `output/external/recovery/kokkos` (pin with
+1. `git clone` tag `5.1.1` into `output/external/recovery/kokkos` (pin with
    `ROCM_TEST_KOKKOS_REF`; override the URL with `ROCM_TEST_KOKKOS_URL`).
 2. Build only the performance-benchmark target with CMake (`hipcc`, HIP backend, benchmarks
    enabled) into a `build/` tree inside the checkout. The Kokkos sources are **not modified**.

@@ -27,11 +27,10 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
-import re
 
 import pytest
 
-from framework.executors.background_process import _blocking_stream_run
+from tests.common.hpc.build import path_exists, run_build_step, safe_ref_name
 
 logger = logging.getLogger(__name__)
 
@@ -52,58 +51,6 @@ _BUILD_SENTINEL = "mpirun_rochpl"
 # ``ROCM_TEST_ROCHPL_OPENMPI_VERSION`` / ``OPENMPI_VERSION`` if a node needs a
 # different release.
 _OPENMPI_VERSION = "5.0.7"
-
-
-def _safe_ref_name(ref: str) -> str:
-    """Return a filesystem-safe label for a git ref."""
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", ref).strip("_") or "default"
-
-
-def _path_exists(path: str, cmake_executor) -> bool:
-    """Return True when *path* is a file, transparently for local/remote nodes."""
-    if cmake_executor is not None:
-        return cmake_executor.run(f"test -f {path}", timeout=30.0).ok
-    return os.path.isfile(path)
-
-
-def _run_build_step(cmd: str, *, cmake_executor, timeout: float, label: str, log_path: str) -> None:
-    """Run a single build step, streaming output live and to *log_path*.
-
-    rocHPL's ``install.sh`` (cmake configure + compile + MPI wrapper generation)
-    runs for several minutes, so a buffered ``subprocess.run(capture_output=True)``
-    (which shows nothing until it exits) is unusable here.  Remote steps stream
-    through the SSH executor's own ``stream=True`` path; local steps use the
-    framework's shared streaming Popen runner (``_blocking_stream_run``) which
-    forwards stdout+stderr to the console in real time *and* appends them to
-    *log_path*.
-
-    Live console output still requires ``pytest -s`` (pytest captures fd output by
-    default); the *log_path* file is written either way -- ``tail -f`` it to watch
-    a run started without ``-s``.
-    """
-    logger.info("rocHPL %s -> streaming to %s", label, log_path)
-    if cmake_executor is not None:
-        result = cmake_executor.run(cmd, timeout=timeout, stream=True)
-        if not result.ok:
-            raise RuntimeError(
-                f"rocHPL {label} failed on remote (exit={result.exit_code}):\n"
-                f"stdout: {result.stdout[-4000:]}\nstderr: {result.stderr[-2000:]}"
-            )
-        return
-    result = _blocking_stream_run(
-        command=cmd,
-        env=os.environ.copy(),
-        cwd=None,
-        timeout=timeout,
-        stream_stdout=True,
-        stream_stderr=True,
-        log_path=log_path,
-    )
-    if not result.ok:
-        raise RuntimeError(
-            f"rocHPL {label} failed locally (exit={result.exit_code}). Full log: {log_path}\n"
-            f"stdout tail: {result.stdout[-4000:]}\nstderr tail: {result.stderr[-2000:]}"
-        )
 
 
 @pytest.fixture(scope="session")
@@ -156,7 +103,7 @@ def rochpl_build(
     rocm_path = os.path.realpath(rock_dir) if cmake_executor is None else rock_dir
     build_timeout = float(framework_config.therock.build_timeout_secs)
 
-    ref_label = _safe_ref_name(_ROCHPL_REF)
+    ref_label = safe_ref_name(_ROCHPL_REF)
     arch_label = gpu_arch or "auto"
     dest = pathlib.Path(compiler_build_dir) / "rochpl" / f"rochpl-{ref_label}-{arch_label}"
 
@@ -190,7 +137,7 @@ def rochpl_build(
         )
 
         # --- idempotency: skip rebuild when the launcher already exists -------
-        if _path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor):
+        if path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor):
             logger.info("rocHPL: existing build at %s -- skipping install.sh", build_dir)
             return build_dir
 
@@ -207,7 +154,7 @@ def rochpl_build(
         install_cmd = f"cd {rochpl_dir} && env {env_prefix} ./install.sh --with-rocm={rocm_path}{mpi_arg}"
 
         logger.info("rocHPL: building via install.sh (arch=%s, mpi_home=%s)", arch_label, mpi_home or "<unset>")
-        _run_build_step(
+        run_build_step(
             install_cmd,
             cmake_executor=cmake_executor,
             timeout=build_timeout,
@@ -215,7 +162,7 @@ def rochpl_build(
             log_path=os.path.join(log_dir, "build-install.log"),
         )
 
-        if not _path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor):
+        if not path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor):
             raise RuntimeError(
                 f"rocHPL: install.sh completed but {build_dir}/{_BUILD_SENTINEL} is missing -- "
                 "the build layout may have changed upstream."

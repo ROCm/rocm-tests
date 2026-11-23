@@ -441,7 +441,7 @@ def matrix_transpose_build(
 # ###########################################################################
 
 _KOKKOS_URL = os.environ.get("ROCM_TEST_KOKKOS_URL", "https://github.com/kokkos/kokkos.git")
-_KOKKOS_REF = os.environ.get("ROCM_TEST_KOKKOS_REF", "4.2.01")
+_KOKKOS_REF = os.environ.get("ROCM_TEST_KOKKOS_REF", "5.1.1")
 _KOKKOS_SUBDIR = "recovery/kokkos"
 
 # No explicit device arch is passed for discrete GPUs: with HIP enabled the compiler

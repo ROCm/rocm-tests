@@ -16,6 +16,7 @@ import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
 from tests.common.criu import steps as criu
+from tests.common.criu.steps import assert_criu_restore_ok
 from tests.e2e.recovery.criu.test_criu_cuda_memtest import (
     _checkpoint,
     _launch,
@@ -94,8 +95,8 @@ def test_criu_zip_unzip_cuda_memtest(target_executor, ld_path, cuda_memtest_buil
             # criu_restore cd's into the workdir it is given and polls <workdir>/restore.log;
             # pass the untarred destination so the restore reads the archived-then-extracted image.
             restore = criu.criu_restore(executor, criu_runtime, dest)
-            log = criu.attach_criu_log(executor, dest, "restore.log", full=full_log)
-            assert "RESTORE_OK" in restore.stdout, f"criu restore from unzipped dir did not finish:\n{log[-1500:]}"
+            criu.attach_criu_log(executor, dest, "restore.log", full=full_log)
+            assert_criu_restore_ok(restore, workdir=dest, label="zip_unzip")
 
         with step("Verify cuda_memtest resumed under criu"):
             # criu restores into the original PID; confirm it is alive and still the workload.

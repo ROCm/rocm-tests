@@ -15,6 +15,8 @@ import pytest
 
 from framework.reporting.allure_reporter import report_metric, step
 from tests.common.criu import steps as criu
+from tests.common.criu.steps import assert_criu_dump_ok, assert_criu_restore_ok
+from tests.common.system_tools.runner import skip_unsupported_arch
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +37,7 @@ _MAX_NUM_BLOCKS = 2000
 
 
 def _skip_if_unsupported_arch(gpu_arch: str | None) -> None:
-    if gpu_arch and gpu_arch not in SUPPORTED_ARCHS:
-        pytest.skip(f"GPU arch {gpu_arch} not supported for CRIU cuda_memtest: {sorted(SUPPORTED_ARCHS)}")
+    skip_unsupported_arch(gpu_arch, SUPPORTED_ARCHS, label="CRIU cuda_memtest")
 
 
 def _launch(executor, build, ld: str) -> str:
@@ -61,17 +62,16 @@ def _checkpoint(executor, criu_cmd: str, build, pid: str, full_log: bool = False
     """Checkpoint the running workload and assert the dump succeeded and the PID is gone."""
     with step("Checkpoint with criu dump"):
         dump = criu.criu_dump(executor, criu_cmd, build.workdir, pid)
-        log = criu.attach_criu_log(executor, build.workdir, "dump.log", full=full_log)
-        assert "OK" in dump.stdout, f"criu dump did not report OK:\n{dump.stdout[-1500:]}\n{log[-1500:]}"
-        assert "PID_GONE" in dump.stdout, "cuda_memtest still exists after criu dump."
+        criu.attach_criu_log(executor, build.workdir, "dump.log", full=full_log)
+        assert_criu_dump_ok(dump, workdir=build.workdir, label="cuda_memtest")
 
 
 def _restore(executor, criu_cmd: str, build, full_log: bool = False) -> None:
     """Restore the checkpoint and assert CRIU reported success."""
     with step("Restore with criu restore"):
         restore = criu.criu_restore(executor, criu_cmd, build.workdir)
-        log = criu.attach_criu_log(executor, build.workdir, "restore.log", full=full_log)
-        assert "RESTORE_OK" in restore.stdout, f"criu restore did not finish successfully:\n{log[-1500:]}"
+        criu.attach_criu_log(executor, build.workdir, "restore.log", full=full_log)
+        assert_criu_restore_ok(restore, workdir=build.workdir, label="cuda_memtest")
 
 
 # Serialized via this xdist_group: CRIU tests sharing the build workdir must not run

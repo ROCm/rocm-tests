@@ -5,18 +5,11 @@
 
 The ``rccl_unroll_test`` binaries (dual-kernel build, perf matrix, and any
 future unroll sub-test) are self-validating harnesses that drive ``all_reduce_perf``
-under a common environment and print a ``Results: N passed, M failed`` summary.
-Centralising the environment builder and the pass-summary pattern here keeps the
-per-test files to their unique objective and makes adding another unroll sub-test
-a one-liner.
+under a common environment.  Pass-summary assertion is in
+``tests.common.rccl.runner.assert_rccl_results_pass``.
 """
 
 from __future__ import annotations
-
-import re
-
-# Pass summary printed by every self-validating rccl_unroll_test binary.
-RESULTS_PASS_RE = re.compile(r"Results:\s*\d+ passed,\s*0 failed")
 
 
 def all_reduce_perf_env(
