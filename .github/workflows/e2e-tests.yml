@@ -19,26 +19,27 @@ on:
         required: false
         type: string
       runs_on:
-        description: 'Select a runner (Linux only; availability is not checked)'
+        description: 'ASIC | runner | testplan.ini status (not live; disabled entries cannot run; Linux only)'
         required: true
         type: choice
-        # Keep these labels in sync with testplan.ini.
+        default: "MI355 | linux-mi355-1gpu-ossci-rocm | Enabled"
+        # Keep all runners and their status in sync with testplan.ini, ordered by ASIC.
         options:
-          - "linux-gfx942-1gpu-ossci-rocm"
-          - "linux-mi355-1gpu-ossci-rocm"
-          - "linux-gfx1151-gpu-rocm"
-          - "linux-gfx1030-gpu-rocm-devops-qa"
-          - "windows-gfx1030-gpu-rocm-devops-qa"
-          - "linux-gfx1100-gpu-rocm-devops-qa"
-          - "windows-gfx1100-gpu-rocm-devops-qa"
-          - "linux-gfx1101-gpu-rocm-devops-qa"
-          - "windows-gfx1101-gpu-rocm-devops-qa"
-          - "linux-gfx1201-gpu-rocm-devops-qa"
-          - "windows-gfx1201-gpu-rocm-devops-qa"
-          - "linux-mi325-8gpu-ossci-rocm"
-          - "linux-gfx90a-gpu-rocm"
-          - "linux-gfx1150-gpu-rocm"
-          - "linux-gfx1153-gpu-rocm"
+          - "MI250 | linux-gfx90a-gpu-rocm | Disabled"
+          - "MI325 | linux-gfx942-1gpu-ossci-rocm | Disabled"
+          - "MI325 | linux-mi325-8gpu-ossci-rocm | Disabled"
+          - "MI355 | linux-mi355-1gpu-ossci-rocm | Enabled"
+          - "MedusaPoint | linux-gfx1153-gpu-rocm | Disabled"
+          - "Navi21 | linux-gfx1030-gpu-rocm-devops-qa | Disabled"
+          - "Navi21 | windows-gfx1030-gpu-rocm-devops-qa | Disabled"
+          - "Navi31 | linux-gfx1100-gpu-rocm-devops-qa | Enabled"
+          - "Navi31 | windows-gfx1100-gpu-rocm-devops-qa | Disabled"
+          - "Navi32 | linux-gfx1101-gpu-rocm-devops-qa | Enabled"
+          - "Navi32 | windows-gfx1101-gpu-rocm-devops-qa | Disabled"
+          - "Navi48 | linux-gfx1201-gpu-rocm-devops-qa | Disabled"
+          - "Navi48 | windows-gfx1201-gpu-rocm-devops-qa | Disabled"
+          - "StrixHalo | linux-gfx1151-gpu-rocm | Enabled"
+          - "StrixPoint | linux-gfx1150-gpu-rocm | Disabled"
       artifact_group:
         description: 'TheRock artifact group override (blank uses testplan.ini)'
         required: false
@@ -192,7 +193,7 @@ jobs:
   platform:
     name: "e2e tests"
     needs: resolve_manual
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).runs_on }}
     if: >-
       ${{ !cancelled() && inputs.target_available != 'false' &&
           ((needs.resolve_manual.result == 'success' && needs.resolve_manual.outputs.config != '') ||
@@ -235,7 +236,7 @@ jobs:
           # reference — the window here is intentionally generous (15 min) so that
           # legitimate slow-start runners are not falsely skipped.
           WORKFLOW_QUEUED_AT: ${{ github.run_started_at }}
-          RUNNER_NAME: ${{ inputs.runs_on }}
+          RUNNER_NAME: ${{ fromJSON(needs.resolve_manual.outputs.config || toJSON(inputs)).runs_on }}
           MAX_QUEUE_WAIT_SECS: '900'   # 15 min safety-net window
         run: python3 _ci_scripts/.github/scripts/queue_guard.py
 
