@@ -33,7 +33,11 @@ import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 import errno
-import fcntl
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]  # Windows — fcntl not available
 import glob
 import hashlib
 import json
@@ -42,7 +46,7 @@ import os
 import pathlib
 import posixpath
 import re
-import select
+import selectors
 import shlex
 import shutil
 import signal
@@ -53,6 +57,16 @@ import time
 import pytest
 
 from framework.common.workspace_layout import REMOTE_WORKSPACE_DIR, category_root
+
+# Platform-specific file locking
+if sys.platform == "win32":
+    import msvcrt
+
+    _HAS_FCNTL = False
+else:
+    import fcntl
+
+    _HAS_FCNTL = True
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +88,65 @@ _GPU_ENV_KEYS: frozenset[str] = frozenset(
 _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 _SIGTERM_GRACE_SECS: float = 30.0
+
+
+def _acquire_exclusive_lock(lock_fh, timeout: float = 7200.0) -> None:
+    """Acquire an exclusive file lock on *lock_fh* (cross-platform).
+
+    Unix: uses fcntl.flock with LOCK_EX | LOCK_NB.
+    Windows: uses msvcrt.locking.
+
+    Args:
+        lock_fh: Opened file handle to lock.
+        timeout: Max seconds to wait for the lock.
+
+    Raises:
+        TimeoutError: If lock cannot be acquired within timeout.
+        OSError: On lock acquisition failure.
+    """
+    deadline = time.monotonic() + timeout
+    if _HAS_FCNTL:
+        while True:
+            try:
+                fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Could not acquire file lock within {timeout}s — another worker may be hung."
+                    ) from exc
+                time.sleep(5)
+    else:
+        fd = lock_fh.fileno()
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[name-defined]
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Could not acquire file lock within {timeout}s — another worker may be hung."
+                    ) from exc
+                time.sleep(5)
+
+
+def _release_exclusive_lock(lock_fh) -> None:
+    """Release an exclusive file lock on *lock_fh* (cross-platform).
+
+    Unix: uses fcntl.flock with LOCK_UN.
+    Windows: uses msvcrt.locking to unlock.
+
+    Args:
+        lock_fh: Opened file handle to unlock.
+    """
+    if _HAS_FCNTL:
+        fcntl.flock(lock_fh, fcntl.LOCK_UN)
+    else:
+        fd = lock_fh.fileno()
+        with contextlib.suppress(OSError):
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[name-defined]
 
 
 def _write_build_skip_log(log_path: str, src: str, binary: str) -> None:
@@ -107,7 +180,10 @@ def _write_chunk(chunk: bytes, log_fh) -> None:
 def _graceful_kill(proc: subprocess.Popen, grace_secs: float = _SIGTERM_GRACE_SECS) -> None:
     """Send SIGTERM to *proc*, then SIGKILL if it has not exited within *grace_secs*."""
     try:
-        proc.send_signal(signal.SIGTERM)
+        if sys.platform == "win32":
+            proc.terminate()
+        else:
+            proc.send_signal(signal.SIGTERM)
         proc.wait(timeout=grace_secs)
     except subprocess.TimeoutExpired:
         proc.kill()
@@ -193,24 +269,8 @@ class BinaryBuilder:
         lock_path = output + ".lock"
 
         with open(lock_path, "w", encoding="utf-8") as lock_fh:
-            # Exclusive lock with non-blocking poll; blocks other xdist workers
-            # until this worker compiles or confirms the binary is current.
             lock_timeout = timeout if timeout is not None else 7200.0
-            deadline = time.monotonic() + lock_timeout
-            while True:
-                try:
-                    fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError as exc:
-                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                        raise
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(
-                            f"BinaryBuilder: could not acquire build lock for "
-                            f"{output!r} within {lock_timeout}s — another "
-                            "worker may be hung."
-                        ) from exc
-                    time.sleep(5)
+            _acquire_exclusive_lock(lock_fh, timeout=lock_timeout)
 
             try:
                 if self._is_up_to_date(src, output):
@@ -237,7 +297,7 @@ class BinaryBuilder:
                 return output
 
             finally:
-                fcntl.flock(lock_fh, fcntl.LOCK_UN)
+                _release_exclusive_lock(lock_fh)
 
     # ---------------------------------------------------------------------------
     # Internal helpers
@@ -364,7 +424,10 @@ class BinaryBuilder:
             stderr=subprocess.STDOUT,  # merged — single chronological log
             close_fds=True,
         )
-        os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
+        # os.set_blocking() only supports Windows pipes since Python 3.12 (absent
+        # entirely pre-3.12, where attribute access raises AttributeError).
+        if hasattr(os, "set_blocking"):
+            os.set_blocking(process.stdout.fileno(), False)  # type: ignore[union-attr]
 
         buf = b""
         t_start = time.monotonic()
@@ -397,12 +460,17 @@ class BinaryBuilder:
                     select_wait = min(select_wait, timeout - elapsed)
                 select_wait = max(select_wait, 0.1)
 
-                if process.stdout is not None and select.select([process.stdout], [], [], select_wait)[0]:
-                    chunk = process.stdout.read()
-                    if chunk:
-                        t_last_output = time.monotonic()
-                        _write_chunk(chunk, log_fh)
-                        buf += chunk
+                if process.stdout is not None:
+                    selector = selectors.DefaultSelector()
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    ready = [key.fileobj for key, _ in selector.select(timeout=select_wait)]
+                    selector.close()
+                    if ready:
+                        chunk = process.stdout.read()
+                        if chunk:
+                            t_last_output = time.monotonic()
+                            _write_chunk(chunk, log_fh)
+                            buf += chunk
 
                 if process.poll() is not None:
                     tail = process.stdout.read()  # type: ignore[union-attr]
@@ -952,22 +1020,92 @@ def clone_repo(  # noqa: C901
             abs_dest = _remote_abspath(repo_dir, remote_executor, category="external")
         abs_dest_path = pathlib.Path(abs_dest)
 
-        check = remote_executor.run(f"test -d {abs_dest}/.git", timeout=30.0)
-        if not check.ok:
-            remote_executor.run(f"mkdir -p {shlex.quote(str(abs_dest_path.parent))}", timeout=30.0)
-            if sparse_subtree:
-                clone_cmd = f"git clone --filter=blob:none --sparse --no-checkout {url} {abs_dest}"
+        # Serialise across xdist workers (see the local branch below for the full
+        # rationale). xdist workers are always local processes even in
+        # --remote-node mode, so a local flock keyed on the shared dest path
+        # serialises the concurrent SSH clones into one remote directory. The
+        # key is str(repo_dir) — identical across workers — not abs_dest.
+        with external_build_lock(str(repo_dir)):
+            check = remote_executor.run(f"test -d {abs_dest}/.git", timeout=30.0)
+            if not check.ok:
+                remote_executor.run(f"mkdir -p {shlex.quote(str(abs_dest_path.parent))}", timeout=30.0)
+                if sparse_subtree:
+                    clone_cmd = f"git clone --filter=blob:none --sparse --no-checkout {url} {abs_dest}"
+                else:
+                    clone_cmd = f"git clone {url} {abs_dest}"
+                last_err = ""
+                for attempt in range(1, _EXT_CLONE_ATTEMPTS + 1):
+                    result = remote_executor.run(clone_cmd, timeout=timeout)
+                    if result.ok:
+                        break
+                    last_err = (
+                        f"exit={result.exit_code}\nstdout: {result.stdout[:2000]}\nstderr: {result.stderr[:1000]}"
+                    )
+                    remote_executor.run(f"rm -rf {abs_dest}", timeout=60.0)
+                    logger.warning(
+                        "clone_repo (remote) attempt %d/%d failed; retrying in %ds:\n%s",
+                        attempt,
+                        _EXT_CLONE_ATTEMPTS,
+                        _EXT_CLONE_BACKOFF_SECS,
+                        last_err,
+                    )
+                    time.sleep(_EXT_CLONE_BACKOFF_SECS)
+                else:
+                    raise RuntimeError(
+                        f"Remote git clone failed after {_EXT_CLONE_ATTEMPTS} attempts.\n"
+                        f"cmd: {clone_cmd}\n{last_err}"
+                    )
+                if sparse_subtree:
+                    sc = remote_executor.run(f"git -C {abs_dest} sparse-checkout set {sparse_subtree}", timeout=timeout)
+                    if not sc.ok:
+                        raise RuntimeError(
+                            f"git sparse-checkout set failed on remote (exit={sc.exit_code}): {sc.stderr[:1000]}"
+                        )
             else:
-                clone_cmd = f"git clone {url} {abs_dest}"
+                logger.info("clone_repo (remote): %s already exists — skipping clone", abs_dest)
+                if sparse_subtree:
+                    # Re-assert the sparse spec on a reused checkout: one cached from an
+                    # earlier run with a narrower subtree would otherwise stay missing the
+                    # files we now need (e.g. a sibling include/ tree). Idempotent when the
+                    # spec already matches.
+                    sc = remote_executor.run(f"git -C {abs_dest} sparse-checkout set {sparse_subtree}", timeout=timeout)
+                    if not sc.ok:
+                        raise RuntimeError(
+                            f"git sparse-checkout re-assert failed on remote (exit={sc.exit_code}): {sc.stderr[:1000]}"
+                        )
+
+            if ref:
+                co = remote_executor.run(f"git -C {abs_dest} checkout {ref}", timeout=timeout)
+                if not co.ok:
+                    raise RuntimeError(
+                        f"git checkout {ref!r} failed on remote (exit={co.exit_code}): {co.stderr[:1000]}"
+                    )
+            if sparse_subtree:
+                sub_path = f"{abs_dest}/{sparse_subtree}"
+                check_sub = remote_executor.run(f"test -d {sub_path}", timeout=15.0)
+                assert check_sub.ok, (
+                    f"sparse-checkout did not produce {sub_path} on remote — "
+                    f"check that '{sparse_subtree}' exists on ref '{ref}'"
+                )
+        return pathlib.Path(abs_dest) / sparse_subtree if sparse_subtree else pathlib.Path(abs_dest)
+
+    # Local path
+    repo_dir.parent.mkdir(parents=True, exist_ok=True)
+    with external_build_lock(str(repo_dir)):
+        if not (repo_dir / ".git").is_dir():
+            if sparse_subtree:
+                clone_parts = ["git", "clone", "--filter=blob:none", "--sparse", "--no-checkout", url, str(repo_dir)]
+            else:
+                clone_parts = ["git", "clone", url, str(repo_dir)]
             last_err = ""
             for attempt in range(1, _EXT_CLONE_ATTEMPTS + 1):
-                result = remote_executor.run(clone_cmd, timeout=timeout)
-                if result.ok:
+                proc = subprocess.run(clone_parts, capture_output=True, text=True, timeout=timeout)
+                if proc.returncode == 0:
                     break
-                last_err = f"exit={result.exit_code}\nstdout: {result.stdout[:2000]}\nstderr: {result.stderr[:1000]}"
-                remote_executor.run(f"rm -rf {abs_dest}", timeout=60.0)
+                last_err = f"exit={proc.returncode}\nstdout: {proc.stdout[:2000]}\nstderr: {proc.stderr[:1000]}"
+                shutil.rmtree(repo_dir, ignore_errors=True)
                 logger.warning(
-                    "clone_repo (remote) attempt %d/%d failed; retrying in %ds:\n%s",
+                    "clone_repo (local) attempt %d/%d failed; retrying in %ds:\n%s",
                     attempt,
                     _EXT_CLONE_ATTEMPTS,
                     _EXT_CLONE_BACKOFF_SECS,
@@ -976,103 +1114,48 @@ def clone_repo(  # noqa: C901
                 time.sleep(_EXT_CLONE_BACKOFF_SECS)
             else:
                 raise RuntimeError(
-                    f"Remote git clone failed after {_EXT_CLONE_ATTEMPTS} attempts.\n" f"cmd: {clone_cmd}\n{last_err}"
+                    f"Local git clone failed after {_EXT_CLONE_ATTEMPTS} attempts.\n"
+                    f"cmd: {' '.join(clone_parts)}\n{last_err}"
                 )
             if sparse_subtree:
-                sc = remote_executor.run(f"git -C {abs_dest} sparse-checkout set {sparse_subtree}", timeout=timeout)
-                if not sc.ok:
-                    raise RuntimeError(
-                        f"git sparse-checkout set failed on remote (exit={sc.exit_code}): {sc.stderr[:1000]}"
-                    )
+                proc = subprocess.run(
+                    ["git", "-C", str(repo_dir), "sparse-checkout", "set", sparse_subtree],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                assert (
+                    proc.returncode == 0
+                ), f"git sparse-checkout set failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
         else:
-            logger.info("clone_repo (remote): %s already exists — skipping clone", abs_dest)
+            logger.info("clone_repo (local): %s already exists — skipping clone", repo_dir)
             if sparse_subtree:
-                # Re-assert the sparse spec on a reused checkout: one cached from an
-                # earlier run with a narrower subtree would otherwise stay missing the
-                # files we now need (e.g. a sibling include/ tree). Idempotent when the
-                # spec already matches.
-                sc = remote_executor.run(f"git -C {abs_dest} sparse-checkout set {sparse_subtree}", timeout=timeout)
-                if not sc.ok:
-                    raise RuntimeError(
-                        f"git sparse-checkout re-assert failed on remote (exit={sc.exit_code}): {sc.stderr[:1000]}"
-                    )
+                # Re-assert the sparse spec on a reused checkout (see remote branch): a
+                # checkout cached from an earlier run with a narrower subtree would
+                # otherwise stay missing files we now need. Idempotent when unchanged.
+                proc = subprocess.run(
+                    ["git", "-C", str(repo_dir), "sparse-checkout", "set", sparse_subtree],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                assert (
+                    proc.returncode == 0
+                ), f"git sparse-checkout re-assert failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
 
         if ref:
-            co = remote_executor.run(f"git -C {abs_dest} checkout {ref}", timeout=timeout)
-            if not co.ok:
-                raise RuntimeError(f"git checkout {ref!r} failed on remote (exit={co.exit_code}): {co.stderr[:1000]}")
+            proc = subprocess.run(
+                ["git", "-C", str(repo_dir), "checkout", ref],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            assert proc.returncode == 0, f"git checkout {ref!r} failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
         if sparse_subtree:
-            sub_path = f"{abs_dest}/{sparse_subtree}"
-            check_sub = remote_executor.run(f"test -d {sub_path}", timeout=15.0)
-            assert check_sub.ok, (
-                f"sparse-checkout did not produce {sub_path} on remote — "
+            assert (repo_dir / sparse_subtree).is_dir(), (
+                f"sparse-checkout did not produce {repo_dir / sparse_subtree} — "
                 f"check that '{sparse_subtree}' exists on ref '{ref}'"
             )
-        return pathlib.Path(abs_dest) / sparse_subtree if sparse_subtree else pathlib.Path(abs_dest)
-
-    # Local path
-    repo_dir.parent.mkdir(parents=True, exist_ok=True)
-    if not (repo_dir / ".git").is_dir():
-        if sparse_subtree:
-            clone_parts = ["git", "clone", "--filter=blob:none", "--sparse", "--no-checkout", url, str(repo_dir)]
-        else:
-            clone_parts = ["git", "clone", url, str(repo_dir)]
-        last_err = ""
-        for attempt in range(1, _EXT_CLONE_ATTEMPTS + 1):
-            proc = subprocess.run(clone_parts, capture_output=True, text=True)
-            if proc.returncode == 0:
-                break
-            last_err = f"exit={proc.returncode}\nstdout: {proc.stdout[:2000]}\nstderr: {proc.stderr[:1000]}"
-            shutil.rmtree(repo_dir, ignore_errors=True)
-            logger.warning(
-                "clone_repo (local) attempt %d/%d failed; retrying in %ds:\n%s",
-                attempt,
-                _EXT_CLONE_ATTEMPTS,
-                _EXT_CLONE_BACKOFF_SECS,
-                last_err,
-            )
-            time.sleep(_EXT_CLONE_BACKOFF_SECS)
-        else:
-            raise RuntimeError(
-                f"Local git clone failed after {_EXT_CLONE_ATTEMPTS} attempts.\n"
-                f"cmd: {' '.join(clone_parts)}\n{last_err}"
-            )
-        if sparse_subtree:
-            proc = subprocess.run(
-                ["git", "-C", str(repo_dir), "sparse-checkout", "set", sparse_subtree],
-                capture_output=True,
-                text=True,
-            )
-            assert (
-                proc.returncode == 0
-            ), f"git sparse-checkout set failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
-    else:
-        logger.info("clone_repo (local): %s already exists — skipping clone", repo_dir)
-        if sparse_subtree:
-            # Re-assert the sparse spec on a reused checkout (see remote branch): a
-            # checkout cached from an earlier run with a narrower subtree would
-            # otherwise stay missing files we now need. Idempotent when unchanged.
-            proc = subprocess.run(
-                ["git", "-C", str(repo_dir), "sparse-checkout", "set", sparse_subtree],
-                capture_output=True,
-                text=True,
-            )
-            assert (
-                proc.returncode == 0
-            ), f"git sparse-checkout re-assert failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
-
-    if ref:
-        proc = subprocess.run(
-            ["git", "-C", str(repo_dir), "checkout", ref],
-            capture_output=True,
-            text=True,
-        )
-        assert proc.returncode == 0, f"git checkout {ref!r} failed (exit={proc.returncode}):\n{proc.stderr[-2000:]}"
-    if sparse_subtree:
-        assert (repo_dir / sparse_subtree).is_dir(), (
-            f"sparse-checkout did not produce {repo_dir / sparse_subtree} — "
-            f"check that '{sparse_subtree}' exists on ref '{ref}'"
-        )
     return repo_dir / sparse_subtree if sparse_subtree else repo_dir
 
 
@@ -1348,7 +1431,9 @@ def autotools_make(
 
 @contextlib.contextmanager
 def external_build_lock(build_dir: str, *, timeout: float = 7200.0):
-    """Exclusive cross-process ``fcntl`` lock keyed on *build_dir*.
+    """Exclusive cross-process file lock keyed on *build_dir*.
+
+    Uses fcntl on Unix and msvcrt on Windows for cross-platform compatibility.
 
     Args:
         build_dir: Build directory used only as the lock key.
@@ -1365,24 +1450,11 @@ def external_build_lock(build_dir: str, *, timeout: float = 7200.0):
     digest = hashlib.sha256(build_dir.encode("utf-8")).hexdigest()[:16]
     lock_path = os.path.join(tempfile.gettempdir(), f"rocm-test-extbuild-{digest}.lock")
     with open(lock_path, "w", encoding="utf-8") as lock_fh:
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                    raise
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"external-build: could not acquire build lock for {build_dir!r} "
-                        f"within {timeout}s — another worker may be hung."
-                    ) from exc
-                time.sleep(5)
+        _acquire_exclusive_lock(lock_fh, timeout=timeout)
         try:
             yield
         finally:
-            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+            _release_exclusive_lock(lock_fh)
 
 
 def _path_is_file(path: str, remote_executor) -> bool:

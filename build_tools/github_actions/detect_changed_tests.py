@@ -31,8 +31,17 @@ Impact rules (evaluated in order; first matching rule for each changed file wins
 5. ``conftest.py`` (repo root)
    → include the full test suite.
 
-6. ``framework/**``
-   → include the full test suite (framework change may affect any test).
+6. ``framework/**`` — subdirectory-aware:
+   - ``framework/executors/**``, ``framework/builder/**``, ``framework/common/**``,
+     ``framework/plugins/**``, or ``framework/nodes/**``
+     → include the full test suite (core executor/plugin change may affect any test).
+   - ``framework/markers/taxonomy.py`` (diff parsed):
+     New ``CATEGORY_PROFILES`` keys → those specific e2e area directories only.
+     No new profile keys (e.g. ``MARKER_SCHEMA`` edit) → falls to smoke run.
+   - Any other ``framework/`` file (``config/``, ``gpu/``, ``logging/``, ``markers/``
+     excl. ``taxonomy.py``, ``os_adapter/``, ``reporting/``, ``results/``, ``rocm/``,
+     ``scheduling/``):
+     → smoke run: alphabetically first ``test_*.py`` in each ``tests/e2e/`` area.
 
 7. Any other change outside ``tests/`` and ``framework/`` is ignored — no tests run.
 """
@@ -41,6 +50,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path, PurePosixPath
+import re
 import sys
 
 # Allow imports from both build_tools/github_actions/ and the repo root.
@@ -70,8 +80,49 @@ _CMAKE_DIRS: list[str] = [
     "tests/e2e/recovery/criu/",
 ]
 
+# Framework subdirs whose changes warrant running the full test suite.
+# Changes to core executor/plugin infrastructure can affect every test.
+_CRITICAL_FW_DIRS: frozenset[str] = frozenset(
+    {
+        "framework/executors",
+        "framework/builder",
+        "framework/common",
+        "framework/plugins",
+        "framework/nodes",
+    }
+)
+
+# Regex to find newly added CATEGORY_PROFILES keys in a taxonomy.py unified diff.
+# Matches lines like: +    "tests/e2e/rocwmma": [
+_CATEGORY_PROFILE_KEY_RE = re.compile(r'^\+\s{4}"(tests/e2e/[^"]+)"\s*:\s*\[')
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _parse_taxonomy_diff(diff_text: str) -> list[str]:
+    """Return ``'tests/e2e/<area>/'`` for each new ``CATEGORY_PROFILES`` key in the diff.
+
+    Parses a unified diff of ``framework/markers/taxonomy.py`` and extracts the path
+    component of any added dict keys.  Returns an empty list for ``MARKER_SCHEMA``-only
+    edits or when ``diff_text`` is empty.
+    """
+    return [match.group(1) + "/" for line in diff_text.splitlines() if (match := _CATEGORY_PROFILE_KEY_RE.match(line))]
+
+
+def _smoke_paths(repo_root: Path) -> list[str]:
+    """Return one test file per e2e area: the alphabetically first ``test_*.py``.
+
+    Used for non-critical ``framework/`` changes that do not warrant the full suite.
+    Areas with no ``test_*.py`` files are silently skipped.
+    """
+    smoke: list[str] = []
+    for area_key in sorted(CATEGORY_PROFILES):
+        area_dir = repo_root / area_key
+        test_files = sorted(area_dir.glob("test_*.py"))
+        if test_files:
+            smoke.append(test_files[0].relative_to(repo_root).as_posix())
+    return smoke
 
 
 def _e2e_area(path: PurePosixPath) -> str | None:
@@ -135,69 +186,138 @@ def _classify_e2e_path(path: PurePosixPath, raw: str) -> str | None:
 # ── Core detection logic ──────────────────────────────────────────────────────
 
 
-def detect_impacted_paths(changed_files: list[str]) -> list[str]:
+def _is_global_conftest(path: PurePosixPath) -> bool:
+    """Return True for conftest.py files that trigger a full-suite run (Rules 5).
+
+    Covers the repo root, ``tests/``, and ``tests/e2e/`` levels only.
+    Per-area ``tests/e2e/<area>/conftest.py`` files are handled by Rule 2.
+    """
+    parts = path.parts
+    return path.name == "conftest.py" and (
+        len(parts) == 1
+        or (len(parts) == 2 and parts[0] == "tests")
+        or (len(parts) == 3 and parts[0] == "tests" and parts[1] == "e2e")
+    )
+
+
+def _classify_single_file(
+    raw: str,
+    critical_fw_hit: bool,
+    other_fw_files: set[str],
+    impacted: set[str],
+) -> tuple[bool, bool]:
+    """Classify one changed file path and update the mutable collections in-place.
+
+    Returns ``(full_suite_triggered, critical_fw_hit)`` after processing this file.
+    ``full_suite_triggered`` being True signals the caller to stop the loop early.
+    """
+    path = PurePosixPath(raw.strip())
+    parts = path.parts
+    if not parts:
+        return False, critical_fw_hit
+
+    # Rule 6: framework/**
+    if parts[0] == "framework":
+        fw_subdir = f"framework/{parts[1]}" if len(parts) > 1 else "framework"
+        if fw_subdir in _CRITICAL_FW_DIRS:
+            return False, True
+        other_fw_files.add(raw.strip())
+        return False, critical_fw_hit
+
+    # Rule 5: global conftest.py → full suite
+    if _is_global_conftest(path):
+        return True, critical_fw_hit
+
+    # Rules 3 & 4: tests/common/**
+    if len(parts) >= 2 and parts[0] == "tests" and parts[1] == "common":
+        if path.name == "_cmake_build.py":
+            impacted.update(_CMAKE_DIRS)
+        else:
+            return True, critical_fw_hit  # Rule 4: full suite
+        return False, critical_fw_hit
+
+    # Guard: only tests/e2e/** remains relevant
+    if parts[0] != "tests" or (len(parts) > 1 and parts[1] != "e2e"):
+        return False, critical_fw_hit
+
+    # Rules 1 & 2: tests/e2e/**
+    result = _classify_e2e_path(path, raw)
+    if result is not None:
+        impacted.add(result)
+    return False, critical_fw_hit
+
+
+def _resolve_framework_impacted(
+    other_fw_files: set[str],
+    taxonomy_diff: str | None,
+    repo_root: Path,
+) -> set[str]:
+    """Resolve impacted paths for non-critical ``framework/`` file changes.
+
+    Parses newly added ``CATEGORY_PROFILES`` keys from ``taxonomy.py`` when present;
+    falls back to a smoke run (one test file per e2e area) for remaining files.
+    """
+    impacted: set[str] = set()
+    remaining = other_fw_files
+    taxonomy_path = "framework/markers/taxonomy.py"
+    if taxonomy_path in other_fw_files and taxonomy_diff is not None:
+        new_dirs = _parse_taxonomy_diff(taxonomy_diff)
+        impacted.update(new_dirs)
+        if new_dirs:
+            remaining = other_fw_files - {taxonomy_path}
+    if remaining:
+        impacted.update(_smoke_paths(repo_root))
+    return impacted
+
+
+def _deduplicate(impacted: set[str]) -> list[str]:
+    """Drop individual file paths that are already covered by a directory entry."""
+    dirs = {p for p in impacted if p.endswith("/")}
+    files = {p for p in impacted if not p.endswith("/")}
+    filtered = {f for f in files if not any(f.startswith(d) for d in dirs)}
+    return sorted(dirs | filtered)
+
+
+def detect_impacted_paths(
+    changed_files: list[str],
+    taxonomy_diff: str | None = None,
+    repo_root: Path | None = None,
+) -> list[str]:
     """Map a list of changed file paths to the pytest paths that should run.
 
-    Returns a deduplicated, sorted list of paths (files or directories).
+    Args:
+        changed_files: Newline-free paths as produced by ``git diff --name-only``.
+        taxonomy_diff: Raw unified diff text for ``framework/markers/taxonomy.py``
+            when that file is among the changed files.  Used to detect newly added
+            ``CATEGORY_PROFILES`` keys.  Pass ``None`` when unavailable.
+        repo_root: Absolute path to the repository root.  Used by ``_smoke_paths``
+            to locate ``test_*.py`` files.  Defaults to ``_REPO_ROOT``.
+
+    Returns:
+        A deduplicated, sorted list of paths (files or directories) to pass to pytest.
     """
     impacted: set[str] = set()
     full_suite = False
+    critical_fw_hit = False
+    other_fw_files: set[str] = set()
 
     for raw in changed_files:
-        path = PurePosixPath(raw.strip())
-        parts = path.parts
-        if not parts:
-            continue
-
-        # ── Rule 6: framework/** → full suite ────────────────────────────────
-        if parts[0] == "framework":
+        triggered, critical_fw_hit = _classify_single_file(raw, critical_fw_hit, other_fw_files, impacted)
+        if triggered:
             full_suite = True
             break
 
-        # ── Rule 5: any conftest.py at or above the e2e area level → full suite
-        # Covers: conftest.py (root), tests/conftest.py, tests/e2e/conftest.py.
-        # Per-area conftest.py files (tests/e2e/<area>/conftest.py) are handled
-        # by Rule 2 below via _is_conftest().
-        if path.name == "conftest.py" and (
-            len(parts) == 1  # repo root
-            or (len(parts) == 2 and parts[0] == "tests")  # tests/conftest.py
-            or (len(parts) == 3 and parts[0] == "tests" and parts[1] == "e2e")  # tests/e2e/conftest.py
-        ):
-            full_suite = True
-            break
-
-        # ── Rules 3 & 4: tests/common/** ─────────────────────────────────────
-        if len(parts) >= 2 and parts[0] == "tests" and parts[1] == "common":
-            if path.name == "_cmake_build.py":
-                # Rule 3: only CMake-based dirs
-                for d in _CMAKE_DIRS:
-                    impacted.add(d)
-            else:
-                # Rule 4: any other shared utility → full suite
-                full_suite = True
-                break
-            continue
-
-        # ── Guard: ignore everything outside tests/e2e/ ──────────────────────
-        # Reaches here only for paths that start with "tests/" but are not
-        # tests/common/ and not caught by the conftest rule above.
-        # Only tests/e2e/** is relevant to the remaining rules.
-        if parts[0] != "tests" or (len(parts) > 1 and parts[1] != "e2e"):
-            continue
-
-        # ── Rules 1 & 2: tests/e2e/** ────────────────────────────────────────
-        result = _classify_e2e_path(path, raw)
-        if result is not None:
-            impacted.add(result)
+    # ── Resolve framework change buckets ─────────────────────────────────────
+    if critical_fw_hit:
+        full_suite = True
+    elif other_fw_files and not full_suite:
+        root = repo_root if repo_root is not None else _REPO_ROOT
+        impacted.update(_resolve_framework_impacted(other_fw_files, taxonomy_diff, root))
 
     if full_suite:
         return sorted(_ALL_E2E_DIRS)
 
-    # Deduplicate: if a directory is included, drop individual files under it.
-    dirs = {p for p in impacted if p.endswith("/")}
-    files = {p for p in impacted if not p.endswith("/")}
-    filtered_files = {f for f in files if not any(f.startswith(d) for d in dirs)}
-    return sorted(dirs | filtered_files)
+    return _deduplicate(impacted)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -216,7 +336,25 @@ def main() -> int:
     for f in changed_files:
         print(f"  {f}", flush=True)
 
-    paths = detect_impacted_paths(changed_files)
+    # Fetch the unified diff for taxonomy.py when it appears in the changed set.
+    # BASE_SHA and HEAD_SHA are exported by the detect_changes job in pr-test-run.yml.
+    taxonomy_diff: str | None = None
+    fw_files = [f.strip() for f in changed_files if f.strip().startswith("framework/")]
+    if "framework/markers/taxonomy.py" in fw_files:
+        base_sha = os.environ.get("BASE_SHA", "").strip()
+        head_sha = os.environ.get("HEAD_SHA", "HEAD").strip()
+        if base_sha:
+            import subprocess
+
+            result = subprocess.run(
+                ["git", "diff", base_sha, head_sha, "--", "framework/markers/taxonomy.py"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            taxonomy_diff = result.stdout
+
+    paths = detect_impacted_paths(changed_files, taxonomy_diff=taxonomy_diff, repo_root=_REPO_ROOT)
 
     if paths:
         test_paths_str = " ".join(paths)

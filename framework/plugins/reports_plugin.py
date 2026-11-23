@@ -271,6 +271,8 @@ def _test_execution_status(request: pytest.FixtureRequest) -> None:  # type: ign
         rep = rep_call
         if rep.passed:
             status = "PASSED"
+        elif hasattr(rep, "wasxfail"):
+            status = "KNOWN_ISSUE"
         elif rep.skipped:
             status = "SKIPPED"
         else:
@@ -447,10 +449,25 @@ def _build_allure_dashboard(allure_results_dir: str, n_previous: int) -> None:
         logger.warning("Failed to generate Allure dashboard: %s", exc)
 
 
+_MAX_DIR_COL = 45
+
+
+def _trunc_dir(s: str) -> str:
+    """Truncate a directory path to fit the table column."""
+    return s if len(s) <= _MAX_DIR_COL else s[: _MAX_DIR_COL - 3] + "..."
+
+
+def _col_w(dirs: dict, key: str, label: str) -> int:
+    """Column width = max(header label, widest value) + 2 padding."""
+    return max(max(len(str(r[key])) for r in dirs.values()), len(label)) + 2
+
+
 def _render_skipped_items(tw, stats) -> None:
     """Print the skipped-tests block with reasons."""
     skipped_items: list[tuple[str, str]] = []
     for report in stats.get("skipped", []):
+        if hasattr(report, "wasxfail"):
+            continue  # xfail on pytest <9 lives in skipped; shown in KNOWN_ISSUES column
         reason = ""
         if report.longrepr:
             if isinstance(report.longrepr, tuple) and len(report.longrepr) == 3:
@@ -478,21 +495,21 @@ def pytest_terminal_summary(terminalreporter) -> None:
 
     Example output::
 
-        ══════════════════════════════════════════════════════════════════
+        ════════════════════════════════════════════════════════════════════════════════
          ROCm Test Suite Summary
-        ══════════════════════════════════════════════════════════════════
-         Test Directory              PASS  FAIL  SKIP  ERROR    Duration
-        ──────────────────────────────────────────────────────────────────
-         tests/dry_run                 12     0     1      0       0.5 s
-         tests/e2e/compiler             3     0     0      0      45.2 s
-         tests/e2e/stack_validation     2     1     0      0       8.7 s
-        ──────────────────────────────────────────────────────────────────
-         TOTAL  18 tests │ 17 passed │ 1 failed │ 1 skipped │ 0 error │  54.4 s
-        ══════════════════════════════════════════════════════════════════
+        ════════════════════════════════════════════════════════════════════════════════
+         Test Directory              PASS  FAIL  SKIP  KNOWN_ISSUES  ERROR  GPU Duration
+        ────────────────────────────────────────────────────────────────────────────────
+         tests/dry_run                 12     0     1             0      0         0.5 s
+         tests/e2e/compiler             3     0     0             0      0        45.2 s
+         tests/e2e/stack_validation     2     1     0             0      0         8.7 s
+        ────────────────────────────────────────────────────────────────────────────────
+         TOTAL  18 tests │ 17 passed │ 1 failed │ 1 skipped │ 0 known issues │ 0 error │  54.4 s
+        ════════════════════════════════════════════════════════════════════════════════
 
          Failed tests:
            • tests/e2e/stack_validation/test_hip_runtime.py::test_hip_device_count
-        ══════════════════════════════════════════════════════════════════
+        ════════════════════════════════════════════════════════════════════════════════
 
     Args:
         terminalreporter: pytest's TerminalReporter plugin instance.
@@ -506,12 +523,13 @@ def pytest_terminal_summary(terminalreporter) -> None:
     outcome_cols = [
         ("passed", "PASS"),
         ("failed", "FAIL"),
-        ("skipped", "SKIP"),
         ("error", "ERROR"),
     ]
 
     # Per-directory accumulators
-    dirs: dict[str, dict] = defaultdict(lambda: {"PASS": 0, "FAIL": 0, "SKIP": 0, "ERROR": 0, "duration": 0.0})
+    dirs: dict[str, dict] = defaultdict(
+        lambda: {"PASS": 0, "FAIL": 0, "SKIP": 0, "KNOWN_ISSUES": 0, "ERROR": 0, "duration": 0.0}
+    )
     failed_nodeids: list[str] = []
 
     for stat_key, col in outcome_cols:
@@ -523,34 +541,66 @@ def pytest_terminal_summary(terminalreporter) -> None:
             if col in ("FAIL", "ERROR"):
                 failed_nodeids.append(report.nodeid)
 
+    # Split skipped into genuine SKIP and KNOWN_ISSUES (xfail outcomes).
+    # pytest 9.x puts xfailed tests into stats["xfailed"] directly; older
+    # versions put them into stats["skipped"] with wasxfail set on the report.
+    for report in stats.get("skipped", []):
+        d = str(Path(report.nodeid.split("::")[0]).parent)
+        col = "KNOWN_ISSUES" if hasattr(report, "wasxfail") else "SKIP"
+        dirs[d][col] += 1
+        dirs[d]["duration"] += getattr(report, "duration", 0.0)
+
+    for report in stats.get("xfailed", []):
+        d = str(Path(report.nodeid.split("::")[0]).parent)
+        dirs[d]["KNOWN_ISSUES"] += 1
+        dirs[d]["duration"] += getattr(report, "duration", 0.0)
+
     if not dirs:
         return
 
-    # Dynamic column width: longest directory path + padding
-    dir_w = max(max(len(d) for d in dirs) + 2, len("Test Directory"))
-    header = f" {'Test Directory':<{dir_w}} {'PASS':>5} {'FAIL':>5} {'SKIP':>5} {'ERROR':>6}  {'Duration':>10}"
+    dir_w = max(max(len(_trunc_dir(d)) for d in dirs) + 2, len("Test Directory"))
+    w_pass = _col_w(dirs, "PASS", "PASS")
+    w_fail = _col_w(dirs, "FAIL", "FAIL")
+    w_skip = _col_w(dirs, "SKIP", "SKIP")
+    w_ki = _col_w(dirs, "KNOWN_ISSUES", "KNOWN_ISSUES")
+    w_err = _col_w(dirs, "ERROR", "ERROR")
+
+    dur_strs = {d: f"{row['duration']:.1f} s" for d, row in dirs.items()}
+    w_dur = max(max(len(s) for s in dur_strs.values()), len("GPU Duration")) + 2
+
+    header = (
+        f" {'Test Directory':<{dir_w}} {'PASS':^{w_pass}} {'FAIL':^{w_fail}} {'SKIP':^{w_skip}}"
+        f" {'KNOWN_ISSUES':^{w_ki}} {'ERROR':^{w_err}} {'GPU Duration':^{w_dur}}"
+    )
     thin = "─" * len(header)
 
     tw = terminalreporter
     tw.write_sep("=", "ROCm Test Suite Summary", bold=True)
-    tw.write_line(header)
-    tw.write_line(thin)
+    tw.write(header + "\n")
+    tw.write(thin + "\n")
 
-    totals: dict[str, float | int] = {"PASS": 0, "FAIL": 0, "SKIP": 0, "ERROR": 0, "duration": 0.0}
+    totals: dict[str, float | int] = {"PASS": 0, "FAIL": 0, "SKIP": 0, "KNOWN_ISSUES": 0, "ERROR": 0, "duration": 0.0}
     for d in sorted(dirs):
         row = dirs[d]
         for k in totals:
             totals[k] = totals[k] + row[k]
-        tw.write_line(
-            f" {d:<{dir_w}} {row['PASS']:>5} {row['FAIL']:>5}"
-            f" {row['SKIP']:>5} {row['ERROR']:>6}  {row['duration']:>8.1f} s"
+        tw.write(
+            f" {_trunc_dir(d):<{dir_w}} {row['PASS']:^{w_pass}} {row['FAIL']:^{w_fail}}"
+            f" {row['SKIP']:^{w_skip}} {row['KNOWN_ISSUES']:^{w_ki}} {row['ERROR']:^{w_err}} {dur_strs[d]:^{w_dur}}\n"
         )
 
-    tw.write_line(thin)
-    total_tests = int(totals["PASS"]) + int(totals["FAIL"]) + int(totals["SKIP"]) + int(totals["ERROR"])
+    tw.write(thin + "\n")
+    total_tests = (
+        int(totals["PASS"])
+        + int(totals["FAIL"])
+        + int(totals["SKIP"])
+        + int(totals["KNOWN_ISSUES"])
+        + int(totals["ERROR"])
+    )
     tw.write_line(
         f" TOTAL  {total_tests} tests │ {totals['PASS']} passed │ "
         f"{totals['FAIL']} failed │ {totals['SKIP']} skipped │ "
+        f"{totals['KNOWN_ISSUES']} known issues │ "
         f"{totals['ERROR']} error │ {totals['duration']:>7.1f} s"
     )
 
@@ -562,7 +612,7 @@ def pytest_terminal_summary(terminalreporter) -> None:
 
     _render_skipped_items(tw, stats)
 
-    tw.write_sep("=", "")
+    tw.write_sep("=")
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
