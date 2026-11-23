@@ -59,6 +59,44 @@ def _is_multinode(item) -> bool:
     return any(m.name == "e2e.multinode" for m in item.iter_markers())
 
 
+def _compute_partition_module(item) -> str | None:
+    """Return the test file path when *item* requests ``compute_partition``.
+
+    Compute mode is per node. Tests in that module must share one xdist worker
+    so two ``gpu_count("all")`` classes do not each try to hold every GPU.
+    """
+    names = getattr(item, "fixturenames", ()) or ()
+    if "compute_partition" not in names:
+        return None
+    return str(item.nodeid).split("::", 1)[0]
+
+
+def _pool_node_count(pool) -> int:
+    """How many GPU nodes the scheduler can assign.
+
+    An unknown or empty pool is treated as one node so switching suites
+    serialize rather than racing ``hold_node``.
+    """
+    if pool is None:
+        return 1
+    specs = getattr(pool, "node_specs", None)
+    if not specs:
+        return 1
+    return len(specs)
+
+
+def _compute_partition_group_name(module_path: str, node_count: int) -> str:
+    """xdist group for a ``compute_partition`` module.
+
+    One node: every switching file shares ``compute_partition`` so worker B
+    cannot start ``hold_node`` while worker A still holds the node. Two or
+    more nodes: one group per file so two suites can hold different nodes.
+    """
+    if node_count <= 1:
+        return "compute_partition"
+    return "compute_partition_" + module_path.replace("/", "_").replace("\\", "_")
+
+
 def _multi_gpu_count(item) -> int:
     """Return the gpu_count for a multi-GPU test, or 0 for single-GPU tests.
 
@@ -225,7 +263,14 @@ class DynamicScheduler:
         different multi-GPU tests in parallel.  Single-GPU tests receive no group
         and distribute via xdist worksteal.
 
+        Tests that request ``compute_partition`` are an exception: on a one-node
+        pool every switching module shares one group so ``hold_node`` cannot
+        time out waiting for another switcher. With two or more nodes, each
+        module keeps its own group.
+
         Group naming:
+            - compute_partition (one node) → ``"compute_partition"`` (all switching files).
+            - compute_partition (multi-node) → ``"compute_partition_{path}"`` (one group per file).
             - multinode tests  → ``"multinode_N"`` (N = per-test counter).
             - multi_gpu tests  → ``"multi_gpu_{count}_{N}"`` (N = per-test counter).
             - single_gpu tests → no group assigned.
@@ -236,8 +281,16 @@ class DynamicScheduler:
         gpu_indices_idx = 0
         multi_gpu_idx = 0
         multi_node_idx = 0
+        node_count = _pool_node_count(self.pool)
 
         for item in items:
+            partition_module = _compute_partition_module(item)
+            if partition_module is not None:
+                group_name = _compute_partition_group_name(partition_module, node_count)
+                item.add_marker(pytest.mark.xdist_group(group_name))
+                logger.debug("xdist_group assigned (compute_partition): %s → %s", item.nodeid, group_name)
+                continue
+
             # gpu_indices path: must be checked before multinode/multi_gpu so that
             # tests using gpu_indices get their own deterministic group and are not
             # accidentally treated as plain multi-GPU tests.
