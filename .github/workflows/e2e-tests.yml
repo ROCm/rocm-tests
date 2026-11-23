@@ -19,27 +19,16 @@ on:
         required: false
         type: string
       runs_on:
-        description: 'ASIC | runner | testplan.ini status (not live; disabled entries cannot run; Linux only)'
+        description: 'ASIC | runner | Enabled in testplan.ini (not live status; Linux only)'
         required: true
         type: choice
         default: "MI355 | linux-mi355-1gpu-ossci-rocm | Enabled"
-        # Keep all runners and their status in sync with testplan.ini, ordered by ASIC.
+        # Keep enabled Linux runners in sync with testplan.ini, ordered by ASIC.
         options:
-          - "MI250 | linux-gfx90a-gpu-rocm | Disabled"
-          - "MI325 | linux-gfx942-1gpu-ossci-rocm | Disabled"
-          - "MI325 | linux-mi325-8gpu-ossci-rocm | Disabled"
           - "MI355 | linux-mi355-1gpu-ossci-rocm | Enabled"
-          - "MedusaPoint | linux-gfx1153-gpu-rocm | Disabled"
-          - "Navi21 | linux-gfx1030-gpu-rocm-devops-qa | Disabled"
-          - "Navi21 | windows-gfx1030-gpu-rocm-devops-qa | Disabled"
           - "Navi31 | linux-gfx1100-gpu-rocm-devops-qa | Enabled"
-          - "Navi31 | windows-gfx1100-gpu-rocm-devops-qa | Disabled"
           - "Navi32 | linux-gfx1101-gpu-rocm-devops-qa | Enabled"
-          - "Navi32 | windows-gfx1101-gpu-rocm-devops-qa | Disabled"
-          - "Navi48 | linux-gfx1201-gpu-rocm-devops-qa | Disabled"
-          - "Navi48 | windows-gfx1201-gpu-rocm-devops-qa | Disabled"
           - "StrixHalo | linux-gfx1151-gpu-rocm | Enabled"
-          - "StrixPoint | linux-gfx1150-gpu-rocm | Disabled"
       artifact_group:
         description: 'TheRock artifact group override (blank uses testplan.ini)'
         required: false
