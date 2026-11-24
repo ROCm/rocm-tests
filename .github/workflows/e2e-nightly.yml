@@ -7,7 +7,10 @@
 #   [Setup test matrix]
 #        └── [E2E Nightly — <run_id>]            (matrix — one cell per platform)
 #                ├─ e2e: linux-gfx94x             (green — target_available=true)
-#                └─ e2e: linux-gfx110X            (grey/skipped — target_available=false)
+#                ├─ e2e: linux-gfx110X            (grey/skipped — target_available=false)
+#                └─ e2e: windows-nightly          (any online Windows runner via the
+#                                                   shared "windows" label; e2e-tests.yml's
+#                                                   platform_windows job; os.windows tests only)
 #        └── [Nightly Results — <run_id> — All Platforms]
 #
 # Each matrix cell calls e2e-tests.yml which contains a single job named

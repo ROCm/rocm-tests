@@ -151,7 +151,9 @@ jobs:
   platform:
     name: "e2e tests"
     runs-on: ${{ inputs.runs_on }}
-    if: ${{ inputs.target_available != 'false' }}
+    # Windows targets run natively on the self-hosted Windows runner via the
+    # platform_windows job below — this job stays Linux-container-only.
+    if: ${{ inputs.target_available != 'false' && !startsWith(inputs.runs_on, 'windows') }}
     timeout-minutes: 230
     container:
       image: ghcr.io/rocm/no_rocm_image_ubuntu24_04@sha256:4150afe4759d14822f0e3f8930e1124f26e11f68b5c7b91ec9a02b20b1ebbb98
@@ -438,6 +440,299 @@ jobs:
                           counts["failed"]  = get("failed")
                           counts["error"]   = get("error")
                           # column may be labelled "subtotal" or "total"
+                          counts["total"] = get("total") or get("subtotal") or (
+                              counts["passed"] + counts["skipped"] +
+                              counts["failed"] + counts["error"]
+                          )
+                          break
+              else:
+                  print("Header row not found in md_summary.md")
+          except FileNotFoundError:
+              print("md_summary.md not found — counts will be zero")
+
+          os.makedirs("test-counts", exist_ok=True)
+          with open("test-counts/counts.json", "w") as f:
+              json.dump(counts, f)
+          print(f"Counts: {counts}")
+
+      - name: Upload test artifacts
+        if: always()
+        id: upload
+        uses: ./.github/actions/upload-test-artifacts
+        with:
+          artifact_prefix: ${{ inputs.artifact_prefix }}
+          platform_name:   ${{ inputs.name }}
+          run_id:          ${{ github.run_id }}
+
+      - name: Write per-platform step summary
+        if: always()
+        env:
+          MODE: platform
+          PLATFORM_NAME: ${{ inputs.name }}
+          ARTIFACT_URL:  ${{ steps.upload.outputs.artifact_url }}
+        run: python3 .github/scripts/write_step_summary.py
+
+  # ── Windows leg ──────────────────────────────────────────────────────────────
+  #
+  # Runs natively on a self-hosted Windows GPU runner — no Docker container, no
+  # apt-get. Mirrors `platform` above wherever the steps are OS-agnostic;
+  # diverges where Linux assumes a container (apt-get, LD_LIBRARY_PATH, POSIX
+  # venv layout). Assumes the Windows runners have Git Bash on PATH (shell: bash
+  # below) and that TheRock's installer already supports Windows.
+  platform_windows:
+    name: "e2e tests (windows)"
+    runs-on: ${{ inputs.runs_on }}
+    if: ${{ inputs.target_available != 'false' && startsWith(inputs.runs_on, 'windows') }}
+    timeout-minutes: 230
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout CI scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/**
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+          path: _ci_scripts
+
+      # Unlike the Linux job, Setup Python runs before the queue guard here:
+      # the Linux container image ships python3 out of the box, but a native
+      # Windows runner has no such guarantee.
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: setup-python
+        with:
+          python-version: 3.12
+
+      - name: Check runner queue wait time
+        id: queue_guard
+        env:
+          WORKFLOW_QUEUED_AT: ${{ github.run_started_at }}
+          RUNNER_NAME: ${{ inputs.runs_on }}
+          MAX_QUEUE_WAIT_SECS: '900'
+        run: python3 _ci_scripts/.github/scripts/queue_guard.py
+
+      - name: Report skipped platform
+        if: ${{ steps.queue_guard.outputs.proceed == 'false' }}
+        env:
+          PLATFORM_NAME: ${{ inputs.name }}
+          SKIP_REASON:   ${{ steps.queue_guard.outputs.skip_reason }}
+        run: |
+          echo "::warning::Platform ${PLATFORM_NAME} skipped — ${SKIP_REASON}"
+          echo "## ⏭ Platform skipped — ${PLATFORM_NAME}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "> **Reason:** ${SKIP_REASON}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Resolve platform
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
+        env:
+          PLATFORM_NAME: ${{ inputs.name }}
+          TARGET_AVAILABLE: ${{ inputs.target_available }}
+        run: |
+          echo "Platform: ${PLATFORM_NAME}"
+          echo "target_available: ${TARGET_AVAILABLE}"
+
+      - name: Checkout rocm-tests
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout TheRock
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: "ROCm/TheRock"
+          ref: main  # TODO(security): pin to a commit SHA, e.g. ref: <sha>  # vX.Y.Z YYYY-MM-DD
+          path: TheRock
+          persist-credentials: false
+
+      - name: Install ROCm artifacts
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
+        env:
+          ARTIFACT_GROUP: ${{ inputs.artifact_group }}
+          GPU_ARCH: ${{ inputs.gpu_arch }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          RUN_ID: ${{ inputs.run_id }}
+          ARTIFACT_SOURCE: ${{ inputs.artifact_source }}
+          INCLUDE_DEV: ${{ inputs.include_dev }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd TheRock
+          python3 -m pip install --root-user-action=ignore --no-cache-dir -r requirements-test.txt
+
+          # Use a bash array for COMMON_FLAGS to prevent word-splitting injection
+          # from ${ARTIFACT_GROUP} or ${GPU_ARCH} containing shell metacharacters.
+          COMMON_FLAGS=(
+            "--artifact-group" "${ARTIFACT_GROUP}"
+            "--amdgpu-targets" "${GPU_ARCH}"
+            "--tests" "--blas" "--fft" "--hipdnn" "--miopen" "--miopenprovider"
+            "--rocdecode" "--rocjpeg" "--rocprofiler-compute" "--rocprofiler-sdk"
+            "--rocprofiler-systems" "--prim" "--rand" "--rocwmma" "--hipblasltprovider"
+            "--libhipcxx" "--rccl" "--solver" "--sparse"
+            "--output-dir" "../therock_build"
+          )
+
+          if [ "${SOURCE_REPO}" = "ROCm/rockrel" ]; then
+            RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
+              --run-github-repo "${SOURCE_REPO}" \
+              --run-id "${RUN_ID}" \
+              "${COMMON_FLAGS[@]}"
+          elif [ "${ARTIFACT_SOURCE:-latest-release}" = "latest-release" ]; then
+            RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
+              --latest-release \
+              "${COMMON_FLAGS[@]}"
+          else
+            RELEASE_TYPE=nightly python3 build_tools/install_rocm_from_artifacts.py \
+              --tag "${ARTIFACT_SOURCE}" \
+              --run-github-repo "${SOURCE_REPO}" \
+              "${COMMON_FLAGS[@]}"
+          fi
+
+          # Supplement _dev artifacts (headers / CMake / static libs) when requested
+          if [ "${SOURCE_REPO}" = "ROCm/rockrel" ] && \
+             [ "${INCLUDE_DEV}" = "true" ]; then
+            RELEASE_TYPE=nightly python3 build_tools/fetch_artifacts.py \
+              --run-id "${RUN_ID}" \
+              --run-github-repo "${SOURCE_REPO}" \
+              --artifact-group "${ARTIFACT_GROUP}" \
+              --amdgpu-targets "${GPU_ARCH}" \
+              --output-dir ../therock_build \
+              --flatten \
+              '_dev' \
+              'hipfile_lib' \
+              'hipfile_run' \
+              'hiptensor_lib' \
+              'rocalution_lib' \
+              'hipify_run' \
+              'core-hip_run'
+          fi
+
+      - name: Install uv
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
+        uses: astral-sh/setup-uv@bd01e18f51369d5a26f1651c3cb451d3417e3bba # v6.3.1
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+        with:
+          version: "0.7.x"
+          enable-cache: true
+
+      - name: Install test dependencies
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
+        run: |
+          # No Linux-style system package step here — the Windows runners are
+          # expected to come pre-provisioned with any OS-level tooling. If a
+          # future os.windows test needs packages, prefer the os_deps
+          # marker/framework (framework/os_adapter) over adding ad-hoc install
+          # steps here.
+          python3 -m venv .venv
+          source .venv/Scripts/activate
+          uv pip install -r requirements.txt
+
+      - name: Run e2e tests
+        if: ${{ steps.queue_guard.outputs.proceed != 'false' }}
+        env:
+          COMMIT_ID: ${{ github.sha }}
+          CURRENT_BRANCH: ${{ github.ref_name }}
+          COMPILER_GPU_ARCH: ${{ inputs.compiler_gpu_arch || inputs.gpu_arch }}
+          TESTS_FILTERS: ${{ inputs.tests_filters }}
+          KEYWORD_FILTER: ${{ inputs.keyword_filter }}
+          TEST_PATHS_OVERRIDE: ${{ inputs.test_paths_override }}
+        run: |
+          source .venv/Scripts/activate
+          KEYWORD_ARGS=()
+          if [ -n "${KEYWORD_FILTER}" ]; then
+            KEYWORD_ARGS=(-k "${KEYWORD_FILTER}")
+          fi
+
+          # Use caller-supplied paths when provided (PR selective runs),
+          # otherwise fall back to the full default test suite.
+          if [ -n "${TEST_PATHS_OVERRIDE}" ]; then
+            IFS=' ' read -ra TEST_PATHS_ARRAY <<< "${TEST_PATHS_OVERRIDE}"
+          else
+            TEST_PATHS_ARRAY=(
+              "tests/e2e/"
+            )
+          fi
+
+          pytest "${TEST_PATHS_ARRAY[@]}" \
+            --rock-dir=therock_build \
+            --gpu-arch="${COMPILER_GPU_ARCH}" \
+            --html=nightly_report.html --self-contained-html \
+            --md-report --md-report-verbose=1 --md-report-color=never \
+            --md-report-flavor gfm --md-report-output=md_summary.md --md-report-tee \
+            --md-report-show-duration --tb=short \
+            --json-report --json-report-file=test_report.json \
+            -v \
+            -m "${TESTS_FILTERS}" \
+            "${KEYWORD_ARGS[@]}"
+
+      - name: Extract test counts
+        if: always()
+        env:
+          PLATFORM_NAME: ${{ inputs.name }}
+          QUEUE_GUARD_PROCEED: ${{ steps.queue_guard.outputs.proceed }}
+          QUEUE_GUARD_SKIP_REASON: ${{ steps.queue_guard.outputs.skip_reason }}
+        shell: python
+        run: |
+          import re, json, os
+
+          if os.environ.get("QUEUE_GUARD_PROCEED", "true") == "false":
+              counts = {
+                  "platform": os.environ["PLATFORM_NAME"],
+                  "passed": 0, "skipped": 0, "failed": 0, "error": 0, "total": 0,
+                  "runner_timeout": True,
+                  "skip_reason": os.environ.get("QUEUE_GUARD_SKIP_REASON", "runner not acquired in time"),
+              }
+              os.makedirs("test-counts", exist_ok=True)
+              with open("test-counts/counts.json", "w") as f:
+                  json.dump(counts, f)
+              print(f"Queue guard skipped platform — writing timeout sentinel: {counts}")
+              import sys; sys.exit(0)
+
+          counts = {
+              "platform": os.environ["PLATFORM_NAME"],
+              "passed": 0, "skipped": 0, "failed": 0, "error": 0, "total": 0,
+          }
+
+          def to_int(s):
+              s = s.strip()
+              return int(s) if s.isdigit() else 0
+
+          try:
+              with open("md_summary.md") as f:
+                  lines = f.readlines()
+
+              header_idx = None
+              col_names = []
+              _result_cols = {"passed", "failed", "skipped", "error"}
+              for i, line in enumerate(lines):
+                  if "|" in line:
+                      parts = [c.strip().lower() for c in line.split("|")]
+                      if _result_cols & set(parts):
+                          header_idx = i
+                          col_names = parts
+                          break
+
+              if header_idx is not None:
+                  for line in lines[header_idx + 2:]:  # skip header + alignment row
+                      if "TOTAL" in line:
+                          cols = [re.sub(r"\*\*([^*]+)\*\*", r"\1", c).strip()
+                                  for c in line.split("|")]
+
+                          def get(name):
+                              try:
+                                  idx = col_names.index(name)
+                                  return to_int(cols[idx]) if idx < len(cols) else 0
+                              except ValueError:
+                                  return 0
+
+                          counts["passed"]  = get("passed")
+                          counts["skipped"] = get("skipped")
+                          counts["failed"]  = get("failed")
+                          counts["error"]   = get("error")
                           counts["total"] = get("total") or get("subtotal") or (
                               counts["passed"] + counts["skipped"] +
                               counts["failed"] + counts["error"]
