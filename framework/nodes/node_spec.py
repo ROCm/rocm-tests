@@ -15,6 +15,7 @@ host.yaml format::
       SSH_KEY:  ~/.ssh/ci_rsa
       # PASSWORD: secret     # prefer SSH_KEY for automated pipelines
       # GPU_ARCH: gfx942     # optional architecture filter
+      # OS: windows          # optional remote OS; default "linux"
     HOST_IDX_2:
       HOSTNAME: gpu-node-02.example.com
       USERNAME: ci
@@ -44,6 +45,10 @@ class NodeSpec:
         ssh_key:   Path to SSH private key; ``~`` is expanded by SshExecutor.
         gpu_arch:  Optional GFX architecture filter (e.g. ``"gfx942"``).
                    When set, only GPUs with matching arch are allocated.
+        platform:  Remote node's OS — ``"linux"`` (default) or ``"windows"``.
+                   Used to pick the correct GPU detector for SSH-based
+                   detection, since the coordinator's own OS (``sys.platform``)
+                   says nothing about a *remote* node's OS.
         label:     Human-readable node identifier used in log prefixes and
                    file-lock names (e.g. ``"HOST_IDX_1"`` or ``"localhost"``).
     """
@@ -53,6 +58,7 @@ class NodeSpec:
     password: str | None = None
     ssh_key: str | None = None
     gpu_arch: str | None = None
+    platform: str = "linux"
     label: str = "localhost"
 
     @property
@@ -128,6 +134,10 @@ class HostConfigLoader:
             if "HOSTNAME" not in entry:
                 raise KeyError(f"{label}: missing required key 'HOSTNAME'")
 
+            node_platform = str(entry.get("OS", "linux")).strip().lower()
+            if node_platform not in ("linux", "windows"):
+                raise ValueError(f"{label}: OS must be 'linux' or 'windows', got {node_platform!r}")
+
             nodes.append(
                 NodeSpec(
                     hostname=entry["HOSTNAME"],
@@ -135,6 +145,7 @@ class HostConfigLoader:
                     password=entry.get("PASSWORD"),
                     ssh_key=entry.get("SSH_KEY"),
                     gpu_arch=entry.get("GPU_ARCH"),
+                    platform=node_platform,
                     label=str(label),
                 )
             )

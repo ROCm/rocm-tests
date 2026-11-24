@@ -44,6 +44,13 @@ class _FakeMarker:
         self.args = args
 
 
+class _FakePool:
+    """NodePool stand-in: only ``node_specs`` length matters for grouping."""
+
+    def __init__(self, node_count: int):
+        self.node_specs = [object() for _ in range(node_count)]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -195,8 +202,9 @@ def test_compute_partition_module_shares_xdist_group():
     assert len(item_b._added) == 1
     name_a = str(item_a._added[0])
     name_b = str(item_b._added[0])
-    assert "compute_partition_tests_e2e_media_foo.py" in name_a
     assert name_a == name_b
+    assert "compute_partition" in name_a
+    assert "foo.py" not in name_a
     assert "multi_gpu_" not in name_a
 
 
@@ -204,8 +212,8 @@ def test_compute_partition_module_shares_xdist_group():
 @pytest.mark.ci.pr
 @pytest.mark.layer.runtime
 @pytest.mark.runtime.fast
-def test_compute_partition_modules_get_separate_groups():
-    """Switching suites in different files do not share an xdist_group."""
+def test_compute_partition_modules_share_group_on_one_node():
+    """Two switching files share one xdist_group when the pool has one node."""
     marks = [_FakeMarker("hw.multi_gpu"), _FakeMarker("gpu_count", "all")]
     item_a = _MockItem(
         "tests/e2e/media/foo.py::test_one",
@@ -217,6 +225,32 @@ def test_compute_partition_modules_get_separate_groups():
         marks,
         fixturenames=["compute_partition"],
     )
-    scheduler = DynamicScheduler(pool=None, policy=SchedulePolicy.RESOURCE_MOST)
+    scheduler = DynamicScheduler(pool=_FakePool(1), policy=SchedulePolicy.RESOURCE_MOST)
+    scheduler._assign_xdist_groups([item_a, item_b])
+    assert str(item_a._added[0]) == str(item_b._added[0])
+    assert "foo.py" not in str(item_a._added[0])
+    assert "bar.py" not in str(item_b._added[0])
+
+
+@pytest.mark.hw.cpu_only
+@pytest.mark.ci.pr
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.fast
+def test_compute_partition_modules_get_separate_groups():
+    """On a multi-node pool, switching suites in different files keep separate groups."""
+    marks = [_FakeMarker("hw.multi_gpu"), _FakeMarker("gpu_count", "all")]
+    item_a = _MockItem(
+        "tests/e2e/media/foo.py::test_one",
+        marks,
+        fixturenames=["compute_partition"],
+    )
+    item_b = _MockItem(
+        "tests/e2e/media/bar.py::test_one",
+        marks,
+        fixturenames=["compute_partition"],
+    )
+    scheduler = DynamicScheduler(pool=_FakePool(2), policy=SchedulePolicy.RESOURCE_MOST)
     scheduler._assign_xdist_groups([item_a, item_b])
     assert str(item_a._added[0]) != str(item_b._added[0])
+    assert "foo.py" in str(item_a._added[0])
+    assert "bar.py" in str(item_b._added[0])
