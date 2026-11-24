@@ -1,6 +1,6 @@
 # Staged Build Pipeline — Design and Developer Guide
 
-**Status:** Proposed · `framework/plugins/staged_build_plugin.py`
+**Status:** Design RFC · implementation target `framework/plugins/staged_build_plugin.py` (not yet merged)
 
 ---
 
@@ -149,11 +149,17 @@ export ROCM_TEST_INSTALL_HPC_KOKKOS_INSTALL_DIR=/opt/kokkos/install
 All three personas share a **single source of truth**: `app.toml` (build recipe and artifact roles)
 and `cases/<app>.yaml` (test inputs and expected results). The data never diverges across modes.
 
+> **Migration note:** Existing HPC tests store workload parameters in `_workload.py` companion
+> modules driven by environment variables (e.g. `rochpl/_workload.py`, `quda/_workload.py`).
+> During staged build pipeline adoption those modules are replaced by `app.toml` (build recipe)
+> and `cases/<app>.yaml` (test-case matrix). `app.toml` becomes the single file an implementer
+> edits to onboard or update an HPC application — no scattered env-var archaeology required.
+
 ```mermaid
 flowchart LR
     subgraph SSOT["📋 Single Source of Truth"]
         direction TB
-        TOML["app.toml\n(build recipe · artifact roles)"]
+        TOML["app.toml\n(build recipe · artifact roles)\nreplaces _workload.py"]
         CASES["cases/*.yaml\n(test inputs · pass thresholds)"]
     end
 
@@ -369,7 +375,6 @@ It does not merge into `builder_plugin.py` — that plugin owns fast, single-fil
 | `--build-only` | off | Compile + bundle + write manifest + exit |
 | `--build-manifest PATH` | — | Path or URL to tarball or manifest; triggers auto-pull + extract + verify |
 | `--staging-dir PATH` | `{compiler_build_dir}/hpc-staging/` | Where to stage compiled binaries |
-| `--use-install role=path ...` | — | Bring-your-own: adopt an existing install for one or more artifact roles |
 
 `--gpu-arch` (from `gpu_plugin`, already registered) is the architecture input — no new `--target-arch`.
 
@@ -380,6 +385,85 @@ It does not merge into `builder_plugin.py` — that plugin owns fast, single-fil
 - `build_cache_action` — skip / incremental / wipe
 - `build_artifact_exists`, `assert_binary_exists`
 - `detect_mpi_runtime`, `find_rocm_clangpp`
+
+### `app.toml` schema reference
+
+Every field below maps to a key the plugin reads at import time via `load_app_spec`. Required
+fields are marked **R**; all others are optional.
+
+#### `[app]` — identity
+
+| Field | Type | Req | Description |
+|---|---|---|---|
+| `id` | string | **R** | Dot-scoped identifier, e.g. `hpc.kokkos`. Used as the registry key and in `build_manifest.json`. |
+| `license` | string | **R** | SPDX expression, e.g. `BSD-3-Clause`. Checked by `assert_license_present`. |
+
+#### `[source]` — upstream repository
+
+| Field | Type | Req | Description |
+|---|---|---|---|
+| `repo` | string | **R** | HTTPS clone URL. |
+| `rev` | string | **R** | Pinned Git ref: a full 40-char SHA or an annotated tag. Branch names are accepted but strongly discouraged — they produce non-reproducible builds. |
+
+#### `[[builds]]` — one entry per build variant (ordered list)
+
+| Field | Type | Req | Description |
+|---|---|---|---|
+| `name` | string | **R** | Unique within this `app.toml`; referenced by `artifacts[].build` and `depends_on`. |
+| `recipe` | string | **R** | `cmake`, `script`, or `make`. See recipe details below. |
+| `cmake_args` | list[string] | — | Extra `-DKEY=VALUE` flags. `{gpu_arch}` and `{rock_dir}` are substituted at build time. Only used when `recipe = "cmake"`. |
+| `script` | string | — | Path (relative to repo root) of the shell script to run. Required when `recipe = "script"`. |
+| `make_args` | list[string] | — | Extra arguments forwarded to `make`. Only used when `recipe = "make"`. |
+| `depends_on` | list[string] | — | Names of other `[[builds]]` entries that must complete first. The install prefix of each dependency is injected as a CMake variable `<NAME_UPPER>_PREFIX=<dir>`. |
+| `cmake_deps` | list[string] | — | Fixture names (registered in `conftest.py`) whose `StagedBinary.path` is injected as a CMake variable at configure time. |
+
+#### Recipe details
+
+**`cmake`** — calls `cmake -S <src> -B <build_dir>` then `cmake --build`. Automatically
+injects `-DROCM_PATH`, `-DCMAKE_PREFIX_PATH`, `-DCMAKE_CXX_COMPILER`, and
+`-D{gpu_arch_var}={gpu_arch}`. All `cmake_args` placeholders (`{gpu_arch}`, `{rock_dir}`) are
+substituted before the configure step.
+
+**`script`** — executes the named shell script inside the cloned repo root. The following
+environment variables are injected automatically; the script must not assume anything beyond them:
+
+| Variable | Value |
+|---|---|
+| `ROCM_PATH` | Realpath-resolved `rock_dir` |
+| `GPU_ARCH` | `--gpu-arch` value (e.g. `gfx942`) |
+| `BUILD_DIR` | Absolute path to the output staging directory for this build |
+| `INSTALL_DIR` | Same as `BUILD_DIR/install`; script should install artefacts here |
+| `<DEP_NAME_UPPER>_PREFIX` | Install prefix of each `depends_on` dependency |
+
+Exit code contract: any non-zero exit aborts the build and is reported as a Stage 1 failure.
+The script is responsible for creating `BUILD_DIR` and `INSTALL_DIR` if they do not exist.
+
+**`make`** — runs `make` in the cloned repo root with any `make_args` appended. No compiler
+injection; the upstream `Makefile` is used as-is. Use `make_args` to pass `PREFIX=`, `ROCM=`,
+or other variables required by the upstream build system.
+
+#### `[artifacts]` — named output roles
+
+Each key is a **role name** (e.g. `ctest_dir`, `install_dir`, `bin`). The value is an inline table:
+
+| Field | Type | Req | Description |
+|---|---|---|---|
+| `build` | string | **R** | Name of the `[[builds]]` entry that produced this artifact. |
+| `path` | string | **R** | Path relative to that build's output directory. `.` means the build directory itself. |
+| `probe` | string | — | File or glob that must exist inside `path` after the build; `load_app_spec` raises if absent. E.g. `CTestTestfile.cmake`, `bin/xhpl_mpi`. |
+
+#### `[packages]` — OS dependencies
+
+| Field | Type | Description |
+|---|---|---|
+| `build` | list[string] | APT package names required during compilation. The plugin auto-installs these (via `os_adapter`) when `--build-only` runs. |
+| `runtime` | list[string] | APT packages required on the GPU executor at test time. Installed during Stage 2 bundle extract. |
+
+#### `[fingerprint]` — cache key inputs
+
+| Field | Type | Description |
+|---|---|---|
+| `extra` | list[string] | Dot-path keys from the fingerprint input table (see [Fingerprint Computation](#fingerprint-computation)) to include in addition to the defaults. E.g. `["toolchain.clang_version", "os.glibc"]`. |
 
 ### `_STAGED_BUILD_REGISTRY` — module-level fixture registry
 
@@ -448,6 +532,140 @@ def pytest_configure(config):                  # workers: reconstruct on arrival
         }
 ```
 
+### `FrameworkConfig` extension — `StagedBuildSection`
+
+`staged_build_plugin` reads one new config section: `framework_config.staged_build`. This
+requires adding a `StagedBuildSection` dataclass and wiring it into `FrameworkConfig` in
+`framework/config/loader.py` following the same pattern used by all existing sections.
+
+**`StagedBuildSection` dataclass** (add to `loader.py`):
+
+```python
+@dataclass
+class StagedBuildSection:
+    """[staged_build] config section — per-app pre-installed path overrides.
+
+    installs: maps "<app_id>.<role>" keys to absolute paths on the local host.
+              Used by Persona C (pre-installed) to bypass clone + build entirely.
+              Also settable via ROCM_TEST_INSTALL_<APP_ID_UPPER>_<ROLE_UPPER> env vars.
+    """
+    installs: dict[str, str] = field(default_factory=dict)
+```
+
+**`FrameworkConfig` addition** (one new field):
+
+```python
+@dataclass
+class FrameworkConfig:
+    framework:    FrameworkSection    = field(default_factory=FrameworkSection)
+    gpu:          GpuSection          = field(default_factory=GpuSection)
+    reporting:    ReportingSection    = field(default_factory=ReportingSection)
+    therock:      TheRockSection      = field(default_factory=TheRockSection)
+    frameworks:   FrameworksSection   = field(default_factory=FrameworksSection)
+    staged_build: StagedBuildSection  = field(default_factory=StagedBuildSection)  # NEW
+```
+
+**`_build_config` addition** — one extra `_merge` call following the existing pattern:
+
+```python
+return FrameworkConfig(
+    ...
+    staged_build=_merge(StagedBuildSection, "staged_build"),
+)
+```
+
+**`_apply_env_overrides` addition** — add to `section_map`:
+
+```python
+"INSTALL": cfg.staged_build,   # ROCM_TEST_INSTALL_<KEY> → cfg.staged_build.installs[<key>]
+```
+
+Because `installs` is a `dict` (not a scalar), the env override logic requires a small
+extension: iterate all `ROCM_TEST_INSTALL_*` env vars and populate `cfg.staged_build.installs`
+from them, converting the env key suffix back to dot notation
+(`ROCM_TEST_INSTALL_HPC_KOKKOS_CTEST_DIR` → `hpc.kokkos.ctest_dir`).
+
+**`rocm-test.toml` stanza** (add to the config reference in this doc and in the toml file):
+
+```toml
+[staged_build]
+# Per-app pre-installed path overrides (Persona C — no build required).
+# Key format:  "<app_id>.<role>"   (e.g. "hpc.kokkos.ctest_dir")
+# Value:        absolute path to the artifact on the local host.
+# Same keys are settable via ROCM_TEST_INSTALL_<APP_ID_UPPER>_<ROLE_UPPER> env vars.
+[staged_build.installs]
+# "hpc.kokkos.ctest_dir"   = "/opt/kokkos/build"
+# "hpc.kokkos.install_dir" = "/opt/kokkos/install"
+# "hpc.rochpl.bin"         = "/opt/rochpl/bin/xhpl_mpi"
+```
+
+**Plugin registration order** — append `staged_build_plugin` to `pytest_plugins` in
+`conftest.py` **immediately after `builder_plugin`** (currently position 12):
+
+```python
+pytest_plugins = [
+    "framework.plugins.markers_plugin",    # 1 — MUST be first
+    "framework.plugins.session_plugin",    # 2 — MUST be second
+    "framework.plugins.gpu_plugin",        # 3
+    "framework.plugins.remote_node_plugin",# 4
+    "framework.plugins.scheduling_plugin", # 5
+    "framework.plugins.executor_plugin",   # 6
+    "framework.plugins.os_plugin",         # 7
+    "framework.plugins.health_plugin",     # 8
+    "framework.plugins.artifacts_plugin",  # 9
+    "framework.plugins.prereqs_plugin",    # 10
+    "framework.plugins.retry_plugin",      # 11
+    "framework.plugins.reports_plugin",    # 12
+    "framework.plugins.builder_plugin",    # 13
+    "framework.plugins.staged_build_plugin",  # 14 — NEW; must follow builder_plugin
+    "framework.plugins.install_plugin",    # 15
+]
+```
+
+`staged_build_plugin` depends on `framework_config` (from `session_plugin`), `gpu_arch`
+(from `gpu_plugin`), and `compiler_build_dir` (from `builder_plugin`) — all three are
+already registered before position 14.
+
+### Fingerprint computation
+
+The build fingerprint is a 16-character lowercase hex string produced by
+`compute_fingerprint()` in `framework/builder/binary_builder.py`. The function
+JSON-encodes a **sorted** list of strings, then returns the first 16 hex chars of
+the SHA-256 digest:
+
+```python
+# binary_builder.py:1485-1496
+def compute_fingerprint(key_inputs: list[str]) -> str:
+    content = json.dumps(sorted(str(x) for x in key_inputs))
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
+```
+
+**Default input set** — these are always included for every app:
+
+| Input key | Value at build time |
+|---|---|
+| `rev` | Pinned commit SHA from `[source] rev` in `app.toml` |
+| `gpu_arch` | `--gpu-arch` value (e.g. `gfx942`) |
+| `rock_dir` | Realpath-resolved ROCm install directory |
+| `cmake_args` | Sorted, joined `[[builds]] cmake_args` string |
+
+**`extra` inputs** — declared in `[fingerprint] extra` and resolved at build time:
+
+| Key | Resolved value |
+|---|---|
+| `toolchain.clang_version` | `clang++ --version` first line |
+| `os.glibc` | `ldd --version` first line |
+| `rocm_version` | `hipconfig --version` output |
+
+The same 16-char digest is written to `<build_dir>/.cmake_fingerprint` as the
+`"full"` key alongside a `"structural"` key (computed over `[rev, gpu_arch, rock_dir,
+subdir]` only). `build_cache_action` returns `"skip"` when both match, `"incremental"`
+when only structural matches, and `"wipe"` when structural diverges.
+
+The same `full` fingerprint is embedded in `build_manifest.json` under
+`entries[app_id].fingerprint` and checked during Stage 2 extraction to detect
+a bundle built for a different arch or toolchain.
+
 ### Parallel compilation (`--build-only -n N`)
 
 Builds are subprocess-bound — the GIL is released during `subprocess.run()`. A
@@ -468,6 +686,13 @@ startup cost is **one `stat` call per node**.
 ### Bundle layout
 
 One `--build-only` invocation always produces **one tarball** regardless of how many apps compiled.
+
+`common_lib/` collects shared libraries needed at test runtime that are **not** part of the ROCm
+install (`rock_dir/lib`). The plugin runs `ldd` against every binary in every app's output tree
+and copies any `.so` whose resolved path does not start with `rock_dir` or a standard system
+prefix (`/lib`, `/usr/lib`). When two apps provide a `.so` of the same name, the larger file wins
+(a conservative heuristic — prefer the more complete build). Symlinks are resolved to their
+targets before copying so the bundle contains only regular files.
 
 ```
 hpc_bundle_gfx942.tar.zst/
@@ -505,6 +730,8 @@ hpc_bundle_gfx942.tar.zst/
         { "role": "ctest_dir",  "path": "kokkos/build/",   "sha256": null  },
         { "role": "install_dir","path": "kokkos/install/",  "sha256": null  },
         { "role": "common_lib", "path": "common_lib/",      "sha256": null  }
+        // sha256 is null for directory roles — integrity is verified at the
+        // bundle level (tarball checksum), not per individual file.
       ],
       "env": {
         "LD_LIBRARY_PATH": ["{root}/common_lib", "{root}/kokkos/install/lib", "{rock_dir}/lib"]
@@ -514,7 +741,7 @@ hpc_bundle_gfx942.tar.zst/
         "runtime": []
       },
       "provenance": {
-        "user_provided": false, "build_host": "build-03",
+        "user_provided": false, "build_host": "ci-cpu-runner-01",
         "created": "2026-11-17T10:00:00Z", "tool": "staged_build_plugin 1.0"
       }
     }
@@ -533,15 +760,42 @@ host** — the bundle is fully relocatable.
 from framework.plugins.staged_build_plugin import (
     StagedBinary,           # path + env NamedTuple returned by all fixtures;
                             # use as a path string or pass .env to executor.run()
-    load_app_spec,          # AppSpec dataclass from app.toml; used in conftest fixtures
-                            # that need to inspect recipe before creating fixture
-    build_app,              # standalone clone + build; returns StagedBinary;
-                            # the backing implementation called by binary_fixture_factory
-                            # in Persona A (standalone) mode
+    Case,                   # frozen dataclass: name, label, timeout_s, expected_pass_pct;
+                            # returned by load_cases(); use as pytest.fixture params
+    load_cases,             # load_cases(app_id) → list[Case]; reads cases/<stem>.yaml
+                            # beside the app.toml registered for app_id; replaces _workload.py
+    load_app_spec,          # (app_toml_path: Path) → AppSpec; parses app.toml into a
+                            # typed dataclass; use in conftest when you need to inspect
+                            # the recipe or artifact roles before registering a fixture
+    build_app,              # (app_toml_path, role, *, gpu_arch, rock_dir, staging_dir,
+                            #  framework_config) → StagedBinary; standalone clone + build;
+                            # backing implementation of binary_fixture_factory step 4
     binary_fixture_factory, # PRIMARY AUTHORING SURFACE — call once per artifact role in
                             # conftest.py; returns a session-scoped pytest fixture;
                             # resolves mode via the 4-step priority chain below
 )
+```
+
+**`AppSpec` dataclass** — returned by `load_app_spec`; mirrors the `app.toml` structure:
+
+```python
+@dataclass(frozen=True)
+class ArtifactSpec:
+    build: str          # name of the [[builds]] entry that produced this artifact
+    path: str           # path relative to that build's output directory
+    probe: str | None   # file/glob that must exist after build; None = no check
+
+@dataclass(frozen=True)
+class AppSpec:
+    app_id:             str                      # [app] id
+    license:            str                      # [app] license  (SPDX)
+    repo:               str                      # [source] repo
+    rev:                str                      # [source] rev
+    builds:             list[dict]               # [[builds]] entries as parsed dicts
+    artifacts:          dict[str, ArtifactSpec]  # role → ArtifactSpec
+    packages_build:     list[str]                # [packages] build
+    packages_runtime:   list[str]                # [packages] runtime
+    fingerprint_extra:  list[str]                # [fingerprint] extra keys
 ```
 
 `_resolve_from_manifest` is **private** to the plugin. The fixture body calls it internally via
@@ -573,8 +827,8 @@ binary_fixture_factory(app.toml, role="ctest_dir")
          │
          NO
          ▼
-4. [prepared] auto = true (standalone)        ← developer local run
-   → check fingerprint cache
+4. standalone (auto-build)                    ← developer local run
+   → check fingerprint cache (.cmake_fingerprint)
    → clone_repo + cmake_build if cache miss
    → return StagedBinary(local build path)
 ```
@@ -665,7 +919,7 @@ from framework.plugins.staged_build_plugin import binary_fixture_factory
 #   --build-manifest  → resolve from pre-built bundle
 #   --build-only      → compile + bundle + exit (fixture not called by tests)
 #   standalone        → clone + build locally on first run, cached by fingerprint
-#   --use-install     → adopt existing install dir, run validators only
+#   [staged_build.installs] in toml → resolve pre-installed path, run validators only
 myhpc_binary = binary_fixture_factory(Path(__file__).parent / "app.toml", role="ctest_dir")
 ```
 
@@ -702,7 +956,13 @@ def test_myhpc_correctness(myhpc_binary, target_executor):
 **The test body is identical in all three modes** — standalone, `--build-only`, and `--build-manifest`.
 The fixture absorbs all mode-switching; the test just receives a `StagedBinary`.
 
-### Step 4: Add a case catalogue (optional but recommended)
+### Step 4: Add a case catalogue
+
+The case catalogue is **required** for any test area that runs more than one ctest label or
+workload variant. It is the `cases/<app>.yaml` half of the SSOT and replaces the per-area
+`_workload.py` + environment-variable pattern used by the existing HPC tests.
+
+**`cases/<app>.yaml` format:**
 
 ```yaml
 # tests/e2e/hpc/myhpc/cases/myhpc.yaml
@@ -716,26 +976,74 @@ cases:
   performance_tests:
     label: "PerformanceTest"
     timeout_s: 1800
-    expected_pass_pct: 90   # case-level override
+    expected_pass_pct: 90   # case-level override wins over defaults
 ```
 
-Access via the case catalogue resolver (from `staged_build_plugin`):
+**`Case` dataclass** — returned by `load_cases`; fields are merged from `defaults` + case entry:
 
 ```python
-@pytest.fixture(params=load_cases("hpc.myhpc"))   # returns a list of Case objects
+@dataclass(frozen=True)
+class Case:
+    name: str              # dict key under cases: (e.g. "unit_tests")
+    label: str             # ctest -L selector string
+    timeout_s: float       # wall-clock limit passed to executor.run()
+    expected_pass_pct: int # minimum passing percentage; 100 = all must pass
+```
+
+**`load_cases(app_id)` function** — reads `cases/<stem>.yaml` relative to the `app.toml` that
+registered `app_id`, merges `defaults` into every case entry, and returns a list of `Case`
+objects in YAML definition order:
+
+```python
+def load_cases(app_id: str) -> list[Case]:
+    """Return the parametrize list for app_id from its cases/<stem>.yaml.
+
+    Args:
+        app_id: Dot-scoped app identifier matching [app] id in app.toml
+                (e.g. "hpc.myhpc").
+
+    Returns:
+        Ordered list of Case objects with defaults merged in.
+
+    Raises:
+        FileNotFoundError: cases YAML not found beside the registered app.toml.
+        KeyError: a case entry is missing a required field not covered by defaults.
+    """
+```
+
+**Usage in test file:**
+
+```python
+import re
+import pytest
+from framework.plugins.staged_build_plugin import load_cases
+
+
+@pytest.fixture(params=load_cases("hpc.myhpc"), ids=lambda c: c.name)
 def case(request):
     return request.param
 
+
+@pytest.mark.hw.gpu
+@pytest.mark.ci.nightly
+@pytest.mark.layer.runtime
+@pytest.mark.runtime.medium
 def test_myhpc_ctest(case, myhpc_binary, target_executor):
     result = target_executor.run(
         f"ctest --test-dir {myhpc_binary} -L {case.label} --output-on-failure",
         env=myhpc_binary.env,
         timeout=case.timeout_s,
     )
-    assert result.ok
+    assert result.ok, result.stderr[-2000:]
     passed_pct = int(re.search(r"(\d+)% tests passed", result.stdout).group(1))
     assert passed_pct >= case.expected_pass_pct
 ```
+
+**Migration from `_workload.py`:** convert the existing variant dict (e.g. `ASIC_MATRIX` in
+`rochpl/_workload.py`) to a `cases/<app>.yaml`, replace `pytest_generate_tests` with a
+`@pytest.fixture(params=load_cases(...))` fixture, and delete `_workload.py`. The env-var JSON
+override (`ROCHPL_MATRIX_JSON`) is superseded — runtime case-matrix overrides are achieved by
+replacing the `cases/<app>.yaml` file before the run.
 
 ---
 
@@ -745,10 +1053,42 @@ def test_myhpc_ctest(case, myhpc_binary, target_executor):
 |---|---|---|
 | Clone or compile error | CI Stage 1 job failure; dependent tests `skip` or `error` (strict mode) | None |
 | Bundle / compression failure | CI Stage 1 job failure | None |
-| Hash, ldd, or arch verification failure | `prep-verify` error per test (never a test failure) | None |
+| Hash, ldd, or arch verification failure | `pytest.exit()` — session aborted, rc=3 | None |
 | Test assertion failure | Test `FAILED` | Counted |
 
 Build failures never read as ROCm regressions. The separation is enforced by the two-stage pipeline.
+
+### Verification failure details
+
+Integrity verification runs in `pytest_sessionstart` on the **controller process**, before any
+worker or test starts. If any check fails the session is aborted immediately via `pytest.exit()`
+with return code 3 — the same convention used by `prereqs_plugin` for hard session failures.
+
+```
+FATAL [staged_build] Bundle verification failed — session aborted.
+
+  Node: gpu-node-01
+  App:  hpc.kokkos
+  Check: sha256
+  Expected: 9f2c1a3b...  Got: deadbeef...
+
+Fix: re-download the bundle or re-run --build-only to regenerate it.
+```
+
+The three checks that run per executor node, in order:
+
+1. **sha256** — the tarball checksum recorded in `build_manifest.json` is recomputed on the
+   executor after transfer. A mismatch means a corrupted or partial download.
+2. **ldd** — `ldd` is run against each binary in the extracted bundle. Any `not found` line
+   aborts with the full `ldd` output attached. This catches a missing runtime library that would
+   otherwise cause a silent test-time `SIGSEGV`.
+3. **arch** — `hipconfig --amdgpu_target` is compared against `target_arch` in
+   `build_manifest.json`. A mismatch (e.g. bundle built for `gfx942`, runner has `gfx1100`)
+   aborts with an explicit message rather than producing silent wrong-arch results.
+
+No check produces a test `ERROR` outcome. The philosophy follows `install_plugin`
+(`returncode=4`) and `prereqs_plugin` (`returncode=3`): infrastructure defects abort the session
+cleanly so they appear as a CI stage failure, not as a ROCm regression in the test results.
 
 ---
 
@@ -759,68 +1099,96 @@ only connection between them is the tarball uploaded as a CI artifact at the end
 downloaded automatically by the CI system before Stage 2 begins. There is no shared filesystem.
 
 ```yaml
-# .gitlab-ci.yml (GitHub Actions / Jenkins: same logic, different syntax)
-stages: [build_cpu, test_gpu]
+# .github/workflows/e2e-nightly.yml  (staged HPC build/test jobs)
+name: HPC Staged Build and Test
 
-variables:
-  TARGET_GFX: "gfx942"
-  BUNDLE_NAME: "hpc_bundle_${TARGET_GFX}.tar.zst"
-  STAGING_DIR: "/tmp/hpc_stage"
+on:
+  schedule:
+    - cron: '0 3 * * *'          # UTC 03:00 nightly
+  workflow_dispatch:
+    inputs:
+      gpu_arch:
+        description: 'Target GPU architecture (e.g. gfx942)'
+        required: false
+        default: 'gfx942'
 
-# ─────────────────────────────────────────────────────────────
-# STAGE 1 — CPU runner (no GPU, cheap high-core host)
-# Compiles all apps, bundles them, then uploads the tarball
-# as a CI artifact. The runner exits without touching a GPU.
-# ─────────────────────────────────────────────────────────────
-compile_hpc_apps:
-  stage: build_cpu
-  tags: [cpu-high-core]
-  image: rocm/dev-ubuntu-22.04:6.2
-  script:
-    - pytest tests/e2e/hpc/ -m "kokkos or rochpl"
-        --build-only
-        --gpu-arch=${TARGET_GFX}
-        --rock-dir=${ROCK_DIR}
-        --staging-dir=${STAGING_DIR}
-        -n 4
-    # ↑ produces ${STAGING_DIR}/${BUNDLE_NAME}
-    # manifest is embedded inside the tarball — single artifact upload
-  artifacts:
-    name: "hpc-bundle-${TARGET_GFX}"
-    paths:
-      - ${STAGING_DIR}/${BUNDLE_NAME}   # ← uploaded to CI artifact store here
-    expire_in: 1 day
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # JOB 1 — CPU runner (no GPU, cheap high-core host)
+  # Compiles all apps, bundles them, then uploads the tarball
+  # as a GitHub Actions artifact. No GPU is touched.
+  # ─────────────────────────────────────────────────────────────
+  compile-hpc-apps:
+    runs-on: [self-hosted, cpu-high-core]
+    container:
+      image: rocm/dev-ubuntu-22.04:6.2
+    steps:
+      - uses: actions/checkout@v4
 
-# ─────────────────────────────────────────────────────────────
-# STAGE 2 — GPU runner (different host, different filesystem)
-# CI system downloads the artifact from Stage 1 into
-# ${CI_PROJECT_DIR} before this job's script runs.
-# The plugin reads the tarball, extracts per executor node,
-# verifies integrity, then runs tests — no compilation.
-# ─────────────────────────────────────────────────────────────
-execute_hpc_tests:
-  stage: test_gpu
-  tags: [gpu-mi300x]
-  needs:
-    - job: compile_hpc_apps
-      artifacts: true   # ← CI downloads the artifact automatically before script runs
-  script:
-    - pytest tests/e2e/hpc/ -m "kokkos or rochpl"
-        --build-manifest=${CI_PROJECT_DIR}/${STAGING_DIR}/${BUNDLE_NAME}
-        --rock-dir=${ROCK_DIR}
-        --junitxml=results.xml -n 4
-    # ↑ --build-manifest points at the downloaded artifact path, not a shared /tmp
-  artifacts:
-    when: always
-    reports:
-      junit: results.xml
+      - name: Compile and bundle HPC apps
+        env:
+          TARGET_GFX: ${{ inputs.gpu_arch || 'gfx942' }}
+        run: |
+          pytest tests/e2e/hpc/ -m "kokkos or rochpl" \
+            --build-only \
+            --gpu-arch=$TARGET_GFX \
+            --rock-dir=$ROCK_DIR \
+            --staging-dir=/tmp/hpc_stage \
+            -n 4
+          # ↑ produces /tmp/hpc_stage/hpc_bundle_${TARGET_GFX}.tar.zst
+          # manifest is embedded inside the tarball — single artifact upload
+
+      - name: Upload HPC bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: hpc-bundle-${{ inputs.gpu_arch || 'gfx942' }}
+          path: /tmp/hpc_stage/hpc_bundle_${{ inputs.gpu_arch || 'gfx942' }}.tar.zst
+          retention-days: 1
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 2 — GPU runner (different host, different filesystem)
+  # actions/download-artifact fetches the bundle from Job 1
+  # before the test step runs. The plugin reads the tarball,
+  # extracts per executor node, verifies integrity, then runs
+  # tests — zero compilation on GPU hardware.
+  # ─────────────────────────────────────────────────────────────
+  test-hpc:
+    runs-on: [self-hosted, gpu-runner]
+    needs: compile-hpc-apps
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download HPC bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: hpc-bundle-${{ inputs.gpu_arch || 'gfx942' }}
+          path: /tmp/hpc_stage
+          # ↑ GitHub Actions downloads the artifact automatically before this step
+
+      - name: Run HPC tests
+        env:
+          TARGET_GFX: ${{ inputs.gpu_arch || 'gfx942' }}
+        run: |
+          pytest tests/e2e/hpc/ -m "kokkos or rochpl" \
+            --build-manifest=/tmp/hpc_stage/hpc_bundle_$TARGET_GFX.tar.zst \
+            --rock-dir=$ROCK_DIR \
+            --junitxml=results.xml \
+            -n 4
+          # ↑ --build-manifest points at the downloaded artifact path, not a shared volume
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hpc-test-results-${{ inputs.gpu_arch || 'gfx942' }}
+          path: results.xml
 ```
 
 **Key properties:**
-- `-m "kokkos or rochpl"` is **identical** in both stages — same test selection, same SSOT.
-- The tarball travels via the CI artifact store; Stage 1 and Stage 2 share no filesystem.
+- `-m "kokkos or rochpl"` is **identical** in both jobs — same test selection, same SSOT.
+- The tarball travels via `actions/upload-artifact` / `actions/download-artifact`; the two jobs share no filesystem.
 - Stage 2 never calls `tar`, never sets `LD_LIBRARY_PATH` — the plugin handles both.
-- Build failures appear only in Stage 1 and never reach Stage 2 test results.
+- Build failures appear only in `compile-hpc-apps` and never reach `test-hpc` results.
 
 ---
 
@@ -847,9 +1215,6 @@ pytest tests/e2e/hpc/ -m "kokkos or rochpl" \
 pytest tests/e2e/hpc/kokkos/ \
     --rocm-config /path/to/rocm-test.toml \
     --gpu-arch gfx942 --rock-dir /opt/rocm -v
-
-# List inputs for an app (after plugin lands):
-pytest tests/e2e/hpc/kokkos/ --list-app-inputs hpc.kokkos
 
 # Preview what --build-only would compile (collect only, no build):
 pytest tests/e2e/hpc/ -m "kokkos or rochpl" --build-only --collect-only -q --no-gpu
