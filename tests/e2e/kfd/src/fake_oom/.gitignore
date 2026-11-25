@@ -1,0 +1,9 @@
+fake_oom_4mb
+replicate_count_dmabufsize
+pin_dmabuf_kmod/*.o
+pin_dmabuf_kmod/*.ko
+pin_dmabuf_kmod/*.mod
+pin_dmabuf_kmod/*.mod.c
+pin_dmabuf_kmod/Module.symvers
+pin_dmabuf_kmod/modules.order
+pin_dmabuf_kmod/.*.cmd
