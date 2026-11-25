@@ -53,6 +53,8 @@ markers = [
     "runtime: expected duration dimension (use runtime.fast / runtime.medium / …)",
     "os: target platform dimension (use os.linux / os.windows / os.wsl / os.both)",
     "e2e: scenario type dimension (use e2e.stack / e2e.multinode / e2e.app / e2e.upgrade)",
+    "gpu_state: persistent GPU configuration or host driver changes",
+    "gpu_state.mutating: changes GPU/driver state; skipped unless explicitly allowed",
     "partition: compute or memory partition (partition.spx/dpx/tpx/qpx/cpx, partition.nps1/nps2/nps4)",
     # Hardware
     "hw.gpu: requires AMD GPU hardware",
@@ -83,7 +85,7 @@ markers = [
     "e2e.multinode: multi-node test",
     "e2e.app: third-party application integration test",
     "e2e.upgrade: ROCm upgrade path test",
-    # Compute and memory partition — skip hook is framework/plugins/partition_plugin.py
+    # Compute and memory partition — skip hook and compute_partition fixture in partition_plugin.py
     "partition.spx: run only when every GPU compute partition is SPX",
     "partition.dpx: run only when every GPU compute partition is DPX",
     "partition.tpx: run only when every GPU compute partition is TPX",
