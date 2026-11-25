@@ -161,7 +161,9 @@ def test_shared_workflow_relies_on_safe_mutation_default():
     options = job["container"]["options"]
     assert "--privileged" not in options
     assert "--cap-add SYS_MODULE" not in options
-    command = next(step["run"] for step in job["steps"] if step["name"] == "Run e2e tests")
+    step_run = next((step["run"] for step in job["steps"] if step["name"] == "Run e2e tests"), None)
+    assert step_run is not None, "step 'Run e2e tests' not found in e2e-tests.yml"
+    command = step_run
     assert "--gpu-state-mutations" not in command
     assert 'KEYWORD_ARGS=(-k "${KEYWORD_FILTER}")' in command
 
