@@ -29,6 +29,8 @@ MARKER_SCHEMA: dict[str, set[str]] = {
     "os": {"linux", "windows"},
     # Scenario type (optional)
     "e2e": {"stack", "multinode"},
+    # Persistent GPU configuration or host driver changes (optional)
+    "gpu_state": {"mutating"},
     # Compute partition (spx/dpx/tpx/qpx/cpx) and memory partition (nps1/nps2/nps4).
     # Optional. A test runs only when the host mode matches.
     "partition": {"spx", "dpx", "tpx", "qpx", "cpx", "nps1", "nps2", "nps4"},
@@ -78,6 +80,7 @@ ALLURE_DIMENSION_MAP: dict[str, str] = {
     "e2e": "epic",  # allure.dynamic.epic(...)
     "os": "tag",  # allure.dynamic.tag(...)
     "runtime": "tag",
+    "gpu_state": "tag",
     "partition": "tag",
 }
 
