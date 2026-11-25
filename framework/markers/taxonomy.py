@@ -312,6 +312,16 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # Disaggregated vLLM + Mooncake DMABUF KV-cache system test: long-context inference under VRAM
+    # pressure on every GPU. layer.driver because it validates amdgpu/KFD VRAM accounting of pinned
+    # DMABUF memory. Weekly: pre-release validation, hours of runtime.
+    "tests/e2e/ml_frameworks/vllm_mooncake": [
+        "hw.multi_gpu",
+        "layer.driver",
+        "ci.weekly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # UCX HPC communication library: configure/make build + filtered *rocm* gtest suite.
     "tests/e2e/hpc/ucx": [
         "hw.gpu",
