@@ -58,11 +58,20 @@ def _sh(cmake_executor, cmd: str, timeout: float = 60.0) -> bool:
     return subprocess.run(["bash", "-c", cmd], capture_output=True, timeout=timeout, check=False).returncode == 0
 
 
-# First writable ext4 mount backed by an NVMe device, excluding non-ordered data modes.
+# First ext4 mount on an NVMe device that the current user can write to. The root
+# filesystem and boot/snap mounts are excluded, as are non-ordered data modes.
 _DETECT_NVME_CMD = (
     "findmnt -rn -t ext4 -o SOURCE,TARGET,OPTIONS | "
-    r"awk '$1 ~ /^\/dev\/nvme/ && $3 ~ /(^|,)rw(,|$)/ && $3 !~ /data=(journal|writeback)/ "
-    "{print $2; exit}'"
+    r"awk '$1 ~ /^\/dev\/nvme/ && $2 !~ /^\/$/ && $2 !~ /^\/(boot|snap)/ && $3 ~ /(^|,)rw(,|$)/ "
+    r"&& $3 !~ /data=(journal|writeback)/ {print $2}' | "
+    'while read -r m; do [ -w "$m" ] && { echo "$m"; break; }; done'
+)
+
+# True when any KFD node advertises the AIS capability bit (0x40).
+_AIS_CAPABLE_CMD = (
+    "for f in /sys/class/kfd/kfd/topology/nodes/*/properties; do "
+    'c=$(awk \'$1=="capability"{print $2}\' "$f" 2>/dev/null); '
+    '[ -n "$c" ] && [ $(( c & 64 )) -ne 0 ] && exit 0; done; exit 1'
 )
 
 
@@ -87,8 +96,18 @@ def hipfile_nvme_path(cmake_executor) -> str:
 
 
 @pytest.fixture(scope="session")
+def hipfile_ais_ready(cmake_executor) -> None:
+    """Skip the whole suite, before any build, when KFD does not advertise AIS (capability & 0x40)."""
+    if not _sh(cmake_executor, _AIS_CAPABLE_CMD, timeout=30.0):
+        pytest.skip(
+            "KFD AIS not initialized on this node (capability & 0x40) - run `sudo ais-check`; skipping hipFile suite"
+        )
+
+
+@pytest.fixture(scope="session")
 def hipfile_install_prefix(
-    hipfile_nvme_path: str,  # requested first so a missing mount skips before the build
+    hipfile_ais_ready: None,  # requested first so a node without AIS skips before the build
+    hipfile_nvme_path: str,  # then a missing mount skips before the build
     rock_dir: str,
     compiler_build_dir: str,
     framework_config,
