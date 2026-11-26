@@ -348,6 +348,15 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # Orochi's unit suite uses the Windows premake/MSBuild toolchain and tests
+    # the ROCm runtime DLLs loaded by its GPU-backed HIP unit tests.
+    "tests/e2e/system_tools/orochi": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.windows",
+    ],
     # ROCm Validation Suite modules: each test drives one RVS module against its
     # own conf and asserts on the verdicts RVS reports. Every module qualifies
     # the whole node, hence multi_gpu rather than the system_tools default.
