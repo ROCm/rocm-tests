@@ -28,7 +28,9 @@ import shlex
 import pytest
 
 from framework.builder.binary_builder import find_rocm_clangpp, resolve_parallel_jobs
+from framework.executors.cpu_executor import CpuExecutor
 from tests.common.hpc.build import path_exists, run_build_step, safe_ref_name
+from tests.common.os_packages import install_packages
 from tests.e2e.hpc.raja._workload import RAJA_REF, RAJA_URL
 
 logger = logging.getLogger(__name__)
@@ -39,15 +41,20 @@ _BUILD_SENTINEL = "CTestTestfile.cmake"
 # Override with ROCM_TEST_RAJA_OPENMPI_VERSION or OPENMPI_VERSION.
 _OPENMPI_VERSION = "4.1.4"
 
-_PACKAGE_SCRIPT = r"""
-set -eu
-if command -v apt-get >/dev/null 2>&1; then
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y --no-install-recommends \
-    git cmake g++ make ca-certificates openmpi-bin libopenmpi-dev libomp-dev
-fi
-"""
+# Packages required to build RAJA with HIP + OpenMPI.
+# install_packages() uses sudo, detects Ubuntu/RHEL/SLES, and checks for
+# passwordless sudo before proceeding — replacing the original unsudo'd
+# apt-get script that failed on nodes where the test user lacks root.
+_RAJA_PACKAGES = [
+    "git",
+    "cmake",
+    "g++",
+    "make",
+    "ca-certificates",
+    "openmpi-bin",
+    "libopenmpi-dev",
+    "libomp-dev",
+]
 
 _BUILD_SCRIPT = r"""
 set -eu
@@ -55,6 +62,10 @@ if [ -z "${MPI_HOME:-}" ]; then
   echo "RAJA build requires MPI_HOME" >&2
   exit 1
 fi
+# ROCM_PATH is required so clang++ can locate the ROCm device library at
+# compile time (--rocm-path is derived from this env var by amdclang++).
+# Matches the original raja.py which passes rocm_path as the build context.
+export ROCM_PATH="${ROCK}"
 export LD_LIBRARY_PATH="${ROCK}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 # find_rocm_clangpp's first candidate is lib/llvm/bin. Keep that directory on
 # PATH even when the selected compiler lives in llvm/bin or bin.
@@ -215,13 +226,11 @@ def raja_functional_build(
     log_path = os.path.join(log_dir, "raja-build.log")
     have_build = path_exists(f"{build_dir}/{_BUILD_SENTINEL}", cmake_executor)
     if not have_build:
-        # Install Open MPI before discovery so apt's launcher wins over a source build.
-        _run_build(
-            f"bash -lc {shlex.quote(_PACKAGE_SCRIPT)}",
-            cmake_executor=cmake_executor,
-            timeout=build_timeout,
-            log_path=log_path,
-        )
+        # Install OpenMPI and build deps before MPI discovery so the system
+        # launcher wins over a source-provisioned one.
+        # Use cmake_executor for remote builds; fall back to a local CpuExecutor.
+        pkg_executor = cmake_executor if cmake_executor is not None else CpuExecutor()
+        install_packages(pkg_executor, _RAJA_PACKAGES)
 
     mpi_runtime = _raja_mpi(external_build)
     mpi_home = mpi_runtime.env["MPI_HOME"]
@@ -241,7 +250,7 @@ def raja_functional_build(
         f"env ROCK={shlex.quote(rocm_path)} GFX={shlex.quote(resolved_gpu_arch)} "
         f"SRC={shlex.quote(raja_dir)} BUILD={shlex.quote(build_dir)} JOBS={jobs} "
         f"MPI_HOME={shlex.quote(mpi_home)} "
-        f"CC={shlex.quote(cc)} CXX={shlex.quote(cxx)} HIP_PATH={shlex.quote(os.path.dirname(cxx))} "
+        f"CC={shlex.quote(cc)} CXX={shlex.quote(cxx)} HIP_PATH={shlex.quote(rocm_path)} "
         f"PATH={mpi_path} LD_LIBRARY_PATH={mpi_ld} "
         f"bash -lc {shlex.quote(_BUILD_SCRIPT)}"
     )
