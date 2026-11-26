@@ -158,6 +158,15 @@ CATEGORY_PROFILES: dict[str, list[str]] = {
         "e2e.stack",
         "os.linux",
     ],
+    # hipFile (AMD Infinity Storage) direct GPU-to-storage I/O system tests. Needs an NVMe
+    # mount supplied by the node (ROCM_TEST_HIPFILE_NVME_PATH); runtime.* is per test function.
+    "tests/e2e/hipfile": [
+        "hw.gpu",
+        "layer.runtime",
+        "ci.nightly",
+        "e2e.stack",
+        "os.linux",
+    ],
     # RCCL collective / error-handling ports (Tier 4). rccl_error_handling is
     # single-GPU and overrides hw.multi_gpu -> hw.gpu at the function level.
     "tests/e2e/rccl": [
