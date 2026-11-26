@@ -6,8 +6,8 @@ conftest.py -- Build and environment fixtures for tests/e2e/hipfile/.
 
 hipFile is built from ROCm/rocm-systems (``projects/hipfile``) into a private
 install prefix, then the system test binary is built against it. The suite is
-skipped when no NVMe mount is supplied via ``ROCM_TEST_HIPFILE_NVME_PATH`` or
-when the kernel UAPI headers lack ``STATX_DIOALIGN`` (Linux 6.1+).
+skipped when no NVMe ext4 mount is found (``ROCM_TEST_HIPFILE_NVME_PATH`` overrides
+auto-detection) or when the kernel UAPI headers lack ``STATX_DIOALIGN`` (Linux 6.1+).
 """
 
 from __future__ import annotations
@@ -58,12 +58,31 @@ def _sh(cmake_executor, cmd: str, timeout: float = 60.0) -> bool:
     return subprocess.run(["bash", "-c", cmd], capture_output=True, timeout=timeout, check=False).returncode == 0
 
 
+# First writable ext4 mount backed by an NVMe device, excluding non-ordered data modes.
+_DETECT_NVME_CMD = (
+    "findmnt -rn -t ext4 -o SOURCE,TARGET,OPTIONS | "
+    r"awk '$1 ~ /^\/dev\/nvme/ && $3 ~ /(^|,)rw(,|$)/ && $3 !~ /data=(journal|writeback)/ "
+    "{print $2; exit}'"
+)
+
+
+def _detect_nvme_mount(cmake_executor) -> str:
+    """Return the first writable NVMe ext4 mount point on the build node, or ''."""
+    if cmake_executor is not None:
+        result = cmake_executor.run(_DETECT_NVME_CMD, timeout=30.0)
+        out = result.stdout if result.ok else ""
+    else:
+        proc = subprocess.run(["bash", "-c", _DETECT_NVME_CMD], capture_output=True, text=True, timeout=30, check=False)
+        out = proc.stdout if proc.returncode == 0 else ""
+    return out.strip().replace(r"\x20", " ")
+
+
 @pytest.fixture(scope="session")
-def hipfile_nvme_path() -> str:
-    """Return the NVMe mount point from the environment; skip when unset."""
-    path = os.environ.get(NVME_PATH_ENV, "").strip()
+def hipfile_nvme_path(cmake_executor) -> str:
+    """Return the NVMe ext4 mount point: env override first, else auto-detected; skip when none."""
+    path = os.environ.get(NVME_PATH_ENV, "").strip() or _detect_nvme_mount(cmake_executor)
     if not path:
-        pytest.skip(f"{NVME_PATH_ENV} not set — hipFile system tests need an NVMe ext4 mount")
+        pytest.skip(f"No NVMe ext4 mount found - mount one or set {NVME_PATH_ENV} for the hipFile system tests")
     return path
 
 
@@ -163,7 +182,7 @@ def hipfile_env(
     """Resolve the run environment; fail fast when the NVMe mount is missing on the node."""
     check = target_executor.run(f"test -d {shlex.quote(hipfile_nvme_path)}", timeout=30.0)
     if not check.ok:
-        pytest.fail(f"{NVME_PATH_ENV}={hipfile_nvme_path} is not a directory on the target node")
+        pytest.fail(f"NVMe mount {hipfile_nvme_path} is not a directory on the target node")
     ld = ":".join(
         [
             f"{hipfile_install_prefix}/lib",

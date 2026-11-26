@@ -22,7 +22,7 @@ Markers auto-injected by CATEGORY_PROFILES for tests/e2e/hipfile/:
 Explicit markers:
     runtime.fast
 
-Requires ROCM_TEST_HIPFILE_NVME_PATH to name an NVMe ext4 (data=ordered) mount.
+Needs an NVMe ext4 (data=ordered) mount; it is auto-detected, or set ROCM_TEST_HIPFILE_NVME_PATH to override.
 """
 
 from __future__ import annotations
