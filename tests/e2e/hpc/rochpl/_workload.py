@@ -210,7 +210,13 @@ ITERATIONS = os.environ.get("ROCHPL_ITERATIONS", "").strip()
 _min_gflops_raw = os.environ.get("ROCHPL_MIN_GFLOPS", "").strip()
 MIN_GFLOPS = float(_min_gflops_raw) if _min_gflops_raw else None
 
-# OpenMPI + UCX single-node fallback.
-# Override via ROCHPL_MPI_EXTRA_ENV; set it empty to disable.
-_DEFAULT_MPI_EXTRA_ENV = "OMPI_MCA_pml_ucx_tls=any OMPI_MCA_pml_ucx_devices=any"
+# OpenMPI + UCX single-node fallback (preserved from original port design).
+# OMPI_MCA_pml_ucx_tls=any / _devices=any let UCX negotiate any available
+# transport. UCX_TLS=^cma additionally excludes the CMA (Cross-Memory Attach)
+# transport which aborts with SIGABRT on nodes where process_vm_readv is
+# restricted (ptrace_scope > 0), without disabling UCX itself.
+# Override the whole string via ROCHPL_MPI_EXTRA_ENV for custom MPI stacks.
+_DEFAULT_MPI_EXTRA_ENV = (
+    "OMPI_MCA_pml_ucx_tls=any OMPI_MCA_pml_ucx_devices=any UCX_TLS=^cma"
+)
 MPI_EXTRA_ENV = os.environ.get("ROCHPL_MPI_EXTRA_ENV", _DEFAULT_MPI_EXTRA_ENV).strip()
