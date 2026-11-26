@@ -21,6 +21,7 @@ import pytest
 from framework.builder.binary_builder import find_rocm_clangpp
 from framework.executors.cpu_executor import CpuExecutor
 from tests.common import criu as criu_common
+from tests.common.hpc.build import run_build_step
 
 logger = logging.getLogger(__name__)
 
@@ -256,31 +257,67 @@ class RajaPerfBuild:
 
 @pytest.fixture(scope="session")
 def rajaperf_build(
-    cmake_executor, rock_dir: str, compiler_build_dir: str, gpu_arch: str | None, framework_config
+    cmake_executor,
+    rock_dir: str,
+    compiler_build_dir: str,
+    gpu_arch: str | None,
+    framework_config,
+    external_build,
 ) -> RajaPerfBuild:
     """Clone and build LLNL RAJAPerf once per session; return a RajaPerfBuild.
 
-    ``git clone --recursive`` then CMake configure (Release, static, HIP) + ``make -j``. Skips when
-    the ROCm clang toolchain is absent; fails if the build fails. MPI is off (its socket blocks
-    ``criu dump``); the offload arch is auto-detected when ``--gpu-arch`` is not given.
+    Uses ``external_build.clone_repo`` (executor-transparent: local/remote/container) for
+    the clone and ``run_build_step`` from ``tests.common.hpc.build`` for the cmake + make
+    steps, so the fixture works identically on local, SSH remote, and container executors.
+    MPI is off (its socket blocks ``criu dump``); arch is auto-detected when ``--gpu-arch``
+    is not given.
     """
-    build_exec = _build_executor(cmake_executor, rock_dir)
+    build_timeout = float(framework_config.therock.build_timeout_secs)
+    log_dir = os.path.join(framework_config.framework.artifact_dir, "rajaperf")
+    os.makedirs(log_dir, exist_ok=True)
 
     # Locate the ROCm clang toolchain across TheRock (lib/llvm/bin) and standard ROCm (llvm/bin).
     clangpp = find_rocm_clangpp(rock_dir)
     if clangpp is None:
-        pytest.skip(f"ROCm clang toolchain (clang++/amdclang++) not found under {rock_dir} -- cannot build RAJAPerf.")
+        pytest.skip(
+            f"ROCm clang toolchain (clang++/amdclang++) not found under {rock_dir} "
+            "-- cannot build RAJAPerf."
+        )
     clang_dir = str(clangpp.parent)
 
-    dest = _resolve_dest(cmake_executor, compiler_build_dir, _RAJAPERF_SUBDIR)
+    # Clone via framework helper — handles local, remote, and container transparently.
+    # Does not recurse submodules on initial clone; only the submodules required for the
+    # HIP build are initialised in the next step, skipping documentation/spack submodules
+    # (e.g. tpl/RAJA/scripts/radiuss-spack-configs) that are not needed and may be
+    # blocked on restricted networks.
+    dest = str(
+        external_build.clone_repo(
+            _RAJAPERF_URL,
+            os.path.join(compiler_build_dir, _RAJAPERF_SUBDIR),
+            ref=_RAJAPERF_REF or None,
+            timeout=build_timeout,
+        )
+    )
+    external_build.assert_license_present(dest)
 
-    # Only pass -b when a ref is explicitly pinned; otherwise track the repo's default branch.
-    branch_flag = f"-b {_RAJAPERF_REF} " if _RAJAPERF_REF else ""
+    # Initialise only the submodules required for the HIP build.
+    # --recursive is intentionally avoided on tpl/RAJA to prevent pulling
+    # scripts/radiuss-spack-configs (a Spack documentation submodule not needed
+    # for compilation) which may be blocked on restricted networks.
+    # tpl/RAJA's own required submodules (tpl/camp, tpl/desul, blt) are
+    # initialised explicitly in the second step.
+    abs_dest = os.path.realpath(dest)
+    run_build_step(
+        f"cd {abs_dest} && "
+        "git submodule update --init -- blt tpl/kokkos tpl/RAJA && "
+        f"cd {abs_dest}/tpl/RAJA && git submodule update --init -- tpl/camp tpl/desul blt",
+        cmake_executor=cmake_executor,
+        timeout=600.0,
+        label="rajaperf/submodules",
+        log_path=os.path.join(log_dir, "submodules.log"),
+    )
 
-    # CMake configure. Compiler/HIP paths use the resolved clang dir; $ARCH_FLAGS is expanded by the
-    # shell. ENABLE_HIP=ON builds the HIP variants the workload runs; CMAKE_PREFIX_PATH lets BLT's
-    # find_package(hip) resolve the hip CMake config under --rock-dir. C++17 is the RAJA minimum.
-    # ENABLE_MPI=OFF: OpenMPI's connected TCP socket blocks criu dump and MPI is not used here.
+    # Arch detection + cmake configure + make — streamed live via run_build_step.
     cmake_cmd = (
         "cmake .. -D CMAKE_BUILD_TYPE=Release -D BUILD_SHARED_LIBS=OFF"
         " -D ENABLE_HIP=ON"
@@ -289,24 +326,19 @@ def rajaperf_build(
         ' -D HIP_PATH="$CLANG_DIR"'
         ' -D CMAKE_C_COMPILER="$CC" -D CMAKE_CXX_COMPILER="$CXX"'
         " $ARCH_FLAGS"
-        ' -D CMAKE_CXX_FLAGS="-munsafe-fp-atomics" -D BLT_CXX_STD=c++17'
+        ' -D CMAKE_CXX_FLAGS="-munsafe-fp-atomics" -D BLT_CXX_STD=c++20'
         " -D ENABLE_MPI=OFF -D ENABLE_OPENMP=ON -D ENABLE_CUDA=OFF"
         ' -D RAJA_COMPILER="RAJA_COMPILER_CLANG"'
         ' -D CMAKE_CXX_FLAGS_RELEASE="-O2" -D RAJA_HIPCC_FLAGS="-fPIC -O2"'
     )
-
-    # ROCM_PATH / HIP_PATH are exported so the HIP CMake modules and the compiler resolve their
-    # internal toolchain under --rock-dir.
-    script = "\n".join(
+    build_script = "\n".join(
         (
             "set -e",
             f"export ROCM_PATH={rock_dir}",
             f"export HIP_PATH={rock_dir}",
             f'CLANG_DIR="{clang_dir}"',
-            # Prefer amdclang/amdclang++ when present; fall back to clang/clang++.
             'CXX="$CLANG_DIR/amdclang++"; [ -x "$CXX" ] || CXX="$CLANG_DIR/clang++"',
             'CC="$CLANG_DIR/amdclang"; [ -x "$CC" ] || CC="$CLANG_DIR/clang"',
-            # Offload arch: --gpu-arch when given, else auto-detect (amdgpu-arch / rocm_agent_enumerator).
             f'ARCH="{gpu_arch or ""}"',
             '[ -n "$ARCH" ] || ARCH=$("$CLANG_DIR/amdgpu-arch" 2>/dev/null | head -n1 || true)',
             f'[ -n "$ARCH" ] || ARCH=$("{rock_dir}/bin/rocm_agent_enumerator" 2>/dev/null '
@@ -314,26 +346,24 @@ def rajaperf_build(
             'if [ -z "$ARCH" ]; then echo "RAJAPERF_ARCH_DETECT_FAILED"; exit 3; fi',
             'echo "RAJAPERF_HIP_ARCH=$ARCH"',
             'ARCH_FLAGS="-D CMAKE_HIP_ARCHITECTURES=$ARCH -D GPU_TARGETS=$ARCH -D AMDGPU_TARGETS=$ARCH"',
-            # Wipe + re-clone each session for a deterministic build tree.
-            f"rm -rf {dest}",
-            f"mkdir -p {os.path.dirname(dest)}",
-            # No -b unless a ref is pinned -> a plain clone checks out the repo's default branch.
-            f"git clone --recursive {branch_flag}{_RAJAPERF_URL} {dest}",
-            f"cd {dest}",
-            "mkdir -p build",
-            "cd build",
+            f"cd {dest} && mkdir -p build && cd build",
             cmake_cmd,
             "make -j$(nproc)",
-            # Static binary runs directly from the build tree; no install step needed.
             "test -x bin/raja-perf.exe && echo BUILD_OK",
         )
     )
     logger.info("Building RAJAPerf in %s (ref=%s)", dest, _RAJAPERF_REF or "<default branch>")
-    result = build_exec.run(script, timeout=float(framework_config.therock.build_timeout_secs))
-    if "BUILD_OK" not in (result.stdout or ""):
+    output = run_build_step(
+        build_script,
+        cmake_executor=cmake_executor,
+        timeout=build_timeout,
+        label="rajaperf/build",
+        log_path=os.path.join(log_dir, "build.log"),
+    )
+    if "BUILD_OK" not in output:
         pytest.fail(
-            f"RAJAPerf build failed (exit={result.exit_code}):\n"
-            f"stdout: {result.stdout[-3000:]}\nstderr: {result.stderr[-3000:]}"
+            f"RAJAPerf build failed — BUILD_OK not found in output.\n"
+            f"output tail: {output[-3000:]}"
         )
     build_dir = os.path.join(dest, "build")
     return RajaPerfBuild(binary=os.path.join(build_dir, "bin", "raja-perf.exe"), workdir=build_dir)
