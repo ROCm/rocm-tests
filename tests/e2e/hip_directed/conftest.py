@@ -29,6 +29,13 @@ _SYSDEPS = "lib/rocm_sysdeps"
 # like ``coopGrpTest`` that require bleeding-edge HIP headers.
 _EXE_TARGETS = ("DeviceTest", "StreamTest", "MemoryTest1", "ModuleTest")
 
+# The memory performance scenarios build into their own executable. Kept out of
+# ``_EXE_TARGETS`` so the directed unit tests do not pay for compiling the
+# 17-source performance suite. Upstream emits catch2 binaries under
+# ``CATCH_BUILD_DIR``, mirroring the source layout beneath it.
+_PERF_MEMORY_TARGET = "MemoryPerformance"
+_PERF_MEMORY_SUBPATH = ("catch_tests", "performance", "scenarios", "memory", _PERF_MEMORY_TARGET)
+
 
 def _read_manifest(rock_dir: str, cmake_executor) -> str | None:
     """Read the TheRock manifest from the node that owns the ROCm install.
@@ -106,6 +113,38 @@ def _single_visible_gpu():
                 os.environ[k] = v
 
 
+def _dir_exists(path: pathlib.Path, cmake_executor) -> bool:
+    """Test for a directory on the node that owns it.
+
+    Same split as :func:`_read_manifest`: under ``--remote-node`` a ``pathlib``
+    check would consult the local filesystem and report a false negative.
+    """
+    if cmake_executor is not None:
+        return cmake_executor.run(f"test -d {shlex.quote(str(path))}", timeout=60).ok
+    return path.is_dir()
+
+
+def _catch_cmake_args(rock_dir: str, gpu_arch: str | None, cmake_executor) -> list[str]:
+    """CMake arguments shared by every build of the hip-tests catch2 suite."""
+    # BUILD_PERF_TESTS is OFF upstream, leaving the performance tree out of the
+    # configure and its targets undefined. Enabled for both builds so they share
+    # one configured tree; the executables are EXCLUDE_FROM_ALL, so nothing extra
+    # compiles until a target asks for it.
+    args = ["-DHIP_PLATFORM=amd", "-DBUILD_PERF_TESTS=ON", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}"]
+    # Resolve libnuma / numa.h from the ROCm install's bundled sysdeps rather than
+    # requiring host apt packages (the memory units do find_library(numa REQUIRED)
+    # + find_path(numa.h)).
+    sysdeps = pathlib.Path(rock_dir) / _SYSDEPS
+    if _dir_exists(sysdeps, cmake_executor):
+        args.append(f"-DCMAKE_LIBRARY_PATH={sysdeps / 'lib'}")
+        args.append(f"-DCMAKE_INCLUDE_PATH={sysdeps / 'include'}")
+    # Pin the offload arch so CMake's HIP-compiler ABI check does not fall back to
+    # rocm_agent_enumerator (which reads sysfs, ignores ROCR_VISIBLE_DEVICES) and
+    # emit one duplicated --offload-arch per GPU on multi-GPU CI runners.
+    args.append(f"-DCMAKE_HIP_ARCHITECTURES={gpu_arch}")
+    return args
+
+
 @pytest.fixture(scope="session")
 def hip_catch_repo(external_build, compiler_build_dir: str, rock_dir: str, cmake_executor):
     """Clone ROCm/rocm-systems (at the ROCm's manifest-pinned commit) once per session."""
@@ -118,23 +157,12 @@ def hip_catch_repo(external_build, compiler_build_dir: str, rock_dir: str, cmake
 
 @pytest.fixture(scope="session")
 def hip_catch_build_dir(
-    cmake_build_dir, rock_dir: str, gpu_arch: str | None, hip_catch_repo, require_gpu_arch_for
+    cmake_build_dir, rock_dir: str, gpu_arch: str | None, hip_catch_repo, require_gpu_arch_for, cmake_executor
 ) -> str:
     """Configure and build only the catch2 executables holding the directed tests."""
     require_gpu_arch_for("hip_directed")
     catch_src = pathlib.Path(hip_catch_repo) / "projects" / "hip-tests" / "catch"
-    extra_args = ["-DHIP_PLATFORM=amd", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rock_dir}"]
-    # Resolve libnuma / numa.h from the ROCm install's bundled sysdeps rather than
-    # requiring host apt packages (the memory unit does find_library(numa REQUIRED)
-    # + find_path(numa.h)).
-    sysdeps = pathlib.Path(rock_dir) / _SYSDEPS
-    if sysdeps.is_dir():
-        extra_args.append(f"-DCMAKE_LIBRARY_PATH={sysdeps / 'lib'}")
-        extra_args.append(f"-DCMAKE_INCLUDE_PATH={sysdeps / 'include'}")
-    # Pin the offload arch so CMake's HIP-compiler ABI check does not fall back to
-    # rocm_agent_enumerator (which reads sysfs, ignores ROCR_VISIBLE_DEVICES) and
-    # emit one duplicated --offload-arch per GPU on multi-GPU CI runners.
-    extra_args.append(f"-DCMAKE_HIP_ARCHITECTURES={gpu_arch}")
+    extra_args = _catch_cmake_args(rock_dir, gpu_arch, cmake_executor)
     build_dir = ""
     with _single_visible_gpu():
         for target in _EXE_TARGETS:
@@ -152,3 +180,34 @@ def hip_catch_build_dir(
                 label=f"hip_directed_catch2:{target}",
             )
     return build_dir
+
+
+@pytest.fixture(scope="session")
+def hip_perf_memory_binary(
+    cmake_build_dir,
+    rock_dir: str,
+    gpu_arch: str | None,
+    hip_catch_repo,
+    require_gpu_arch_for,
+    built_binary,
+    cmake_executor,
+) -> str:
+    """Build the memory performance catch2 executable and return its path.
+
+    Shares the clone and build tree with ``hip_catch_build_dir`` (same
+    ``subdir``), so requesting both in one session configures CMake once.
+    """
+    require_gpu_arch_for("hip_directed")
+    catch_src = pathlib.Path(hip_catch_repo) / "projects" / "hip-tests" / "catch"
+    with _single_visible_gpu():
+        build_dir = cmake_build_dir(
+            src=str(catch_src),
+            subdir=_SUBDIR,
+            extra_cmake_args=_catch_cmake_args(rock_dir, gpu_arch, cmake_executor),
+            compiler_mode="cxx_hip",
+            gpu_arch=gpu_arch,
+            gpu_arch_var="GPU_TARGETS",
+            target=_PERF_MEMORY_TARGET,
+            label=f"hip_directed_catch2:{_PERF_MEMORY_TARGET}",
+        )
+    return built_binary(os.path.join(build_dir, *_PERF_MEMORY_SUBPATH), _PERF_MEMORY_TARGET)
